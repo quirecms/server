@@ -3,13 +3,13 @@
 # the server installed with install.sh (which adopts it), a real site from Packagist added and
 # removed with quire-server, the front door's routing and refusals, the sites' isolation. Nothing touches the machine's own Docker but that one container.
 #
-#   server/tests/e2e/run.sh [agent-image]
-#   KEEP=1 server/tests/e2e/run.sh …          keeps the machine and the sites afterwards, to look around
-#   E2E_ONLY=git server/tests/e2e/run.sh …    the server and one part only: adopt, sites or git
-#   E2E_CACHE=1 server/tests/e2e/run.sh …     keeps the machine's images and build cache between runs
+#   tests/e2e/run.sh [agent-image]
+#   KEEP=1 tests/e2e/run.sh …          keeps the machine and the sites afterwards, to look around
+#   E2E_ONLY=git tests/e2e/run.sh …    the server and one part only: adopt, sites or git
+#   E2E_CACHE=1 tests/e2e/run.sh …     keeps the machine's images and build cache between runs
 #                                             (in the volume quire-server-e2e-cache; one run at a time)
 #
-# With an agent image (e.g. one built with "docker build -t quire-server-agent:test server"), it's
+# With an agent image (e.g. one built with "docker build -t quire-server-agent:test ."), it's
 # loaded instead of built inside. Needs privileged containers (Docker-in-Docker).
 set -eu
 
@@ -59,7 +59,7 @@ fi
 
 echo '== Installing the server with install.sh (it adopts the site)'
 docker exec "$dind" mkdir -p /root/quire-server
-tar -C "$here" --exclude=./vendor --exclude=./var --exclude=./tests -cf - . | docker exec -i "$dind" tar -C /root/quire-server -xf -
+tar -C "$here" --exclude=./.git --exclude=./vendor --exclude=./var --exclude=./tests -cf - . | docker exec -i "$dind" tar -C /root/quire-server -xf -
 
 if [ -n "$image" ]; then
 	docker save "$image" | docker exec -i "$dind" docker load -q

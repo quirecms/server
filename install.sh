@@ -19,7 +19,7 @@
 # Options:
 #   --email=ADDRESS    Let's Encrypt writes here about certificates (expiry, problems)
 #   --yes              Answer yes to every question (installing Docker, adopting sites)
-#   --source=DIR       Install from this folder (a checkout's server/) instead of downloading a release
+#   --source=DIR       Install from this folder (a checkout of quirecms/server) instead of downloading a release
 #   --version=X.Y.Z    The release to download (this installer's own release by default)
 #   --no-os-updates    Leave the operating system's updates as they are
 #   --test-certificates  Certificates from the front door's own authority, not Let's Encrypt (tests)
@@ -135,7 +135,7 @@ fetch() {
 		return
 	fi
 
-	[ -n "$version" ] || die 'There is no release of Quire Server yet: install from a checkout with --source=<its server folder>.'
+	[ -n "$version" ] || die 'There is no release of Quire Server yet: install from a checkout of quirecms/server with --source=<its folder>.'
 	printf '%s\n' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$' || die "\"$version\" isn't a version."
 	download=$(mktemp -d)
 	curl -fsSL --proto '=https' --tlsv1.2 "https://github.com/quirecms/server/archive/refs/tags/v$version.tar.gz" | tar -xz -C "$download" --strip-components=1 --no-same-owner
