@@ -52,7 +52,7 @@ final readonly class ListSitesCommand
     {
         $states = array_map(
             static fn (array $container): string => \sprintf('%s %s%s', $container['service'], $container['state'], '' === $container['health'] ? '' : ' ('.$container['health'].')'),
-            $this->compose->ps($this->sites->project($site->name, $site->domains)),
+            $this->compose->ps($this->sites->projectOf($site)),
         );
 
         return [] === $states ? 'none' : implode("\n", $states);

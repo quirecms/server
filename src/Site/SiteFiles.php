@@ -69,7 +69,7 @@ final readonly class SiteFiles
                 'SYMFONY_TRUSTED_PROXIES' => 'private_ranges',
             ],
             'labels' => ['com.quirecms.site' => 'true', 'com.quirecms.server.site' => $site->value],
-            'networks' => ['default' => null, 'quire-edge' => ['aliases' => $hosts], 'quire-data' => null],
+            'networks' => ['default' => null, 'quire-edge' => ['aliases' => $hosts]],
             'mem_limit' => '1g',
             'pids_limit' => 512,
             // FrankenPHP's binary needs this one to start (a file capability, for port 80).
@@ -78,13 +78,19 @@ final readonly class SiteFiles
         $worker = [
             'environment' => ['DEFAULT_URI' => 'https://'.$primary],
             'labels' => ['com.quirecms.server.site' => $site->value],
-            'networks' => ['default' => null, 'quire-data' => null],
+            'networks' => ['default' => null],
             'mem_limit' => '512m',
             'pids_limit' => 256,
         ] + $hardening;
         $services = ['php' => $php, 'worker' => $worker];
 
+        $networks = ['quire-edge' => ['external' => true]];
+
         if (Site::SHARED_DATABASE === $databaseMode) {
+            // The server's PostgreSQL, on its network; the site's own doesn't run.
+            $services['php']['networks']['quire-data'] = null;
+            $services['worker']['networks']['quire-data'] = null;
+            $networks['quire-data'] = ['external' => true];
             $url = \sprintf('postgresql://%1$s:${QUIRE_DATABASE_PASSWORD}@%2$s:5432/%1$s?serverVersion=18&charset=utf8', $site->databaseIdentifier(), self::DATABASE_HOST);
             $services['php']['environment']['DATABASE_URL'] = $url;
             $services['worker']['environment']['DATABASE_URL'] = $url;
@@ -94,12 +100,15 @@ final readonly class SiteFiles
         }
 
         $yaml = "# How the site \"{$site->value}\" runs on this server. Written by the Quire Server agent and written\n# again when the site changes: don't edit it, it would be replaced.\n"
-            .Yaml::dump(['services' => $services, 'networks' => ['quire-edge' => ['external' => true], 'quire-data' => ['external' => true]]], 6, 2, Yaml::DUMP_NULL_AS_TILDE);
+            .Yaml::dump(['services' => $services, 'networks' => $networks], 6, 2, Yaml::DUMP_NULL_AS_TILDE);
 
         $this->write($directory.'/'.self::OVERRIDE, $yaml, 0o644);
     }
 
-    private function write(string $path, string $content, int $mode): void
+    /**
+     * Writes a file atomically (a temporary file, then renamed), with these permissions.
+     */
+    public function write(string $path, string $content, int $mode): void
     {
         $temporary = $path.'.'.bin2hex(random_bytes(6)).'.tmp';
         $previous = umask(0o077);
