@@ -1,3 +1,7 @@
 /server.env
 /var/
 /vendor/
+/.phpunit.cache/
+/.php-cs-fixer.cache
+# Written by Symfony when the kernel boots in dev and test
+/config/reference.php

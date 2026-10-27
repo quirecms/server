@@ -25,7 +25,9 @@ final class SiteDatabasesTest extends KernelTestCase
     protected function setUp(): void
     {
         self::bootKernel();
-        $this->admin = self::getContainer()->get(Connection::class);
+        $connection = self::getContainer()->get(Connection::class);
+        self::assertInstanceOf(Connection::class, $connection);
+        $this->admin = $connection;
         $this->databases = new SiteDatabases($this->admin);
         $suffix = bin2hex(random_bytes(3));
         $this->jane = new SiteName('t'.$suffix.'-jane');

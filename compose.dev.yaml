@@ -1,0 +1,36 @@
+# For working on Quire Server itself: the test suite and the quality checks, against a PostgreSQL of
+# their own (nothing of a real server is used).
+#
+#     docker compose -f compose.dev.yaml run --rm php composer install
+#     docker compose -f compose.dev.yaml run --rm php composer qa
+#
+# The end-to-end test runs the whole server in Docker-in-Docker: tests/e2e/run.sh (see its header).
+name: quire-server-dev
+
+services:
+  php:
+    build:
+      context: .
+      target: dev
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    environment:
+      HOME: /tmp
+      COMPOSER_HOME: /tmp/composer
+      DATABASE_URL: postgresql://postgres:test@database:5432/quire_server_test?serverVersion=18&charset=utf8
+      QUIRE_SERVER_POSTGRES_ADMIN_URL: postgresql://postgres:test@database:5432/postgres?serverVersion=18&charset=utf8
+    volumes:
+      - .:/app
+    depends_on:
+      database: {condition: service_healthy}
+
+  database:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_PASSWORD: test
+      POSTGRES_DB: quire_server_test
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+    tmpfs: [/var/lib/postgresql]

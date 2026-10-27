@@ -2,7 +2,12 @@
     "name": "quire/server",
     "type": "project",
     "description": "Quire Server: many Quire sites on one machine, each with its own Quire, database and domains, behind one front door.",
-    "keywords": ["quire", "cms", "server", "hosting"],
+    "keywords": [
+        "quire",
+        "cms",
+        "server",
+        "hosting"
+    ],
     "homepage": "https://quirecms.com",
     "license": "MIT",
     "authors": [
@@ -27,15 +32,33 @@
         "symfony/runtime": "8.1.*",
         "symfony/yaml": "8.1.*"
     },
+    "require-dev": {
+        "friendsofphp/php-cs-fixer": "^3.95",
+        "phpstan/extension-installer": "^1.4",
+        "phpstan/phpstan": "^2.3",
+        "phpstan/phpstan-doctrine": "^2.0",
+        "phpstan/phpstan-phpunit": "^2.1",
+        "phpstan/phpstan-strict-rules": "^2.1",
+        "phpstan/phpstan-symfony": "^2.1",
+        "phpunit/phpunit": "^13.4",
+        "rector/rector": "^2.7",
+        "symfony/finder": "8.1.*"
+    },
     "autoload": {
         "psr-4": {
             "Quire\\Server\\": "src/",
             "Quire\\Server\\Migrations\\": "migrations/"
         }
     },
+    "autoload-dev": {
+        "psr-4": {
+            "Quire\\Server\\Tests\\": "tests/"
+        }
+    },
     "config": {
         "allow-plugins": {
-            "symfony/runtime": true
+            "symfony/runtime": true,
+            "phpstan/extension-installer": true
         },
         "optimize-autoloader": true,
         "sort-packages": true
@@ -46,5 +69,26 @@
         }
     },
     "minimum-stability": "stable",
-    "prefer-stable": true
+    "prefer-stable": true,
+    "scripts": {
+        "test": "phpunit",
+        "cs": "php-cs-fixer check --diff",
+        "rector": "rector process --dry-run",
+        "phpstan": "phpstan analyse --memory-limit=1G",
+        "qa": [
+            "@cs",
+            "@rector",
+            "@phpstan",
+            "@test"
+        ],
+        "fix": [
+            "rector process",
+            "php-cs-fixer fix"
+        ]
+    },
+    "scripts-descriptions": {
+        "test": "Run the test suite (needs the PostgreSQL of compose.dev.yaml).",
+        "qa": "Run every quality check (the same ones CI runs).",
+        "fix": "Apply Rector refactorings and coding-standard fixes."
+    }
 }

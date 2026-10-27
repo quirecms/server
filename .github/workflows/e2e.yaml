@@ -1,0 +1,43 @@
+---
+name: End to end
+
+# The whole server in a Docker-in-Docker machine of its own: installed with install.sh over a site set
+# up by hand, a real site from Packagist added and removed, the front door's routing and refusals, the
+# sites' isolation. It takes a while, so documentation changes don't run it; it also runs on releases,
+# every night (new Docker, Caddy, PostgreSQL or Quire releases), and by hand.
+on:
+  pull_request:
+    paths-ignore:
+      - '**.md'
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - '**.md'
+    tags:
+      - 'v*'
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  end-to-end:
+    name: Quire Server end to end
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Build the agent
+        run: docker build --pull -t quire-server-agent:test .
+      - name: Run the server end to end
+        run: tests/e2e/run.sh quire-server-agent:test

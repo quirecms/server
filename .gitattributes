@@ -1,0 +1,8 @@
+* text=auto eol=lf
+/tests export-ignore
+/.github export-ignore
+/compose.dev.yaml export-ignore
+/phpunit.dist.xml export-ignore
+/phpstan.dist.neon export-ignore
+/rector.php export-ignore
+/.php-cs-fixer.dist.php export-ignore
