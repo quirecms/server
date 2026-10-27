@@ -59,6 +59,19 @@ https:// {
 		respond "Misdirected request" 421
 	}
 
+	# The site's containers are gone for a moment (an update, a restart): a page saying so, as 503 with
+	# Retry-After so search engines come back instead of dropping the page. (Errors the site itself
+	# answers with pass through as they are.)
+	handle_errors 502 503 504 {
+		header Retry-After 30
+		header Cache-Control no-store
+		root * /etc/caddy/pages
+		rewrite * /unavailable.html
+		file_server {
+			status 503
+		}
+	}
+
 	log {
 		output stdout
 		format json

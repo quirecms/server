@@ -101,6 +101,32 @@ operation=$(inside 'quire-server operations' | grep site.add | head -1 | awk '{p
 password=$(inside "grep '^QUIRE_DATABASE_PASSWORD=' /srv/quire/sites/jane/prod.env | cut -d\\' -f2")
 check 'its log has the steps, and no secret' "inside 'quire-server operations $operation' | grep -q 'Opening it to visitors' && ! inside 'quire-server operations $operation' | grep -q '$password'"
 
+echo '== Updating the site'
+check 'its versions are recorded in its folder' "inside 'test -f /srv/quire/sites/jane/composer.lock && test -f /srv/quire/sites/demo/composer.lock'"
+check 'the front door says "back in a moment" while a site is down' "inside 'docker stop jane-php-1 >/dev/null' && inside \"curl -sk $resolve -D- https://jane.test/\" | grep -q '^HTTP/2 503' && inside \"curl -sk $resolve https://jane.test/\" | grep -q 'Back in a moment'; inside 'docker start jane-php-1 >/dev/null; sleep 15'"
+# An older Symfony YAML with a known vulnerability, as if the site had been made a while ago: built and
+# running. (Composer refuses such versions: --no-blocking, only here, to make the site an old one.)
+inside 'docker exec quire-server-agent-1 composer update symfony/yaml --with=symfony/yaml:8.1.0 --with-all-dependencies --no-blocking --no-install --no-scripts --no-plugins --ignore-platform-req=ext-* --no-interaction -q --working-dir=/srv/quire/sites/jane' 2>&1 | sed 's/^/    /'
+inside 'cd /srv/quire/sites/jane && docker compose --env-file prod.env up --detach --wait --build > /root/rebuild.log 2>&1 || { tail -40 /root/rebuild.log; docker compose --env-file prod.env ps -a; docker compose --env-file prod.env logs --tail 30; exit 1; }'
+check 'it runs an older symfony/yaml' "inside 'grep -A1 \"\\\"name\\\": \\\"symfony/yaml\\\"\" /srv/quire/sites/jane/composer.lock' | grep -q '\"v8.1.0\"'"
+check 'the audit finds its vulnerability' "inside 'quire-server site:audit jane 2>&1' | grep -q 'symfony/yaml'"
+inside 'quire-server site:update jane --dry-run 2>&1' | tee /tmp/quire-e2e-plan.log | sed 's/^/    /'
+check 'the plan shows the update fixes it, and changes nothing' "grep -q 'Fixes symfony/yaml' /tmp/quire-e2e-plan.log && grep -q 'Nothing changed' /tmp/quire-e2e-plan.log && inside 'grep -A1 \"\\\"name\\\": \\\"symfony/yaml\\\"\" /srv/quire/sites/jane/composer.lock' | grep -q '\"v8.1.0\"'"
+inside 'quire-server site:update jane --yes 2>&1' | tee /tmp/quire-e2e-update.log | sed 's/^/    /'
+check 'the site is updated' "grep -q 'is up to date' /tmp/quire-e2e-update.log && ! inside 'grep -A1 \"\\\"name\\\": \\\"symfony/yaml\\\"\" /srv/quire/sites/jane/composer.lock' | grep -q '\"v8.1.0\"'"
+check 'it answers after its update' "[ \"\$(inside \"curl -sk $resolve -o /dev/null -w '%{http_code}' https://jane.test/\")\" = 200 ]"
+check 'the image it ran is kept to undo' "inside 'docker image inspect jane-php-prod:before-update' >/dev/null"
+inside 'quire-server site:undo-update jane --yes 2>&1' | tee /tmp/quire-e2e-undo.log | sed 's/^/    /'
+check 'undoing it puts the older version back' "grep -q 'as it was before its update' /tmp/quire-e2e-undo.log && inside 'grep -A1 \"\\\"name\\\": \\\"symfony/yaml\\\"\" /srv/quire/sites/jane/composer.lock' | grep -q '\"v8.1.0\"' && [ \"\$(inside \"curl -sk $resolve -o /dev/null -w '%{http_code}' https://jane.test/\")\" = 200 ]"
+
+# A broken update: the site's own code fails every request in the new version.
+inside 'mkdir -p /srv/quire/sites/jane/src/EventListener && printf "%s\n" "<?php" "namespace App\\EventListener;" "use Symfony\\Component\\EventDispatcher\\Attribute\\AsEventListener;" "use Symfony\\Component\\HttpKernel\\Event\\RequestEvent;" "final class Broken { #[AsEventListener] public function __invoke(RequestEvent \$event): void { throw new \\RuntimeException(\"broken on purpose\"); } }" > /srv/quire/sites/jane/src/EventListener/Broken.php'
+inside 'quire-server site:update jane --yes 2>&1' | tee /tmp/quire-e2e-broken.log | sed 's/^/    /'
+check 'a broken update is rolled back by itself' "grep -q 'the site is as it was before' /tmp/quire-e2e-broken.log && inside 'quire-server operations' | grep -q 'site.update.*failed'"
+check 'the site answers as before, with its database restored' "[ \"\$(inside \"curl -sk $resolve -o /dev/null -w '%{http_code}' https://jane.test/\")\" = 200 ] && inside \"quire-server operations \$(inside 'quire-server operations' | grep site.update | head -1 | awk '{print \$1}')\" | grep -q 'Restoring its backup'"
+check 'it is still running' "inside 'quire-server site:list' | grep jane | grep -q running"
+inside 'rm -rf /srv/quire/sites/jane/src/EventListener'
+
 if [ "${KEEP:-}" = 1 ]; then echo "$failures check(s) failed so far; the site is kept."; exit 0; fi
 
 echo '== Removing the site'

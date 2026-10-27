@@ -68,4 +68,37 @@ final class Schema
                 SQL,
         ];
     }
+
+    /**
+     * Updates of sites, to undo the last one: the image and files before it, its backup.
+     *
+     * @return list<string>
+     */
+    public static function version2(string $schema = self::NAME): array
+    {
+        $s = '"'.str_replace('"', '""', $schema).'"';
+
+        return [
+            <<<SQL
+                CREATE TABLE {$s}.site_update (
+                    id uuid PRIMARY KEY,
+                    site text NOT NULL REFERENCES {$s}.site (name) ON DELETE CASCADE,
+                    operation_id uuid NOT NULL REFERENCES {$s}.operation (id),
+                    quire_from text,
+                    quire_to text,
+                    packages jsonb NOT NULL DEFAULT '[]',
+                    image_before text NOT NULL CHECK (image_before ~ '^sha256:[0-9a-f]{64}$'),
+                    image_after text NOT NULL CHECK (image_after ~ '^sha256:[0-9a-f]{64}$'),
+                    saved_files text NOT NULL,
+                    skeleton_paths jsonb NOT NULL DEFAULT '[]',
+                    backup text NOT NULL,
+                    migrations_ran boolean,
+                    status text NOT NULL CHECK (status IN ('done', 'undone', 'superseded')),
+                    created_at timestamptz NOT NULL DEFAULT now(),
+                    undone_at timestamptz
+                )
+                SQL,
+            "CREATE INDEX site_update_site ON {$s}.site_update (site, created_at DESC)",
+        ];
+    }
 }

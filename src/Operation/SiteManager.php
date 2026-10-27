@@ -107,6 +107,7 @@ final readonly class SiteManager
 
                 $step('Installing it');
                 $adminPassword = $this->install($project, $request, $operation);
+                $this->pinComposerLock($request->name, $project);
 
                 $step('Opening it to visitors');
                 // Running first: the agent's rounds open the domains of running sites, and close others.
@@ -226,6 +227,7 @@ final readonly class SiteManager
 
                 $step('Moving it behind the front door (a few seconds offline)');
                 $this->compose->up($site, $operation->output(...));
+                $this->pinComposerLock($name, $site);
 
                 $step('Opening it to visitors');
                 $this->registry->setStatus($name, Site::RUNNING);
@@ -404,7 +406,11 @@ final readonly class SiteManager
         return $password;
     }
 
-    private function backup(SiteName $name, SiteProject $project, string $kind): string
+    /**
+     * A backup of the site with quire:backup (its database and files), to
+     * /srv/quire/backups/<site>/<kind>-<time>.tar, readable by root only.
+     */
+    public function backup(SiteName $name, SiteProject $project, string $kind): string
     {
         $directory = $this->paths->backups($name);
         $this->filesystem->mkdir($directory, 0o700);
@@ -422,6 +428,24 @@ final readonly class SiteManager
     /**
      * Moves the site's folder out of the way, kept: data is never deleted without a backup.
      */
+    /**
+     * The versions the site runs, recorded in its folder: the composer.lock its image was built with,
+     * copied out of it when the folder has none (a skeleton has none: its first build resolves the
+     * versions). From then on, builds install exactly these, and updates change them.
+     */
+    public function pinComposerLock(SiteName $name, SiteProject $project): void
+    {
+        $lock = $this->paths->site($name).'/composer.lock';
+
+        if (is_file($lock)) {
+            return;
+        }
+
+        $this->compose->copyFrom($project, self::PHP, '/app/composer.lock', $lock.'.tmp');
+        chmod($lock.'.tmp', 0o644);
+        $this->filesystem->rename($lock.'.tmp', $lock);
+    }
+
     private function archive(SiteName $name, string $directory): void
     {
         if (!file_exists($directory)) {

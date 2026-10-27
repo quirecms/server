@@ -101,9 +101,9 @@ final readonly class Compose
      * @param list<string>                  $command
      * @param (\Closure(string): void)|null $output
      */
-    public function exec(SiteProject $project, string $service, array $command, ?\Closure $output = null, float $timeout = 600): ProcessResult
+    public function exec(SiteProject $project, string $service, array $command, ?\Closure $output = null, float $timeout = 600, ?string $inputFile = null): ProcessResult
     {
-        return $this->compose($project, ['exec', '-T', $service, ...$command], timeout: $timeout, output: $output);
+        return $this->compose($project, ['exec', '-T', $service, ...$command], timeout: $timeout, output: $output, inputFile: $inputFile);
     }
 
     /**
@@ -112,6 +112,18 @@ final readonly class Compose
     public function copyFrom(SiteProject $project, string $service, string $source, string $destination): void
     {
         $this->compose($project, ['cp', $service.':'.$source, $destination], timeout: 3600)->orFail('Copying out of the site');
+    }
+
+    /**
+     * The image a service of the site runs (e.g. "jane-php-prod"), as its configuration names it.
+     */
+    public function image(SiteProject $project, string $service): string
+    {
+        $config = $this->config($project);
+        $services = \is_array($config['services'] ?? null) ? $config['services'] : [];
+        $image = \is_array($services[$service] ?? null) ? ($services[$service]['image'] ?? null) : null;
+
+        return \is_string($image) && '' !== $image ? $image : throw new \RuntimeException(\sprintf('The site\'s "%s" service names no image.', $service));
     }
 
     /**
@@ -149,7 +161,7 @@ final readonly class Compose
      * @param list<string>                  $arguments
      * @param (\Closure(string): void)|null $output
      */
-    private function compose(SiteProject $project, array $arguments, float $timeout, ?\Closure $output = null): ProcessResult
+    private function compose(SiteProject $project, array $arguments, float $timeout, ?\Closure $output = null, ?string $inputFile = null): ProcessResult
     {
         return $this->runner->run(
             ['docker', 'compose', '--project-directory', $project->directory, '--env-file', $project->envFile, '--project-name', $project->name(), ...$arguments],
@@ -166,6 +178,7 @@ final readonly class Compose
             $project->directory,
             $timeout,
             $output,
+            inputFile: $inputFile,
         );
     }
 }

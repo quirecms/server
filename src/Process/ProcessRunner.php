@@ -12,9 +12,10 @@ namespace Quire\Server\Process;
 interface ProcessRunner
 {
     /**
-     * @param list<string>                  $command The program and its arguments
-     * @param array<string, string|false>   $env     Variables added to the runner's own environment; false removes one
-     * @param (\Closure(string): void)|null $output  Gets the output as it comes, e.g. to log it
+     * @param list<string>                  $command   The program and its arguments
+     * @param array<string, string|false>   $env       Variables added to the runner's own environment; false removes one
+     * @param (\Closure(string): void)|null $output    Gets the output as it comes, e.g. to log it
+     * @param string|null                   $inputFile A file streamed to the program's standard input (instead of $input; it may be large)
      */
-    public function run(array $command, array $env = [], ?string $directory = null, float $timeout = 600, ?\Closure $output = null, ?string $input = null): ProcessResult;
+    public function run(array $command, array $env = [], ?string $directory = null, float $timeout = 600, ?\Closure $output = null, ?string $input = null, ?string $inputFile = null): ProcessResult;
 }
