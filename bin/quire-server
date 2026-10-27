@@ -2,6 +2,7 @@
 # quire-server: manage this machine's Quire sites. Installed as /usr/local/bin/quire-server.
 #
 #   quire-server site:add jane --domain=jane.example --admin-email=jane@example.com
+#   quire-server site:adopt demo                (a site installed before the server)
 #   quire-server site:list | site:remove jane | operations
 #   quire-server up | down | logs | ps          (the server itself)
 #

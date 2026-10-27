@@ -13,7 +13,7 @@ services:
         resource: '../src/'
         exclude:
             - '../src/Kernel.php'
-            - '../src/Site/{Site,SiteName,Domain,ServerPaths}.php'
+            - '../src/Site/{Site,SiteName,Domain,ServerPaths,EnvFile}.php'
             - '../src/Docker/{PolicyContext,SiteProject,PolicyViolation}.php'
             - '../src/Operation/{Operation,SiteRequest,AddedSite}.php'
             - '../src/Process/{ProcessResult,ProcessFailed}.php'

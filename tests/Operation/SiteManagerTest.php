@@ -44,6 +44,9 @@ final class SiteManagerTest extends RegistryTestCase
     /** @var array<string, \Closure(list<string>): ProcessResult> What a command prints, by its first words */
     private array $script = [];
 
+    /** Whether the site's configuration has its own PostgreSQL (an adopted site's) */
+    private bool $ownDatabase = false;
+
     #[\Override]
     protected function setUp(): void
     {
@@ -235,6 +238,147 @@ final class SiteManagerTest extends RegistryTestCase
         self::assertFileExists($this->paths->site($this->name).'/prod.env');
     }
 
+    public function testAdoptingASiteThatRunsAlready(): void
+    {
+        $original = $this->siteInstalledByHand();
+        $said = [];
+
+        $site = $this->manager()->adopt($this->name, [], 'cli', 'darko', static function (string $step) use (&$said): void {
+            $said[] = $step;
+        });
+
+        self::assertSame([Site::RUNNING, Site::OWN_DATABASE, $this->name->value], [$site->status, $site->databaseMode, $site->project]);
+        self::assertSame(['jane.example', 'www.jane.example'], array_map(static fn (Domain $domain): string => $domain->value, $site->domains), 'From its SERVER_NAME.');
+        self::assertSame(['Recording the site', 'Backing it up, as it is', 'Changing its settings (a copy of them is kept)', 'Checking and building it (a few minutes; it keeps running meanwhile)', 'Moving it behind the front door (a few seconds offline)', 'Opening it to visitors'], $said);
+        // Backed up before anything changes; built before it's stopped; the policy checked before both.
+        self::assertSame(['exec', 'cp', 'exec', 'config', 'build', 'config', 'up'], array_map(static fn (array $command): string => $command[8] ?? '', $this->commands));
+        $backups = glob($this->paths->backups($this->name).'/before-server-*.tar');
+        self::assertCount(1, false === $backups ? [] : $backups, 'Backed up as it was.');
+        self::assertSame([$this->name->value, $this->name->value], array_values($this->frontDoor->all()));
+        self::assertFalse($this->databases->exists($this->name), 'Its database stays its own: nothing on the server\'s.');
+
+        $directory = $this->paths->site($this->name);
+        self::assertSame($original, file_get_contents($directory.'/prod.env.before-server'), 'Its settings, as they were.');
+        self::assertSame('0600', substr(\sprintf('%o', fileperms($directory.'/prod.env.before-server')), -4));
+        self::assertSame('0600', substr(\sprintf('%o', fileperms($directory.'/prod.env')), -4));
+        self::assertSame(str_replace(
+            "COMPOSE_FILE=compose.yaml:compose.prod.yaml\n",
+            "COMPOSE_FILE='compose.yaml:compose.prod.yaml:compose.server.yaml'\n",
+            $original,
+        )."COMPOSE_PROJECT_NAME='{$this->name->value}'\n", file_get_contents($directory.'/prod.env'), 'Two lines changed, every other kept.');
+        self::assertSame("services: {}\n", file_get_contents($directory.'/compose.yaml'), 'Its own files untouched.');
+
+        $override = (string) file_get_contents($directory.'/compose.server.yaml');
+        self::assertStringNotContainsString('quire-data', $override, 'Not on the server\'s PostgreSQL network.');
+        self::assertStringNotContainsString('own-database', $override, 'Its PostgreSQL keeps running.');
+
+        $operation = $this->operations->latest()[0];
+        self::assertSame(['site.adopt', 'succeeded'], [$operation['action'], $operation['status']]);
+        $log = implode("\n", $this->operations->lines($operation['id']));
+        self::assertStringNotContainsString('Adm1nAppSecretValue', $log, 'Its secrets never reach the log.');
+        self::assertStringNotContainsString('Pg0wnDatabasePassword', $log);
+    }
+
+    public function testAFailedAdoptionPutsTheSiteBackAsItWas(): void
+    {
+        $original = $this->siteInstalledByHand();
+        $started = 0;
+        $this->script['docker compose up'] = static function (array $command) use (&$started): ProcessResult {
+            // Behind the front door it doesn't start; as it was, it does.
+            return 1 === ++$started
+                ? new ProcessResult(self::strings($command), 1, '', "container jane-php-1 is unhealthy\n")
+                : self::ok($command, "Started\n");
+        };
+
+        try {
+            $this->manager()->adopt($this->name, [], 'cli', 'darko', static fn (): null => null);
+            self::fail('It didn\'t fail.');
+        } catch (\RuntimeException $e) {
+            self::assertStringContainsString('unhealthy', $e->getMessage());
+        }
+
+        $directory = $this->paths->site($this->name);
+        $restart = array_last($this->commands) ?? [];
+        self::assertSame(['up', $directory.'/prod.env.before-server'], [$restart[8] ?? '', $restart[5] ?? ''], 'Started again with the settings it had.');
+        self::assertContains('--no-build', $restart, 'With the image it had, unchecked: nothing new.');
+        self::assertSame($original, file_get_contents($directory.'/prod.env'));
+        self::assertFileDoesNotExist($directory.'/compose.server.yaml');
+        self::assertSame([], $this->frontDoor->all());
+        self::assertSame(Site::REMOVED, $this->registry->get($this->name)?->status, 'Not a site of the server: it can be adopted again.');
+        self::assertSame('failed', $this->operations->latest()[0]['status']);
+        self::assertFileExists($directory.'/compose.yaml', 'Its folder stays where it is.');
+    }
+
+    public function testAHostileSiteIsNeverStartedBehindTheFrontDoor(): void
+    {
+        $original = $this->siteInstalledByHand();
+        $this->script['docker compose config'] = fn (array $command): ProcessResult => self::ok($command, json_encode(array_replace_recursive($this->config(), ['services' => ['database' => ['volumes' => [['type' => 'bind', 'source' => '/', 'target' => '/host']]]]]), \JSON_THROW_ON_ERROR));
+
+        try {
+            $this->manager()->adopt($this->name, [], 'cli', 'darko', static fn (): null => null);
+            self::fail('It wasn\'t refused.');
+        } catch (PolicyViolation $e) {
+            self::assertStringContainsString('database', $e->getMessage());
+        }
+
+        self::assertNotContains('build', array_map(static fn (array $command): string => $command[8] ?? '', $this->commands));
+        self::assertSame($original, file_get_contents($this->paths->site($this->name).'/prod.env'));
+        self::assertSame([], $this->frontDoor->all());
+    }
+
+    public function testOnlyAProductionSiteNotYetAdoptedCanBe(): void
+    {
+        $manager = $this->manager();
+
+        foreach ([
+            'no prod.env' => [static fn (string $directory): bool => unlink($directory.'/prod.env'), 'has no prod.env'],
+            'adopted already' => [static fn (string $directory): int|false => file_put_contents($directory.'/compose.server.yaml', ''), 'has a compose.server.yaml already'],
+            'no domains' => [static fn (string $directory): int|false => file_put_contents($directory.'/prod.env', "APP_SECRET=x\n"), 'pass them with --domain'],
+            'a foreign project' => [static fn (string $directory): int|false => file_put_contents($directory.'/prod.env', "SERVER_NAME=jane.example\nCOMPOSE_PROJECT_NAME='Jane Site'\n"), 'isn\'t one this server can manage'],
+        ] as $case => [$change, $message]) {
+            new Filesystem()->remove($this->paths->site($this->name));
+            $this->siteInstalledByHand();
+            $change($this->paths->site($this->name));
+
+            try {
+                $manager->adopt($this->name, [], 'cli', 'darko', static fn (): null => null);
+                self::fail($case.': it was adopted.');
+            } catch (\DomainException $e) {
+                self::assertStringContainsString($message, $e->getMessage(), $case);
+            }
+        }
+
+        self::assertSame([], $this->commands, 'Nothing was run.');
+        self::assertNull($this->registry->get($this->name));
+    }
+
+    public function testTheDomainsOfAServerName(): void
+    {
+        self::assertSame(['jane.example', 'www.jane.example', 'xn--bcher-kva.example'], array_map(
+            static fn (Domain $domain): string => $domain->value,
+            SiteManager::domainsOf('https://jane.example, www.jane.example:443, jane.example, Bücher.example, php:80, :80, localhost'),
+        ));
+    }
+
+    /**
+     * A site installed from the skeleton by hand, as docs/docker.md says: its prod.env as a person wrote it.
+     *
+     * @return string Its prod.env
+     */
+    private function siteInstalledByHand(): string
+    {
+        $directory = $this->paths->site($this->name);
+        mkdir($directory, 0o755, true);
+        file_put_contents($directory.'/compose.yaml', "services: {}\n");
+        file_put_contents($directory.'/compose.prod.yaml', "services: {}\n");
+        $env = "# My site\nCOMPOSE_FILE=compose.yaml:compose.prod.yaml\nSERVER_NAME=jane.example, www.jane.example\nAPP_SECRET=Adm1nAppSecretValue\nPOSTGRES_PASSWORD=Pg0wnDatabasePassword\nMAILER_DSN=\n";
+        file_put_contents($directory.'/prod.env', $env);
+        chmod($directory.'/prod.env', 0o600);
+        $this->ownDatabase = true;
+
+        return $env;
+    }
+
     /**
      * @return list<list<string>> The commands run, so far
      */
@@ -300,7 +444,9 @@ final class SiteManagerTest extends RegistryTestCase
             // Every Docker command goes through the proxy, with nothing inherited choosing its files.
             self::assertSame('tcp://docker-proxy:2375', $env['DOCKER_HOST'] ?? null);
             self::assertFalse($env['COMPOSE_FILE'] ?? null);
-            self::assertSame(['--project-directory', $this->paths->site($this->name), '--env-file', $this->paths->site($this->name).'/prod.env', '--project-name', $this->name->value], \array_slice($command, 2, 6));
+            // Its own settings, or (putting an adopted site back) the copy of those it had before.
+            self::assertContains($command[5], [$this->paths->site($this->name).'/prod.env', $this->paths->site($this->name).'/prod.env.before-server']);
+            self::assertSame(['--project-directory', $this->paths->site($this->name), '--env-file', $command[5], '--project-name', $this->name->value], \array_slice($command, 2, 6));
         }
 
         $key = 'docker' === $command[0] ? 'docker compose '.$command[8] : $command[0].' '.$command[1];
@@ -320,6 +466,19 @@ final class SiteManagerTest extends RegistryTestCase
     {
         $directory = $this->paths->site($this->name);
         $build = ['context' => $directory, 'dockerfile' => 'Dockerfile'];
+
+        if ($this->ownDatabase) {
+            return [
+                'name' => $this->name->value,
+                'networks' => ['default' => ['name' => $this->name->value.'_default'], 'quire-edge' => ['name' => 'quire-edge', 'external' => true]],
+                'services' => [
+                    'php' => ['build' => $build, 'networks' => ['default' => null, 'quire-edge' => ['aliases' => ['jane.example', 'www.jane.example']]], 'volumes' => [['type' => 'volume', 'source' => 'storage_data', 'target' => '/app/storage']]],
+                    'worker' => ['build' => $build, 'networks' => ['default' => null]],
+                    'database' => ['image' => 'postgres:18-alpine', 'networks' => ['default' => null], 'volumes' => [['type' => 'volume', 'source' => 'database_data', 'target' => '/var/lib/postgresql']]],
+                ],
+                'volumes' => ['storage_data' => ['name' => $this->name->value.'_storage_data'], 'database_data' => ['name' => $this->name->value.'_database_data']],
+            ];
+        }
 
         return [
             'name' => $this->name->value,

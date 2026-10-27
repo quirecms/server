@@ -75,6 +75,19 @@ final readonly class Compose
     }
 
     /**
+     * Starts a site with the configuration it had before the server changed it, unchecked: only to put
+     * back exactly what was running before (e.g. when adopting it failed), never anything new. Its
+     * env file must be the copy the server kept of the one it had.
+     *
+     * @param (\Closure(string): void)|null $output
+     */
+    public function restoreAsBefore(SiteProject $project, string $envFileBefore, ?\Closure $output = null): void
+    {
+        $before = new SiteProject($project->directory, $envFileBefore, $project->policy);
+        $this->compose($before, ['up', '--detach', '--wait', '--wait-timeout', '300', '--remove-orphans', '--no-build'], timeout: 600, output: $output)->orFail('Starting the site as it was');
+    }
+
+    /**
      * @param (\Closure(string): void)|null $output
      */
     public function down(SiteProject $project, bool $volumes, ?\Closure $output = null): void
