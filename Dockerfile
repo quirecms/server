@@ -1,7 +1,8 @@
 #syntax=docker/dockerfile:1
 
 # The agent: PHP for its code, the Docker CLI with Compose and Buildx (it acts through the docker-proxy,
-# never on the socket itself), and Composer (to get the skeleton of new sites, without running it).
+# never on the socket itself), Composer (to get the skeleton of new sites and work out updates, without
+# running any package's code), and Git with SSH (Git mode sites' repositories).
 FROM docker:29.9.2-cli AS docker_cli
 FROM composer:2.10.3 AS composer
 
@@ -11,7 +12,7 @@ SHELL ["/bin/ash", "-euo", "pipefail", "-c"]
 
 COPY --from=mlocati/php-extension-installer:2.8 /usr/bin/install-php-extensions /usr/local/bin/
 RUN install-php-extensions intl pcntl pdo_pgsql opcache \
-    && apk add --no-cache ca-certificates git tini \
+    && apk add --no-cache ca-certificates git openssh-client openssh-keygen tini \
     && rm /usr/local/bin/install-php-extensions
 
 COPY --from=docker_cli /usr/local/bin/docker /usr/local/bin/docker

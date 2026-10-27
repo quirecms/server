@@ -63,6 +63,26 @@ final class ScriptedRunner implements ProcessRunner
     }
 
     /**
+     * Git's subcommand, after its options ("-C dir", "-c name=value").
+     *
+     * @param list<string> $command
+     */
+    public static function gitSubcommand(array $command): string
+    {
+        for ($i = 1, $count = \count($command); $i < $count; ++$i) {
+            if (\in_array($command[$i], ['-C', '-c'], true)) {
+                ++$i;
+
+                continue;
+            }
+
+            return $command[$i];
+        }
+
+        return '';
+    }
+
+    /**
      * "docker compose <sub>" (after its options), "docker image <sub>", or the program and its first argument.
      *
      * @param list<string> $command
@@ -71,6 +91,10 @@ final class ScriptedRunner implements ProcessRunner
     {
         if ('docker' === $command[0] && 'compose' === ($command[1] ?? '')) {
             return 'docker compose '.($command[8] ?? '');
+        }
+
+        if ('git' === $command[0]) {
+            return 'git '.self::gitSubcommand($command);
         }
 
         return $command[0].' '.($command[1] ?? '').('docker' === $command[0] ? ' '.($command[2] ?? '') : '');

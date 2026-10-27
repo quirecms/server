@@ -7,9 +7,12 @@ namespace Quire\Server\Update;
 use Quire\Server\Docker\Compose;
 use Quire\Server\Docker\Images;
 use Quire\Server\Docker\SiteProject;
+use Quire\Server\Git\Git;
+use Quire\Server\Git\Repository;
 use Quire\Server\Operation\Operation;
 use Quire\Server\Operation\OperationLog;
 use Quire\Server\Operation\SiteManager;
+use Quire\Server\Registry\SiteGit;
 use Quire\Server\Registry\SiteLock;
 use Quire\Server\Registry\SiteRegistry;
 use Quire\Server\Registry\SiteUpdates;
@@ -19,10 +22,12 @@ use Quire\Server\Site\SiteName;
 use Symfony\Component\Filesystem\Filesystem;
 
 /**
- * Updates a site, and undoes its last update. An update is built while the site keeps running on its
- * current image (a failed build changes nothing), backed up, started (offline a few seconds; the front
- * door says so to visitors), and checked. If it fails, it's rolled back by itself: the files and the
- * image it had, and its backup restored if the update's migrations ran.
+ * Puts a new version of a site in place, and undoes the last one: an update (new packages, managed
+ * sites) or a deploy (a commit of its repository, Git mode), the same way. The new version is built
+ * while the site keeps running on its current image (a failed build changes nothing), the site is
+ * backed up, the new version started (offline a few seconds; the front door says so to visitors) and
+ * checked. If it fails, it's rolled back by itself: the files and the image it had, and its backup
+ * restored if the new version's migrations ran.
  */
 final readonly class SiteUpdater
 {
@@ -31,23 +36,29 @@ final readonly class SiteUpdater
     public function __construct(
         private SiteRegistry $registry,
         private SiteUpdates $updates,
+        private SiteGit $repositories,
         private OperationLog $operations,
         private SiteLock $lock,
         private SiteManager $sites,
         private Compose $compose,
         private Images $images,
+        private Git $git,
         private ServerPaths $paths,
         private Filesystem $filesystem = new Filesystem(),
     ) {
     }
 
     /**
-     * Makes sure the site's versions are recorded in its folder (its composer.lock), before planning.
+     * Makes sure a managed site's versions are recorded in its folder (its composer.lock), before
+     * planning. (A site in Git mode has its repository's.).
      */
     public function prepare(SiteName $name): void
     {
         $site = $this->running($name);
-        $this->lock->run($name, fn () => $this->sites->pinComposerLock($name, $this->sites->projectOf($site)));
+
+        if (null === $this->repositories->of($name)) {
+            $this->lock->run($name, fn () => $this->sites->pinComposerLock($name, $this->sites->projectOf($site)));
+        }
     }
 
     /**
@@ -70,51 +81,121 @@ final readonly class SiteUpdater
     }
 
     /**
-     * Undoes the site's last update (within a week): its files and image before it, and, when the
-     * update's migrations ran (or it isn't known), its database and files as they were then.
+     * Deploys a commit of a Git mode site's branch (its newest when null).
      *
-     * @param bool                   $loseChanges Whether the site's changes since the update may be lost (when its backup must be restored)
+     * @param \Closure(string): void $say
+     *
+     * @return string|null The commit deployed, or null when it runs it already
+     *
+     * @throws UpdateFailed When the deploy failed (rolled back, or not even that: see its message)
+     */
+    public function deploy(SiteName $name, ?string $commit, string $channel, string $requestedBy, \Closure $say): ?string
+    {
+        if (null !== $commit && !Repository::isCommit($commit)) {
+            throw new \InvalidArgumentException(\sprintf('"%s" isn\'t a commit ID (all of its 40 characters).', mb_substr($commit, 0, 80)));
+        }
+
+        return $this->lock->run($name, function () use ($name, $commit, $channel, $requestedBy, $say): ?string {
+            $site = $this->running($name);
+            $git = $this->repositories->of($name) ?? throw new \DomainException(\sprintf('"%s" doesn\'t follow a Git repository: update it with "site:update".', $name));
+            $repository = $git['repository'];
+            $directory = $this->paths->site($name);
+            $before = $this->git->head($repository, $name, $directory);
+            $target = $commit ?? $this->git->remoteHead($repository, $name);
+
+            if ($target === $before) {
+                $this->repositories->deployed($name, $target);
+
+                return null;
+            }
+
+            $operation = $this->operations->start('site.deploy', $name, ['branch' => $repository->branch, 'from' => $before, 'to' => $target], $channel, $requestedBy);
+            $step = $this->stepper($operation, $say);
+            $operation->line(\sprintf('   %s: %s → %s', $repository->branch, substr($before, 0, 12), substr($target, 0, 12)));
+
+            try {
+                $released = $this->release(
+                    $site,
+                    $operation,
+                    $step,
+                    'deploy',
+                    function () use ($step, $repository, $name, $directory, $target, $operation): void {
+                        $step(\sprintf('Getting commit %s', substr($target, 0, 12)));
+                        $this->git->checkout($repository, $name, $directory, $target, $operation->output(...));
+                    },
+                    fn () => $this->git->moveTo($repository, $name, $directory, $before),
+                );
+            } catch (UpdateFailed $e) {
+                // Not tried again by the agent: a new commit is.
+                $this->repositories->failed($name, $target);
+
+                throw $e;
+            }
+
+            $this->updates->record([
+                ...$released,
+                'id' => $this->uuid(),
+                'site' => $name,
+                'operation_id' => $operation->id,
+                'kind' => SiteUpdates::DEPLOY,
+                'quire_from' => null,
+                'quire_to' => null,
+                'packages' => [],
+                'saved_files' => '',
+                'skeleton_paths' => [],
+                'commit_before' => $before,
+                'commit_after' => $target,
+            ]);
+            $this->repositories->deployed($name, $target);
+            $operation->succeed();
+
+            return $target;
+        });
+    }
+
+    /**
+     * Undoes the site's last update or deploy (within a week): its files and image before it, and,
+     * when its migrations ran (or it isn't known), its database and files as they were then.
+     *
+     * @param bool                   $loseChanges Whether the site's changes since may be lost (when its backup must be restored)
      * @param \Closure(string): void $say
      */
     public function undo(SiteName $name, bool $loseChanges, string $channel, string $requestedBy, \Closure $say): void
     {
         $this->lock->run($name, function () use ($name, $loseChanges, $channel, $requestedBy, $say): void {
             $site = $this->running($name);
-            $update = $this->updates->undoable($name) ?? throw new \DomainException('The site has no update to undo (only its last one can be undone, for a week).');
+            $update = $this->updates->undoable($name) ?? throw new \DomainException('The site has nothing to undo (only its last update or deploy can be undone, for a week).');
+            $what = SiteUpdates::DEPLOY === $update['kind'] ? 'deploy' : 'update';
             $project = $this->sites->projectOf($site);
             $image = $this->compose->image($project, self::PHP);
 
             if ($this->images->id($image) !== $update['image_after']) {
-                throw new \DomainException('The site was built again since its last update: it can\'t be undone.');
+                throw new \DomainException(\sprintf('The site was built again since its last %s: it can\'t be undone.', $what));
             }
 
             $restore = false !== $update['migrations_ran'];
 
             if ($restore && !$loseChanges) {
-                throw new \DomainException(\sprintf('Undoing it restores the site\'s backup from before the update (%s): its changes since are lost.', $update['created_at']));
+                throw new \DomainException(\sprintf('Undoing it restores the site\'s backup from before the %s (%s): its changes since are lost.', $what, $update['created_at']));
             }
 
-            $operation = $this->operations->start('site.undo-update', $name, ['update' => $update['id'], 'restore' => $restore], $channel, $requestedBy);
+            [$back, $forward] = $this->undoFiles($name, $update);
+            $operation = $this->operations->start('site.undo', $name, ['undoes' => $update['id'], 'kind' => $update['kind'], 'restore' => $restore], $channel, $requestedBy);
             $step = $this->stepper($operation, $say);
-            $directory = $this->paths->site($name);
-            $now = $this->paths->backups($name).'/undo-'.date('Ymd-His').'/files';
-            $paths = ['composer.json', 'composer.lock', ...$update['skeleton_paths']];
             $current = null;
 
             try {
                 $step('Backing it up, as it is');
                 $current = $this->sites->backup($name, $project, 'before-undo');
                 $operation->line('Backed up to '.$current);
-                $this->filesystem->mkdir($now, 0o700);
-                SkeletonFiles::save($directory, $paths, $now);
 
-                $step('Putting back its files and image from before the update');
-                SkeletonFiles::restore($directory, $paths, $update['saved_files']);
+                $step(\sprintf('Putting back its files and image from before the %s', $what));
+                $back();
                 $this->images->tag($update['image_before'], $image);
                 $this->compose->up($project, $operation->output(...));
 
                 if ($restore) {
-                    $step('Restoring its backup from before the update');
+                    $step(\sprintf('Restoring its backup from before the %s', $what));
                     $this->restore($project, $update['backup'], $operation);
                 }
 
@@ -125,7 +206,7 @@ final readonly class SiteUpdater
                 $step('Putting it back as it was before the undo');
 
                 try {
-                    SkeletonFiles::restore($directory, $paths, $now);
+                    $forward();
                     $this->images->tag($update['image_after'], $image);
                     $this->compose->up($project, $operation->output(...));
 
@@ -136,17 +217,24 @@ final readonly class SiteUpdater
                     $this->check($project, $site);
                 } catch (\Throwable $failure) {
                     $this->registry->setStatus($name, Site::FAILED);
-                    $operation->fail(\sprintf('Undoing the update failed (%s), and putting the site back failed too (%s). Its backups: %s, %s.', $e->getMessage(), $failure->getMessage(), $update['backup'], $current ?? '-'));
+                    $operation->fail(\sprintf('Undoing the %s failed (%s), and putting the site back failed too (%s). Its backups: %s, %s.', $what, $e->getMessage(), $failure->getMessage(), $update['backup'], $current ?? '-'));
 
                     throw new UpdateFailed($operation->id, false, $e->getMessage(), $e);
                 }
 
-                $operation->fail('Undoing the update failed, and the site is as it was before: '.$e->getMessage());
+                $operation->fail(\sprintf('Undoing the %s failed, and the site is as it was before: %s', $what, $e->getMessage()));
 
                 throw new UpdateFailed($operation->id, true, $e->getMessage(), $e);
             }
 
             $this->updates->markUndone($update['id']);
+
+            if (SiteUpdates::DEPLOY === $update['kind'] && null !== $update['commit_before'] && null !== $update['commit_after']) {
+                // It runs the commit before; the undone one isn't deployed again by the agent.
+                $this->repositories->deployed($name, $update['commit_before']);
+                $this->repositories->failed($name, $update['commit_after']);
+            }
+
             $operation->succeed();
         });
     }
@@ -159,6 +247,10 @@ final readonly class SiteUpdater
         $name = $plan->site;
         $site = $this->running($name);
         $directory = $this->paths->site($name);
+
+        if (null !== $this->repositories->of($name)) {
+            throw new \DomainException(\sprintf('"%s" follows a Git repository: its updates are made there (composer update, committed), then deployed with "site:deploy".', $name));
+        }
 
         if (UpdatePlanner::siteFiles($directory) !== $plan->siteFiles) {
             throw new \DomainException('The site\'s composer.json or composer.lock changed since the update was planned: plan it again.');
@@ -174,9 +266,6 @@ final readonly class SiteUpdater
 
         $operation = $this->operations->start('site.update', $name, ['from' => $plan->quireFrom(), 'to' => $plan->quireTo(), 'packages' => \count($plan->packages)], $channel, $requestedBy);
         $step = $this->stepper($operation, $say);
-        $project = $this->sites->projectOf($site);
-        $image = $this->compose->image($project, self::PHP);
-        $before = $this->images->id($image);
         $saved = $this->paths->backups($name).'/update-'.date('Ymd-His').'/files';
         $skeletonPaths = array_column($plan->appliedSkeletonFiles(), 'path');
         $paths = ['composer.json', 'composer.lock', ...$skeletonPaths];
@@ -185,40 +274,88 @@ final readonly class SiteUpdater
             $operation->line(\sprintf('   %s: %s → %s', $change['package'], $change['from'] ?? '(new)', $change['to'] ?? '(removed)'));
         }
 
+        $released = $this->release(
+            $site,
+            $operation,
+            $step,
+            'update',
+            function () use ($step, $saved, $directory, $paths, $plan): void {
+                $step('Keeping its files as they are, to put them back');
+                $this->filesystem->mkdir($saved, 0o700);
+                SkeletonFiles::save($directory, $paths, $saved);
+
+                $step('Changing its files');
+                $this->filesystem->dumpFile($directory.'/composer.json', $plan->composerJson);
+                $this->filesystem->dumpFile($directory.'/composer.lock', $plan->to->content);
+
+                if (null !== $plan->skeletonTarget) {
+                    SkeletonFiles::apply($directory, $plan->skeletonTarget, $plan->appliedSkeletonFiles());
+                }
+            },
+            static fn () => SkeletonFiles::restore($directory, $paths, $saved),
+        );
+
+        $this->updates->record([
+            ...$released,
+            'id' => $this->uuid(),
+            'site' => $name,
+            'operation_id' => $operation->id,
+            'kind' => SiteUpdates::UPDATE,
+            'quire_from' => $plan->quireFrom(),
+            'quire_to' => $plan->quireTo(),
+            'packages' => $plan->packages,
+            'saved_files' => $saved,
+            'skeleton_paths' => $skeletonPaths,
+            'commit_before' => null,
+            'commit_after' => null,
+        ]);
+        $operation->succeed();
+    }
+
+    /**
+     * Builds, backs up, swaps and checks a new version of the site, whose files $change puts in place
+     * (and $revert puts back as they were): rolled back by itself if anything fails after the swap.
+     *
+     * @param \Closure(string): void $step
+     * @param \Closure(): void       $change
+     * @param \Closure(): void       $revert
+     *
+     * @return array{image_before: string, image_after: string, backup: string, migrations_ran: ?bool}
+     */
+    private function release(Site $site, Operation $operation, \Closure $step, string $what, \Closure $change, \Closure $revert): array
+    {
+        $project = $this->sites->projectOf($site);
+        $image = $this->compose->image($project, self::PHP);
+        $before = $this->images->id($image);
+        $changed = false;
+
         try {
             if (null === $before) {
                 throw new \RuntimeException(\sprintf('The site\'s image "%s" isn\'t there: it can\'t be rolled back to.', $image));
             }
 
-            $step('Keeping its files as they are, to put them back');
-            $this->filesystem->mkdir($saved, 0o700);
-            SkeletonFiles::save($directory, $paths, $saved);
-
-            $step('Changing its files');
-            $this->filesystem->dumpFile($directory.'/composer.json', $plan->composerJson);
-            $this->filesystem->dumpFile($directory.'/composer.lock', $plan->to->content);
-
-            if (null !== $plan->skeletonTarget) {
-                SkeletonFiles::apply($directory, $plan->skeletonTarget, $plan->appliedSkeletonFiles());
-            }
+            $changed = true;
+            $change();
 
             $step('Checking and building the new version (a few minutes; it keeps running meanwhile)');
             $this->compose->build($project, $operation->output(...));
         } catch (\Throwable $e) {
-            SkeletonFiles::restore($directory, $paths, $saved);
+            if ($changed) {
+                $revert();
+            }
 
             // Back to the image it runs, whatever the build left under its name.
             if (null !== $before) {
                 $this->images->tag($before, $image);
             }
 
-            $operation->fail('The update was stopped before the site was touched: '.$e->getMessage());
+            $operation->fail(\sprintf('The %s was stopped before the site was touched: %s', $what, $e->getMessage()));
 
             throw new UpdateFailed($operation->id, true, $e->getMessage(), $e);
         }
 
         $after = $this->images->id($image) ?? throw new \LogicException('The new image was just built.');
-        // A name for the image it ran, so nothing prunes it while the update can be undone.
+        // A name for the image it ran, so nothing prunes it while this can be undone.
         $this->images->tag($before, $this->withoutTag($image).':before-update');
         $backup = null;
         $migrationsBefore = null;
@@ -226,7 +363,7 @@ final readonly class SiteUpdater
 
         try {
             $step('Backing it up');
-            $backup = $this->sites->backup($name, $project, 'update');
+            $backup = $this->sites->backup($site->name, $project, $what);
             $operation->line('Backed up to '.$backup);
             $migrationsBefore = $this->executedMigrations($project);
 
@@ -239,38 +376,29 @@ final readonly class SiteUpdater
         } catch (\Throwable $e) {
             $operation->line('!! '.$e->getMessage());
             $step('Rolling it back');
-            $this->rollBack($project, $site, $image, $before, $saved, $paths, $backup, $migrationsBefore, $operation, $e);
+            $this->rollBack($project, $site, $what, $image, $before, $revert, $backup, $migrationsBefore, $operation, $e);
         }
 
-        $this->updates->record([
-            'id' => $this->uuid(),
-            'site' => $name,
-            'operation_id' => $operation->id,
-            'quire_from' => $plan->quireFrom(),
-            'quire_to' => $plan->quireTo(),
-            'packages' => $plan->packages,
+        return [
             'image_before' => $before,
             'image_after' => $after,
-            'saved_files' => $saved,
-            'skeleton_paths' => $skeletonPaths,
             'backup' => $backup,
             'migrations_ran' => null === $migrationsBefore || null === $migrationsAfter ? null : $migrationsAfter !== $migrationsBefore,
-        ]);
-        $operation->succeed();
+        ];
     }
 
     /**
-     * The update failed once started: the files and the image it had, and its backup when migrations
-     * may have changed its database. Always throws.
+     * It failed once started: the files and the image it had, and its backup when migrations may have
+     * changed its database. Always throws.
      *
-     * @param list<string> $paths
+     * @param \Closure(): void $revert
      */
-    private function rollBack(SiteProject $project, Site $site, string $image, string $before, string $saved, array $paths, ?string $backup, ?int $migrationsBefore, Operation $operation, \Throwable $cause): never
+    private function rollBack(SiteProject $project, Site $site, string $what, string $image, string $before, \Closure $revert, ?string $backup, ?int $migrationsBefore, Operation $operation, \Throwable $cause): never
     {
         try {
             // Whether the new version's migrations ran, asked of it while it may still answer.
             $migrationsNow = null === $migrationsBefore ? null : $this->executedMigrations($project);
-            SkeletonFiles::restore($this->paths->site($site->name), $paths, $saved);
+            $revert();
             $this->images->tag($before, $image);
             $this->compose->up($project, $operation->output(...));
 
@@ -282,14 +410,47 @@ final readonly class SiteUpdater
             $this->check($project, $site);
         } catch (\Throwable $failure) {
             $this->registry->setStatus($site->name, Site::FAILED);
-            $operation->fail(\sprintf('The update failed (%s), and rolling it back failed too (%s). Its backup: %s.', $cause->getMessage(), $failure->getMessage(), $backup ?? '-'));
+            $operation->fail(\sprintf('The %s failed (%s), and rolling it back failed too (%s). Its backup: %s.', $what, $cause->getMessage(), $failure->getMessage(), $backup ?? '-'));
 
             throw new UpdateFailed($operation->id, false, $cause->getMessage(), $cause);
         }
 
-        $operation->fail('The update failed and was rolled back: '.$cause->getMessage());
+        $operation->fail(\sprintf('The %s failed and was rolled back: %s', $what, $cause->getMessage()));
 
         throw new UpdateFailed($operation->id, true, $cause->getMessage(), $cause);
+    }
+
+    /**
+     * How to put an update's or a deploy's files back, and forward again (if undoing it fails).
+     *
+     * @param array{kind: string, saved_files: string, skeleton_paths: list<string>, commit_before: ?string, commit_after: ?string} $update
+     *
+     * @return array{\Closure(): void, \Closure(): void}
+     */
+    private function undoFiles(SiteName $name, array $update): array
+    {
+        $directory = $this->paths->site($name);
+
+        if (SiteUpdates::DEPLOY === $update['kind']) {
+            $git = $this->repositories->of($name) ?? throw new \DomainException('The site doesn\'t follow a Git repository any more.');
+            $before = $update['commit_before'] ?? throw new \LogicException('A deploy has its commits.');
+            $after = $update['commit_after'] ?? throw new \LogicException('A deploy has its commits.');
+
+            return [
+                fn () => $this->git->moveTo($git['repository'], $name, $directory, $before),
+                fn () => $this->git->moveTo($git['repository'], $name, $directory, $after),
+            ];
+        }
+
+        $paths = ['composer.json', 'composer.lock', ...$update['skeleton_paths']];
+        $now = $this->paths->backups($name).'/undo-'.date('Ymd-His').'/files';
+        $this->filesystem->mkdir($now, 0o700);
+        SkeletonFiles::save($directory, $paths, $now);
+
+        return [
+            static fn () => SkeletonFiles::restore($directory, $paths, $update['saved_files']),
+            static fn () => SkeletonFiles::restore($directory, $paths, $now),
+        ];
     }
 
     /**

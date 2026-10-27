@@ -52,12 +52,16 @@ services:
       QUIRE_SERVER_MAILER_DSN: ${QUIRE_SERVER_MAILER_DSN:-}
       QUIRE_SERVER_QUIRE_VERSION: ${QUIRE_SERVER_QUIRE_VERSION:-^0.1}
       QUIRE_SERVER_ROOT: ${QUIRE_SERVER_ROOT:-/srv/quire}
+      # Git mode sites that deploy by themselves: how often their branch is asked for new commits
+      QUIRE_SERVER_GIT_POLL_SECONDS: ${QUIRE_SERVER_GIT_POLL_SECONDS:-300}
       DOCKER_HOST: tcp://docker-proxy:2375
     volumes:
       # The same paths inside as on the host: Compose resolves sites' paths for the Docker daemon.
       - ${QUIRE_SERVER_ROOT:-/srv/quire}/sites:${QUIRE_SERVER_ROOT:-/srv/quire}/sites
       - ${QUIRE_SERVER_ROOT:-/srv/quire}/backups:${QUIRE_SERVER_ROOT:-/srv/quire}/backups
       - ${QUIRE_SERVER_ROOT:-/srv/quire}/server/domains:${QUIRE_SERVER_ROOT:-/srv/quire}/server/domains
+      # Git mode sites' deploy keys: only the agent sees them
+      - ${QUIRE_SERVER_ROOT:-/srv/quire}/server/keys:${QUIRE_SERVER_ROOT:-/srv/quire}/server/keys
     networks:
       - quire-data
       - quire-docker

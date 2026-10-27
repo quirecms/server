@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Quire\Server\Console;
 
 use Quire\Server\FrontDoor\DomainDirectory;
+use Quire\Server\Git\GitPoller;
 use Quire\Server\Operation\OperationLog;
 use Quire\Server\Registry\SiteRegistry;
 use Symfony\Component\Console\Attribute\AsCommand;
@@ -18,7 +19,8 @@ use Symfony\Component\Console\Style\SymfonyStyle;
     help: <<<'HELP'
         Runs as the agent container's main process. When it starts, operations a crash or a restart
         interrupted are marked failed. Then, every minute, the front door's list of domains is made to
-        match the sites that run, and a heartbeat file says the agent is alive (for Docker's health check).
+        match the sites that run, new commits of Git mode sites that poll are deployed, and a heartbeat
+        file says the agent is alive (for Docker's health check).
         HELP,
 )]
 final class AgentCommand
@@ -31,6 +33,7 @@ final class AgentCommand
         private readonly SiteRegistry $registry,
         private readonly OperationLog $operations,
         private readonly DomainDirectory $frontDoor,
+        private readonly GitPoller $poller,
     ) {
     }
 
@@ -64,6 +67,8 @@ final class AgentCommand
                 $io->writeln(\sprintf('Front door: closed %s', $domain));
             }
 
+            touch(self::HEARTBEAT);
+            $this->poller->poll(static fn (string $line) => $io->writeln('Git: '.$line));
             touch(self::HEARTBEAT);
 
             for ($slept = 0; !$once && !$this->stopping && $slept < max(5, $interval); ++$slept) {
