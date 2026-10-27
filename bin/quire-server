@@ -1,0 +1,39 @@
+#!/bin/sh
+# quire-server: manage this machine's Quire sites. Installed as /usr/local/bin/quire-server.
+#
+#   quire-server site:add jane --domain=jane.example --admin-email=jane@example.com
+#   quire-server site:list | site:remove jane | operations
+#   quire-server up | down | logs | ps          (the server itself)
+#
+# Runs as root (it acts on Docker); everything it does is recorded with who asked.
+set -eu
+
+root=${QUIRE_SERVER_ROOT:-/srv/quire}
+compose() {
+	docker compose --project-directory "$root/server" --env-file "$root/server/server.env" "$@"
+}
+
+if [ "$(id -u)" -ne 0 ]; then
+	echo 'quire-server must run as root, e.g. with sudo.' >&2
+	exit 1
+fi
+
+case "${1:-help}" in
+	up) shift; compose up --detach --wait "$@" ;;
+	down) shift; compose down "$@" ;;
+	logs) shift; compose logs "$@" ;;
+	ps) shift; compose ps "$@" ;;
+	help|-h|--help) compose exec -T agent bin/console list server ;;
+	*)
+		command=$1
+		shift
+		case "$command" in
+			*[!a-z:-]*) echo "Unknown command: $command" >&2; exit 1 ;;
+		esac
+		# A terminal when there is one (questions, colours).
+		tty=-T
+		if [ -t 0 ] && [ -t 1 ]; then tty=; fi
+		exec docker compose --project-directory "$root/server" --env-file "$root/server/server.env" \
+			exec $tty -e "QUIRE_SERVER_REQUESTED_BY=${SUDO_USER:-$(id -un)}" agent bin/console "server:$command" "$@"
+		;;
+esac

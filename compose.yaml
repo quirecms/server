@@ -1,0 +1,142 @@
+# Quire Server: the front door, the agent, the docker-proxy and PostgreSQL. Sites are Compose projects
+# of their own, in /srv/quire/sites, joined to these networks. Run it with "quire-server", or:
+#
+#     docker compose --env-file server.env up --wait
+#
+# See README.md.
+name: quire-server
+
+services:
+  # The only part visitors reach: certificates and routing to sites by domain.
+  front:
+    image: caddy:2.11.7-alpine
+    restart: unless-stopped
+    ports:
+      - {name: http, target: 80, published: 80, protocol: tcp}
+      - {name: https, target: 443, published: 443, protocol: tcp}
+      - {name: http3, target: 443, published: 443, protocol: udp}
+    environment:
+      # Caddy's "email" option, only when an email is set (an empty one is invalid)
+      QUIRE_SERVER_ACME_EMAIL_OPTION: ${QUIRE_SERVER_ACME_EMAIL:+email ${QUIRE_SERVER_ACME_EMAIL}}
+      # Empty for Let's Encrypt; "local_certs" for a test server (Caddy's own certificate authority)
+      QUIRE_SERVER_TLS_GLOBAL: ${QUIRE_SERVER_TLS_GLOBAL:-}
+    volumes:
+      - ./front/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ${QUIRE_SERVER_ROOT:-/srv/quire}/server/domains:/srv/quire/server/domains:ro
+      - front_data:/data
+      - front_config:/config
+    networks:
+      - quire-edge
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 512m
+    pids_limit: 1024
+
+  # The only part that can act on Docker (through the docker-proxy): adds and removes sites, keeps the
+  # front door's domains in line. It has no network listener.
+  agent:
+    build: .
+    image: quire-server-agent
+    restart: unless-stopped
+    depends_on:
+      database: {condition: service_healthy}
+      docker-proxy: {condition: service_started}
+    environment:
+      APP_SECRET: ${QUIRE_SERVER_APP_SECRET:?Set QUIRE_SERVER_APP_SECRET in server.env}
+      DATABASE_URL: postgresql://quire_server:${QUIRE_SERVER_DATABASE_PASSWORD:?Set QUIRE_SERVER_DATABASE_PASSWORD in server.env}@quire-database:5432/quire_server?serverVersion=18&charset=utf8
+      QUIRE_SERVER_POSTGRES_ADMIN_URL: postgresql://postgres:${QUIRE_SERVER_POSTGRES_PASSWORD:?Set QUIRE_SERVER_POSTGRES_PASSWORD in server.env}@quire-database:5432/postgres?serverVersion=18&charset=utf8
+      QUIRE_SERVER_MAILER_DSN: ${QUIRE_SERVER_MAILER_DSN:-}
+      QUIRE_SERVER_QUIRE_VERSION: ${QUIRE_SERVER_QUIRE_VERSION:-^0.1}
+      QUIRE_SERVER_ROOT: ${QUIRE_SERVER_ROOT:-/srv/quire}
+      DOCKER_HOST: tcp://docker-proxy:2375
+    volumes:
+      # The same paths inside as on the host: Compose resolves sites' paths for the Docker daemon.
+      - ${QUIRE_SERVER_ROOT:-/srv/quire}/sites:${QUIRE_SERVER_ROOT:-/srv/quire}/sites
+      - ${QUIRE_SERVER_ROOT:-/srv/quire}/backups:${QUIRE_SERVER_ROOT:-/srv/quire}/backups
+      - ${QUIRE_SERVER_ROOT:-/srv/quire}/server/domains:${QUIRE_SERVER_ROOT:-/srv/quire}/server/domains
+    networks:
+      - quire-data
+      - quire-docker
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 1g
+    pids_limit: 1024
+
+  # The Docker API, limited to what the agent needs: no swarm, secrets, configs, plugins, nodes,
+  # services, auth or distribution. Only the agent can reach it, on a network without a way out.
+  docker-proxy:
+    image: tecnativa/docker-socket-proxy:v0.5.0
+    restart: unless-stopped
+    environment:
+      CONTAINERS: 1
+      IMAGES: 1
+      NETWORKS: 1
+      VOLUMES: 1
+      EXEC: 1
+      BUILD: 1
+      SESSION: 1
+      GRPC: 1
+      INFO: 1
+      VERSION: 1
+      EVENTS: 1
+      PING: 1
+      POST: 1
+      ALLOW_START: 1
+      ALLOW_STOP: 1
+      ALLOW_RESTARTS: 1
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - quire-docker
+    read_only: true
+    tmpfs: [/run, /tmp]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 128m
+
+  # The server's PostgreSQL: the registry's database, and a database per site.
+  database:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${QUIRE_SERVER_POSTGRES_PASSWORD:?Set QUIRE_SERVER_POSTGRES_PASSWORD in server.env}
+      POSTGRES_DB: postgres
+      QUIRE_SERVER_DATABASE_PASSWORD: ${QUIRE_SERVER_DATABASE_PASSWORD:?Set QUIRE_SERVER_DATABASE_PASSWORD in server.env}
+      # SCRAM only: no password travels or is stored in a weaker form.
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256 --auth-local=scram-sha-256
+    volumes:
+      - ./database/init.sh:/docker-entrypoint-initdb.d/10-quire-server.sh:ro
+      - database_data:/var/lib/postgresql
+    networks:
+      quire-data:
+        aliases: [quire-database]
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres", "-d", "postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    security_opt: [no-new-privileges:true]
+    shm_size: 256m
+
+networks:
+  # The front door and sites' web containers
+  quire-edge:
+    name: quire-edge
+  # PostgreSQL, sites and the agent
+  quire-data:
+    name: quire-data
+  # The agent and the docker-proxy, without a route out
+  quire-docker:
+    name: quire-docker
+    internal: true
+
+volumes:
+  front_data:
+  front_config:
+  database_data:
