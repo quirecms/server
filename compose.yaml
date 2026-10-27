@@ -22,6 +22,7 @@ services:
       QUIRE_SERVER_TLS_GLOBAL: ${QUIRE_SERVER_TLS_GLOBAL:-}
     volumes:
       - ./front/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./front/pages:/etc/caddy/pages:ro
       - ${QUIRE_SERVER_ROOT:-/srv/quire}/server/domains:/srv/quire/server/domains:ro
       - front_data:/data
       - front_config:/config

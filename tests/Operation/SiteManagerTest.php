@@ -107,7 +107,8 @@ final class SiteManagerTest extends RegistryTestCase
 
         // Composer never runs the skeleton's code; the policy is checked before building and starting.
         self::assertSame(['composer', 'create-project', 'quire/skeleton', $this->paths->site($this->name), '^0.1', '--no-install', '--no-scripts', '--no-plugins', '--no-interaction', '--no-progress', '--no-ansi'], $this->commands[0]);
-        self::assertSame(['config', 'build', 'config', 'up', 'exec', 'exec'], array_map(static fn (array $command): string => $command[8], \array_slice($this->commands, 1)));
+        self::assertSame(['config', 'build', 'config', 'up', 'exec', 'exec', 'cp'], array_map(static fn (array $command): string => $command[8], \array_slice($this->commands, 1)));
+        self::assertFileExists($this->paths->site($this->name).'/composer.lock', 'The versions its image was built with, recorded in its folder.');
 
         $env = (string) file_get_contents($this->paths->site($this->name).'/prod.env');
         self::assertSame('0600', substr(\sprintf('%o', fileperms($this->paths->site($this->name).'/prod.env')), -4));
@@ -251,7 +252,8 @@ final class SiteManagerTest extends RegistryTestCase
         self::assertSame(['jane.example', 'www.jane.example'], array_map(static fn (Domain $domain): string => $domain->value, $site->domains), 'From its SERVER_NAME.');
         self::assertSame(['Recording the site', 'Backing it up, as it is', 'Changing its settings (a copy of them is kept)', 'Checking and building it (a few minutes; it keeps running meanwhile)', 'Moving it behind the front door (a few seconds offline)', 'Opening it to visitors'], $said);
         // Backed up before anything changes; built before it's stopped; the policy checked before both.
-        self::assertSame(['exec', 'cp', 'exec', 'config', 'build', 'config', 'up'], array_map(static fn (array $command): string => $command[8] ?? '', $this->commands));
+        self::assertSame(['exec', 'cp', 'exec', 'config', 'build', 'config', 'up', 'cp'], array_map(static fn (array $command): string => $command[8] ?? '', $this->commands));
+        self::assertFileExists($this->paths->site($this->name).'/composer.lock', 'Its versions recorded.');
         $backups = glob($this->paths->backups($this->name).'/before-server-*.tar');
         self::assertCount(1, false === $backups ? [] : $backups, 'Backed up as it was.');
         self::assertSame([$this->name->value, $this->name->value], array_values($this->frontDoor->all()));
@@ -404,7 +406,7 @@ final class SiteManagerTest extends RegistryTestCase
             }
 
             #[\Override]
-            public function run(array $command, array $env = [], ?string $directory = null, float $timeout = 600, ?\Closure $output = null, ?string $input = null): ProcessResult
+            public function run(array $command, array $env = [], ?string $directory = null, float $timeout = 600, ?\Closure $output = null, ?string $input = null, ?string $inputFile = null): ProcessResult
             {
                 $result = $this->test->respond($command, $env);
 

@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<meta http-equiv="refresh" content="15">
+<title>Back in a moment</title>
+<style>
+	:root { color-scheme: light dark; --bg: #f7f6f2; --fg: #1f2421; --muted: #5d655f; --accent: #2f6f4f; }
+	@media (prefers-color-scheme: dark) { :root { --bg: #161917; --fg: #ecefea; --muted: #a7afa8; --accent: #7cc49d; } }
+	html, body { height: 100%; margin: 0; }
+	body { display: grid; place-items: center; background: var(--bg); color: var(--fg); font: 1rem/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; padding: 1rem; box-sizing: border-box; }
+	main { max-width: 28rem; text-align: center; }
+	h1 { font-size: 1.5rem; margin: 0 0 .5rem; }
+	p { margin: 0; color: var(--muted); }
+	.dot { display: inline-block; width: .6rem; height: .6rem; border-radius: 50%; background: var(--accent); margin-bottom: 1rem; animation: pulse 1.6s ease-in-out infinite; }
+	@keyframes pulse { 50% { opacity: .3; } }
+	@media (prefers-reduced-motion: reduce) { .dot { animation: none; } }
+</style>
+</head>
+<body>
+<main>
+	<span class="dot" aria-hidden="true"></span>
+	<h1>Back in a moment</h1>
+	<p>This site is being updated or restarted. This page reloads by itself.</p>
+</main>
+</body>
+</html>

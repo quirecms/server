@@ -17,6 +17,7 @@ services:
             - '../src/Docker/{PolicyContext,SiteProject,PolicyViolation}.php'
             - '../src/Operation/{Operation,SiteRequest,AddedSite}.php'
             - '../src/Process/{ProcessResult,ProcessFailed}.php'
+            - '../src/Update/{Lock,UpdatePlan,SkeletonFiles,UpdateFailed}.php'
 
     Quire\Server\Process\ProcessRunner: '@Quire\Server\Process\SymfonyProcessRunner'
 
@@ -24,6 +25,10 @@ services:
         arguments: ['%quire_server.root%']
 
     Quire\Server\Docker\Compose:
+        arguments:
+            $dockerHost: '%env(DOCKER_HOST)%'
+
+    Quire\Server\Docker\Images:
         arguments:
             $dockerHost: '%env(DOCKER_HOST)%'
 

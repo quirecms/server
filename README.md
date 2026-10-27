@@ -2,7 +2,7 @@
 
 Many Quire sites on one machine, each with its own Quire version, database and domains, behind one front door that holds their certificates. Add a site with one command; nothing else on the server restarts.
 
-> **Status: early.** The front door, the agent and its commands, the installer, and adopting sites installed before. Still to come: updates, Git mode, the web console with passkeys, backups off the server, and one-click images. Until the first release of Quire Server, install it from a checkout (below).
+> **Status: early.** The front door, the agent and its commands, the installer, adopting sites installed before, and updating sites. Still to come: Git mode, signed releases and the server's own updates, the web console with passkeys, backups off the server, and one-click images. Until the first release of Quire Server, install it from a checkout (below).
 
 ## How it works
 
@@ -61,6 +61,9 @@ If anything fails, it's put back as it was, ports included. Its domains are thos
 quire-server site:add jane --domain=jane.example --domain=www.jane.example --admin-email=jane@example.com --title="Jane's notes" [--invite]
 quire-server site:adopt demo            # a site installed before the server (see above)
 quire-server site:list
+quire-server site:update jane [--to=0.2.0] [--dry-run]   # see "Updating a site"
+quire-server site:undo-update jane      # its last update, within a week
+quire-server site:audit jane            # known vulnerabilities in its packages
 quire-server site:remove jane          # asks you to type its name; backs it up first
 quire-server operations [--site=jane]  # what was done, by whom, and how it ended
 quire-server operations <id>           # an operation's log
@@ -72,6 +75,27 @@ quire-server up | down | ps | logs     # the server itself
 - **Sites that keep their own PostgreSQL** (adopted ones) have it removed with them; the server's PostgreSQL holds the others' databases.
 - **Removing** backs the site up to `/srv/quire/backups/<site>/final-<time>.tar`, closes its domains, removes its containers, volumes and database, and moves its folder to `/srv/quire/sites/.removed/`. A site that can't start can't be backed up: `--skip-backup` removes it anyway, and its data is gone.
 - Point each domain's DNS at the server. Its certificate comes at the first visit (from Let's Encrypt).
+
+## Updating a site
+
+`quire-server site:update jane` first shows what would change, and changes nothing until you agree:
+
+- **Its packages:** Quire, its extensions and everything else, to the newest versions its `composer.json` allows. Symfony stays on its minor version, as Symfony Flex would keep it. `--to=0.2.0` moves to another Quire release, e.g. a new minor version.
+- **Known vulnerabilities** the update fixes, and any that remain (from Packagist's advisories). `quire-server site:audit jane` lists a site's vulnerabilities at any time.
+- **The files the site got from the skeleton** (`Dockerfile`, Compose files, FrankenPHP's configuration), when Quire's version changes. A file the site never edited follows the new version. A file it edited that the new version changes too stops the update: merge it by hand, or keep the site's own with `--keep-edited-files`.
+
+Then the update:
+
+1. **Is worked out without running any package's code.** On a copy of the site's `composer.json` and `composer.lock`, Composer only resolves versions: no scripts, no plugins. The packages are installed in the site's image build, in Docker.
+2. **Is built while the site keeps running** on its current image. A failed build changes nothing.
+3. **Backs the site up,** to `/srv/quire/backups/<site>/update-<time>.tar`.
+4. **Starts the new version.** The site is offline for a few seconds; the front door shows visitors a "Back in a moment" page (503, `Retry-After`), so search engines come back.
+5. **Checks it:** its health check, home page and sign-in page.
+6. **Rolls back by itself if anything fails:** the files and image it had, and its backup restored if the new version's migrations ran (or that can't be known, for sites older than Quire 0.1.1). If even that fails, the site is marked failed, and the operation's log says where its backup is.
+
+`quire-server site:undo-update jane` undoes the last update within a week. If that update ran no migrations, only the code goes back. Otherwise its backup from before the update is restored too, and changes made since are lost; you're asked first.
+
+A site's versions are recorded in its folder's `composer.lock` (taken from its image when it's added or adopted). Its builds install exactly those versions; only updates change them.
 
 ## Security
 
