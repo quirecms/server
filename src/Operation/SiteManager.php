@@ -10,6 +10,10 @@ use Quire\Server\Docker\PolicyContext;
 use Quire\Server\Docker\SiteProject;
 use Quire\Server\Docker\SkeletonInstaller;
 use Quire\Server\FrontDoor\DomainDirectory;
+use Quire\Server\Git\DeployKeys;
+use Quire\Server\Git\Git;
+use Quire\Server\Git\Repository;
+use Quire\Server\Registry\SiteGit;
 use Quire\Server\Registry\SiteLock;
 use Quire\Server\Registry\SiteRegistry;
 use Quire\Server\Site\Domain;
@@ -39,6 +43,9 @@ final readonly class SiteManager
         private Compose $compose,
         private DomainDirectory $frontDoor,
         private ServerPaths $paths,
+        private Git $git,
+        private SiteGit $repositories,
+        private DeployKeys $keys,
         private string $mailerDsn = '',
         private Filesystem $filesystem = new Filesystem(),
     ) {
@@ -55,7 +62,9 @@ final readonly class SiteManager
                 'title' => $request->title,
                 'admin_email' => $request->adminEmail,
                 'invite' => $request->invite,
-                'quire_version' => $request->quireVersion,
+                'quire_version' => $request->repository instanceof Repository ? null : $request->quireVersion,
+                'repository' => $request->repository?->url,
+                'branch' => $request->repository?->branch,
             ], $channel, $requestedBy);
             $directory = $this->paths->site($request->name);
             $undo = [];
@@ -71,14 +80,31 @@ final readonly class SiteManager
                     throw new \DomainException(\sprintf('The folder "%s" exists already: move it away first.', $directory));
                 }
 
+                if ($request->repository instanceof Repository && $request->repository->overSsh() && !$this->keys->exists($request->name)) {
+                    throw new \DomainException(\sprintf('The site has no deploy key yet: create it with "quire-server site:key %s", add it to the repository as a read-only deploy key, then add the site.', $request->name));
+                }
+
                 $step('Recording the site');
                 $this->registry->add($request->name, $request->domains, Site::SHARED_DATABASE, $request->name->value);
                 // Undone, it's removed: its name and domains are free to try again; its history stays.
                 $undo[] = fn () => $this->registry->setStatus($request->name, Site::REMOVED);
 
-                $step(\sprintf('Getting Quire %s', $request->quireVersion));
-                $undo[] = fn () => $this->archive($request->name, $directory);
-                $this->skeleton->create($directory, $request->quireVersion, $operation->output(...));
+                if ($request->repository instanceof Repository) {
+                    $this->repositories->follow($request->name, $request->repository, $request->poll);
+                    $undo[] = fn () => $this->repositories->forget($request->name);
+
+                    $step(\sprintf('Getting its repository (%s, branch %s)', $request->repository->url, $request->repository->branch));
+                    $undo[] = fn () => $this->archive($request->name, $directory);
+                    $this->git->clone($request->repository, $request->name, $directory, $operation->output(...));
+
+                    if (!is_file($directory.'/composer.lock')) {
+                        $operation->line('Note: the repository has no composer.lock: each build resolves the versions anew. Commit one to build the same versions every time.');
+                    }
+                } else {
+                    $step(\sprintf('Getting Quire %s', $request->quireVersion));
+                    $undo[] = fn () => $this->archive($request->name, $directory);
+                    $this->skeleton->create($directory, $request->quireVersion, $operation->output(...));
+                }
 
                 $step('Creating its database');
                 $databasePassword = $this->databases->create($request->name);
@@ -107,7 +133,13 @@ final readonly class SiteManager
 
                 $step('Installing it');
                 $adminPassword = $this->install($project, $request, $operation);
-                $this->pinComposerLock($request->name, $project);
+
+                if ($request->repository instanceof Repository) {
+                    // What it runs of its branch; a site in Git mode keeps its repository's lock.
+                    $this->repositories->deployed($request->name, $this->git->head($request->repository, $request->name, $directory));
+                } else {
+                    $this->pinComposerLock($request->name, $project);
+                }
 
                 $step('Opening it to visitors');
                 // Running first: the agent's rounds open the domains of running sites, and close others.
@@ -335,6 +367,9 @@ final readonly class SiteManager
 
                 $step('Archiving its folder');
                 $this->archive($name, $directory);
+                // Its deploy key can read its repository: gone with it (remove it from the repository too).
+                $this->keys->remove($name);
+                $this->repositories->forget($name);
                 $this->registry->setStatus($name, Site::REMOVED);
                 $operation->succeed();
 

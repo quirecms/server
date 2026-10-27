@@ -151,10 +151,10 @@ install_files() {
 
 	say "Putting the server in $root/server"
 	from=$(fetch)
-	mkdir -p "$root/server/domains" "$root/sites" "$root/backups"
+	mkdir -p "$root/server/domains" "$root/server/keys" "$root/sites" "$root/backups"
 	chmod 755 "$root" "$root/server" "$root/server/domains"
-	# Sites' folders hold their secrets; backups hold their data.
-	chmod 700 "$root/sites" "$root/backups"
+	# Sites' folders hold their secrets; backups hold their data; keys read Git mode sites' repositories.
+	chmod 700 "$root/sites" "$root/backups" "$root/server/keys"
 	tar -C "$from" --exclude=./vendor --exclude=./var --exclude=./tests --exclude=./.git -cf - . | tar -C "$root/server" -xf - --no-same-owner
 	if [ "$from" != "$source" ]; then rm -rf "$from"; fi
 	chown -R root:root "$root/server"

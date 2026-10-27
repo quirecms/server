@@ -17,6 +17,11 @@ final readonly class SiteUpdates
     public const string UNDONE = 'undone';
     public const string SUPERSEDED = 'superseded';
 
+    /** New packages (a managed site) */
+    public const string UPDATE = 'update';
+    /** A commit of its repository (Git mode) */
+    public const string DEPLOY = 'deploy';
+
     /** How long an update can be undone */
     public const string UNDO_WINDOW = '7 days';
 
@@ -27,7 +32,7 @@ final readonly class SiteUpdates
     }
 
     /**
-     * @param array{id: string, site: SiteName, operation_id: string, quire_from: ?string, quire_to: ?string, packages: list<array{package: string, from: ?string, to: ?string}>, image_before: string, image_after: string, saved_files: string, skeleton_paths: list<string>, backup: string, migrations_ran: ?bool} $update
+     * @param array{id: string, site: SiteName, operation_id: string, kind: string, quire_from: ?string, quire_to: ?string, packages: list<array{package: string, from: ?string, to: ?string}>, image_before: string, image_after: string, saved_files: string, skeleton_paths: list<string>, backup: string, migrations_ran: ?bool, commit_before: ?string, commit_after: ?string} $update
      */
     public function record(array $update): void
     {
@@ -45,7 +50,7 @@ final readonly class SiteUpdates
     /**
      * The site's last update, while it can still be undone.
      *
-     * @return array{id: string, quire_from: ?string, quire_to: ?string, packages: list<array{package: string, from: ?string, to: ?string}>, image_before: string, image_after: string, saved_files: string, skeleton_paths: list<string>, backup: string, migrations_ran: ?bool, created_at: string}|null
+     * @return array{id: string, kind: string, quire_from: ?string, quire_to: ?string, packages: list<array{package: string, from: ?string, to: ?string}>, image_before: string, image_after: string, saved_files: string, skeleton_paths: list<string>, backup: string, migrations_ran: ?bool, commit_before: ?string, commit_after: ?string, created_at: string}|null
      */
     public function undoable(SiteName $site): ?array
     {
@@ -63,6 +68,7 @@ final readonly class SiteUpdates
 
         return [
             'id' => $this->text($row['id']),
+            'kind' => $this->text($row['kind']),
             'quire_from' => null === $row['quire_from'] ? null : $this->text($row['quire_from']),
             'quire_to' => null === $row['quire_to'] ? null : $this->text($row['quire_to']),
             'packages' => \is_array($packages) ? array_values(array_filter(array_map(static fn (mixed $change): ?array => \is_array($change) && \is_string($change['package'] ?? null)
@@ -74,6 +80,8 @@ final readonly class SiteUpdates
             'skeleton_paths' => \is_array($paths) ? array_values(array_filter($paths, \is_string(...))) : [],
             'backup' => $this->text($row['backup']),
             'migrations_ran' => null === $row['migrations_ran'] ? null : (bool) $row['migrations_ran'],
+            'commit_before' => null === $row['commit_before'] ? null : $this->text($row['commit_before']),
+            'commit_after' => null === $row['commit_after'] ? null : $this->text($row['commit_after']),
             'created_at' => $this->text($row['created_at']),
         ];
     }

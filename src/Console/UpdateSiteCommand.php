@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Quire\Server\Console;
 
+use Quire\Server\Registry\SiteGit;
 use Quire\Server\Site\SiteName;
 use Quire\Server\Update\SiteUpdater;
 use Quire\Server\Update\SkeletonFiles;
@@ -23,7 +24,7 @@ use Symfony\Component\Console\Style\SymfonyStyle;
         Shows what would change first (packages, known vulnerabilities fixed, the skeleton's files), then,
         once you agree: builds the new version while the site keeps running, backs the site up, starts
         the new version (a few seconds offline; the front door tells visitors) and checks it. If it
-        fails, it's rolled back by itself. Undo it within a week with "site:undo-update".
+        fails, it's rolled back by itself. Undo it within a week with "site:undo".
 
           <info>quire-server site:update jane</info>              newest versions its composer.json allows
           <info>quire-server site:update jane --to=0.2.0</info>   another Quire release (e.g. a new minor version)
@@ -39,6 +40,7 @@ final readonly class UpdateSiteCommand
     public function __construct(
         private UpdatePlanner $planner,
         private SiteUpdater $updater,
+        private SiteGit $repositories,
     ) {
     }
 
@@ -61,6 +63,12 @@ final readonly class UpdateSiteCommand
             $io->error($e->getMessage());
 
             return Command::INVALID;
+        }
+
+        if (!$dryRun && null !== $this->repositories->of($site)) {
+            $io->error(\sprintf('"%s" follows a Git repository: its updates are made there (composer update, committed), then deployed with "site:deploy". "--dry-run" shows what\'s available.', $site));
+
+            return Command::FAILURE;
         }
 
         $io->title(\sprintf('Updating the site "%s"', $site));
@@ -115,7 +123,7 @@ final readonly class UpdateSiteCommand
         $io->success(null !== $plan->quireTo() && $plan->quireFrom() !== $plan->quireTo()
             ? \sprintf('"%s" runs Quire %s.', $site, $plan->quireTo())
             : \sprintf('"%s" is up to date.', $site));
-        $io->writeln(\sprintf('Undo it within a week: quire-server site:undo-update %s', $site));
+        $io->writeln(\sprintf('Undo it within a week: quire-server site:undo %s', $site));
 
         return Command::SUCCESS;
     }

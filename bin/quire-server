@@ -3,7 +3,8 @@
 #
 #   quire-server site:add jane --domain=jane.example --admin-email=jane@example.com
 #   quire-server site:adopt demo                (a site installed before the server)
-#   quire-server site:update jane | site:undo-update jane | site:audit jane
+#   quire-server site:update jane | site:undo jane | site:audit jane
+#   quire-server site:key blog | site:deploy blog | site:poll blog on   (Git mode)
 #   quire-server site:list | site:remove jane | operations
 #   quire-server up | down | logs | ps          (the server itself)
 #

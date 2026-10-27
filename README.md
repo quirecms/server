@@ -2,7 +2,7 @@
 
 Many Quire sites on one machine, each with its own Quire version, database and domains, behind one front door that holds their certificates. Add a site with one command; nothing else on the server restarts.
 
-> **Status: early.** The front door, the agent and its commands, the installer, adopting sites installed before, and updating sites. Still to come: Git mode, signed releases and the server's own updates, the web console with passkeys, backups off the server, and one-click images. Until the first release of Quire Server, install it from a checkout (below).
+> **Status: early.** The front door, the agent and its commands, the installer, adopting sites installed before, updating sites, and sites deployed from a Git repository. Still to come: signed releases and the server's own updates, the web console with passkeys, backups off the server, and one-click images. Until the first release of Quire Server, install it from a checkout (below).
 
 ## How it works
 
@@ -62,8 +62,11 @@ quire-server site:add jane --domain=jane.example --domain=www.jane.example --adm
 quire-server site:adopt demo            # a site installed before the server (see above)
 quire-server site:list
 quire-server site:update jane [--to=0.2.0] [--dry-run]   # see "Updating a site"
-quire-server site:undo-update jane      # its last update, within a week
+quire-server site:undo jane             # its last update or deploy, within a week
 quire-server site:audit jane            # known vulnerabilities in its packages
+quire-server site:key blog              # Git mode: a site's deploy key (see "Sites from a Git repository")
+quire-server site:deploy blog [--commit=…]
+quire-server site:poll blog on|off      # Git mode: deploy new commits by itself
 quire-server site:remove jane          # asks you to type its name; backs it up first
 quire-server operations [--site=jane]  # what was done, by whom, and how it ended
 quire-server operations <id>           # an operation's log
@@ -93,9 +96,39 @@ Then the update:
 5. **Checks it:** its health check, home page and sign-in page.
 6. **Rolls back by itself if anything fails:** the files and image it had, and its backup restored if the new version's migrations ran (or that can't be known, for sites older than Quire 0.1.1). If even that fails, the site is marked failed, and the operation's log says where its backup is.
 
-`quire-server site:undo-update jane` undoes the last update within a week. If that update ran no migrations, only the code goes back. Otherwise its backup from before the update is restored too, and changes made since are lost; you're asked first.
+`quire-server site:undo jane` undoes the last update within a week. If that update ran no migrations, only the code goes back. Otherwise its backup from before the update is restored too, and changes made since are lost; you're asked first.
 
 A site's versions are recorded in its folder's `composer.lock` (taken from its image when it's added or adopted). Its builds install exactly those versions; only updates change them.
+
+## Sites from a Git repository
+
+For developers: a site can follow a branch of your repository (a project made from `quire/skeleton`) instead of being managed by the server. Its code, Quire's version and its extensions are then yours to change, in the repository; the server builds and runs what you commit.
+
+```bash
+quire-server site:key blog        # prints the site's public deploy key
+```
+
+Add that key to the repository as a **read-only deploy key** (GitHub: Settings → Deploy keys; GitLab: Settings → Repository → Deploy keys). It can read that one repository and nothing else. Then:
+
+```bash
+quire-server site:add blog --git=git@github.com:me/blog.git --branch=main --domain=blog.example --admin-email=me@example.com
+quire-server site:deploy blog            # the branch's newest commit (or --commit=<all 40 characters>)
+quire-server site:poll blog on           # or let the agent deploy new commits by itself
+```
+
+- **A deploy works like an update:** the commit is built while the site keeps running, the site is backed up, the new version started and checked, and rolled back by itself if it fails. `quire-server site:undo blog` goes back to the commit before, within a week.
+- **With polling on,** the agent asks the repository for new commits every 5 minutes (`QUIRE_SERVER_GIT_POLL_SECONDS` in `server.env`, at least 60). A commit that fails isn't tried again by itself, nor is one you undid: the next commit is.
+- **Public repositories** can be followed over HTTPS without a key (`--git=https://github.com/me/blog.git`).
+- **Updates are made in the repository:** run `composer update` there and commit `composer.lock`. `quire-server site:update blog --dry-run` shows what's available. Commit a `composer.lock`, or every build resolves the versions anew.
+- **Deploying on push** (a webhook) comes with the web console.
+
+What the server guards against, whoever controls the repository:
+
+- **Deploy keys stay out of reach.** They're in `/srv/quire/server/keys/<site>`, readable by root only, outside the site's folder, so they can never be committed or built into an image. They're deleted when the site is removed; remove them from the repository too.
+- **Git can't be used to reach the server.** Only SSH and HTTPS repositories are followed: no local paths, `file://` or `ext::` (which runs a command). No hooks or submodules run. Symbolic links are checked out as plain files, so a repository can't point the site's build at the server's files.
+- **Hosts are trusted on first use.** A host's key is trusted the first time the site reaches it, and only that key afterwards, per site.
+- **What a deploy builds is exactly the commit:** files the commit doesn't have are removed, the server's own files (`prod.env`, `compose.server.yaml`) are kept and never seen by Git, and only commits of the site's branch are deployed.
+- **Every commit's Compose configuration goes through the same check as any site's.** One asking for privileges, host mounts or published ports is refused before it's built.
 
 ## Security
 

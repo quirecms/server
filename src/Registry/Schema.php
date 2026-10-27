@@ -101,4 +101,31 @@ final class Schema
             "CREATE INDEX site_update_site ON {$s}.site_update (site, created_at DESC)",
         ];
     }
+
+    /**
+     * Sites that follow a Git repository (Git mode), and deploys among the site's updates.
+     *
+     * @return list<string>
+     */
+    public static function version3(string $schema = self::NAME): array
+    {
+        $s = '"'.str_replace('"', '""', $schema).'"';
+
+        return [
+            <<<SQL
+                CREATE TABLE {$s}.site_git (
+                    site text PRIMARY KEY REFERENCES {$s}.site (name) ON DELETE CASCADE,
+                    url text NOT NULL,
+                    branch text NOT NULL,
+                    deployed_commit text CHECK (deployed_commit ~ '^([0-9a-f]{40}|[0-9a-f]{64})$'),
+                    failed_commit text CHECK (failed_commit ~ '^([0-9a-f]{40}|[0-9a-f]{64})$'),
+                    poll boolean NOT NULL DEFAULT false,
+                    polled_at timestamptz
+                )
+                SQL,
+            "ALTER TABLE {$s}.site_update ADD COLUMN kind text NOT NULL DEFAULT 'update' CHECK (kind IN ('update', 'deploy'))",
+            "ALTER TABLE {$s}.site_update ADD COLUMN commit_before text",
+            "ALTER TABLE {$s}.site_update ADD COLUMN commit_after text",
+        ];
+    }
 }

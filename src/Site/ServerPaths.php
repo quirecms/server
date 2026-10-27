@@ -47,4 +47,12 @@ final readonly class ServerPaths
     {
         return $this->root.'/server/domains';
     }
+
+    /**
+     * A site's deploy key and the hosts it trusts (Git mode): outside its folder.
+     */
+    public function keys(SiteName $site): string
+    {
+        return $this->root.'/server/keys/'.$site->value;
+    }
 }

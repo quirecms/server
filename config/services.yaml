@@ -18,6 +18,7 @@ services:
             - '../src/Operation/{Operation,SiteRequest,AddedSite}.php'
             - '../src/Process/{ProcessResult,ProcessFailed}.php'
             - '../src/Update/{Lock,UpdatePlan,SkeletonFiles,UpdateFailed}.php'
+            - '../src/Git/Repository.php'
 
     Quire\Server\Process\ProcessRunner: '@Quire\Server\Process\SymfonyProcessRunner'
 
@@ -38,6 +39,10 @@ services:
     Quire\Server\Operation\SiteManager:
         arguments:
             $mailerDsn: '%env(QUIRE_SERVER_MAILER_DSN)%'
+
+    Quire\Server\Git\GitPoller:
+        arguments:
+            $seconds: '%env(int:QUIRE_SERVER_GIT_POLL_SECONDS)%'
 
     Quire\Server\Console\AddSiteCommand:
         arguments:

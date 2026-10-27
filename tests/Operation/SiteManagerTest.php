@@ -10,11 +10,14 @@ use Quire\Server\Docker\ComposePolicy;
 use Quire\Server\Docker\PolicyViolation;
 use Quire\Server\Docker\SkeletonInstaller;
 use Quire\Server\FrontDoor\DomainDirectory;
+use Quire\Server\Git\DeployKeys;
+use Quire\Server\Git\Git;
 use Quire\Server\Operation\OperationLog;
 use Quire\Server\Operation\SiteManager;
 use Quire\Server\Operation\SiteRequest;
 use Quire\Server\Process\ProcessResult;
 use Quire\Server\Process\ProcessRunner;
+use Quire\Server\Registry\SiteGit;
 use Quire\Server\Registry\SiteLock;
 use Quire\Server\Registry\SiteRegistry;
 use Quire\Server\Site\Domain;
@@ -428,6 +431,9 @@ final class SiteManagerTest extends RegistryTestCase
             new Compose($runner, new ComposePolicy(), 'tcp://docker-proxy:2375'),
             $this->frontDoor,
             $this->paths,
+            new Git($runner, $keys = new DeployKeys($runner, $this->paths)),
+            new SiteGit($this->connection, $this->schema),
+            $keys,
             'smtp://mailer:25',
         );
     }

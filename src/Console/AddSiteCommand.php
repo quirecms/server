@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Quire\Server\Console;
 
+use Quire\Server\Git\Repository;
 use Quire\Server\Operation\SiteManager;
 use Quire\Server\Operation\SiteRequest;
 use Quire\Server\Site\Domain;
@@ -27,6 +28,13 @@ use Symfony\Component\Console\Style\SymfonyStyle;
         With <comment>--invite</comment> the admin gets an email to choose their password (it needs an email server,
         QUIRE_SERVER_MAILER_DSN); otherwise a password is shown here once. If anything fails, what
         was done is undone, and the operation's log says why ("quire-server operations").
+
+        <comment>Git mode</comment>, for developers: the site is a branch of your repository (a project made from
+        quire/skeleton) instead of a fresh skeleton, and is deployed from it ("site:deploy", or by
+        itself with --poll). Over SSH, create its deploy key first ("site:key"):
+
+          <info>quire-server site:key blog</info>
+          <info>quire-server site:add blog --git=git@github.com:me/blog.git --branch=main --poll --domain=blog.example --admin-email=me@example.com</info>
         HELP,
 )]
 final readonly class AddSiteCommand
@@ -54,8 +62,18 @@ final readonly class AddSiteCommand
         bool $invite = false,
         #[Option(description: 'The Quire version, e.g. "^0.1" (the server\'s default otherwise)')]
         ?string $quireVersion = null,
+        #[Option(description: 'Git mode: the site\'s repository (git@host:path, ssh://… or https://…)')]
+        ?string $git = null,
+        #[Option(description: 'Git mode: the branch it follows')]
+        string $branch = 'main',
+        #[Option(description: 'Git mode: deploy new commits of the branch by itself')]
+        bool $poll = false,
     ): int {
         try {
+            if (null !== $git && null !== $quireVersion) {
+                throw new \InvalidArgumentException('In Git mode, the Quire version is the repository\'s: leave out --quire-version.');
+            }
+
             $request = new SiteRequest(
                 new SiteName($name),
                 array_map(static fn (string $value): Domain => new Domain($value), $domain),
@@ -63,6 +81,8 @@ final readonly class AddSiteCommand
                 $adminEmail ?? throw new \InvalidArgumentException('Pass the first admin\'s email: --admin-email.'),
                 $invite,
                 $quireVersion ?? $this->defaultVersion,
+                null === $git ? null : new Repository($git, $branch),
+                null !== $git && $poll,
             );
         } catch (\InvalidArgumentException $e) {
             $io->error($e->getMessage());

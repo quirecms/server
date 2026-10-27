@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Quire\Server\Operation;
 
+use Quire\Server\Git\Repository;
 use Quire\Server\Site\Domain;
 use Quire\Server\Site\SiteName;
 
@@ -22,6 +23,10 @@ final readonly class SiteRequest
         public string $adminEmail,
         public bool $invite,
         public string $quireVersion,
+        /** Git mode: the site is this repository's branch, instead of the skeleton */
+        public ?Repository $repository = null,
+        /** Git mode: the agent deploys new commits of the branch by itself */
+        public bool $poll = false,
     ) {
         if ([] === $domains) {
             throw new \InvalidArgumentException('A site needs at least one domain.');
