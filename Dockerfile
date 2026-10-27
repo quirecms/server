@@ -43,3 +43,14 @@ RUN composer dump-autoload --no-dev --classmap-authoritative \
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s CMD php -r 'exit(time() - (int) @filemtime("/tmp/quire-server-agent.heartbeat") < 180 ? 0 : 1);'
 ENTRYPOINT ["/sbin/tini", "--", "quire-server-entrypoint"]
 CMD ["bin/console", "server:agent"]
+
+# For working on the server itself (compose.dev.yaml): the code mounted from the checkout, its dev
+# dependencies installed there; the agent's own entry point doesn't run.
+FROM agent AS dev
+ENV APP_ENV=test APP_DEBUG=1
+WORKDIR /app
+ENTRYPOINT []
+CMD ["composer", "qa"]
+
+# The agent's image: the default target (the last stage).
+FROM agent AS server

@@ -20,7 +20,9 @@ abstract class RegistryTestCase extends KernelTestCase
     protected function setUp(): void
     {
         self::bootKernel();
-        $this->connection = self::getContainer()->get(Connection::class);
+        $connection = self::getContainer()->get(Connection::class);
+        self::assertInstanceOf(Connection::class, $connection);
+        $this->connection = $connection;
         $this->schema = 'server_test_'.bin2hex(random_bytes(4));
 
         foreach (Schema::version1($this->schema) as $statement) {

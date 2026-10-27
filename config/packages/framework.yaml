@@ -5,3 +5,7 @@ framework:
     router:
         resource: ~
         utf8: true
+
+when@test:
+    framework:
+        test: true
