@@ -1,0 +1,13 @@
+**/*.md
+**/.git/
+.gitignore
+.dockerignore
+compose.yaml
+server.env
+server.env.dist
+Dockerfile
+front/
+database/
+tests/
+var/
+vendor/

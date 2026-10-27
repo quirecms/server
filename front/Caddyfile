@@ -1,0 +1,70 @@
+# The front door: the only part of the server visitors reach. It holds every site's certificate and
+# passes each request to the site whose domain it names. What it may serve is a file per domain in
+# /srv/quire/server/domains, which only the agent writes: no PHP here, and no reload when sites change.
+{
+	# "email you@example.com" when QUIRE_SERVER_ACME_EMAIL is set (compose.yaml); nothing otherwise.
+	{$QUIRE_SERVER_ACME_EMAIL_OPTION}
+	# Certificates as visitors first come, for allowed domains only (asked of the site below).
+	on_demand_tls {
+		ask http://127.0.0.1:9180/allowed
+	}
+	# Nothing reaches Caddy's admin API: the configuration never changes at runtime.
+	admin off
+	{$QUIRE_SERVER_TLS_GLOBAL}
+}
+
+# Whether a domain may get a certificate: only on this container's loopback, for Caddy itself.
+http://127.0.0.1:9180 {
+	bind 127.0.0.1
+	@allowed {
+		path /allowed
+		expression `{query.domain}.matches("^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$")`
+		file {
+			root /srv/quire/server/domains
+			try_files {query.domain}
+		}
+	}
+	respond @allowed 200
+	respond 404
+}
+
+https:// {
+	tls {
+		on_demand
+	}
+
+	# Only a domain the server has, asked for by the same name it's encrypted for: so a forged Host
+	# header can't reach another container on the network.
+	@site {
+		# One expression: Caddy keeps only one "expression" per matcher, so two would silently drop one.
+		expression `{host}.matches("^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$") && {host} == {http.request.tls.server_name}`
+		file {
+			root /srv/quire/server/domains
+			try_files {host}
+		}
+	}
+
+	handle @site {
+		# The site's own headers (Quire sends its security headers); these are defaults for older sites.
+		header ?Strict-Transport-Security "max-age=31536000"
+		header ?X-Content-Type-Options "nosniff"
+		header -Server
+		reverse_proxy {host}:80 {
+			# A site that's down or restarting: tell visitors, don't hang.
+			lb_try_duration 10s
+		}
+	}
+
+	handle {
+		respond "Misdirected request" 421
+	}
+
+	log {
+		output stdout
+		format json
+	}
+}
+
+http:// {
+	redir https://{host}{uri} 308
+}

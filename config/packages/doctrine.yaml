@@ -1,0 +1,12 @@
+doctrine:
+    dbal:
+        default_connection: default
+        connections:
+            # The server's registry (sites, domains, operations), as the role that owns it
+            default:
+                url: '%env(resolve:DATABASE_URL)%'
+                server_version: '18'
+            # PostgreSQL's administrative role: creates and drops sites' databases and roles
+            admin:
+                url: '%env(resolve:QUIRE_SERVER_POSTGRES_ADMIN_URL)%'
+                server_version: '18'
