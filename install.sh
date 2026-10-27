@@ -7,9 +7,12 @@
 # install, and the secrets it made are kept):
 #
 #   1. Checks the machine; installs Docker from Docker's own repository when it's missing (asks first).
-#   2. Puts the server in /srv/quire/server, its settings and new secrets in server.env (root only),
-#      and the "quire-server" command in /usr/local/bin.
-#   3. Builds the agent and starts the server without its front door: PostgreSQL, docker-proxy, agent.
+#   2. Gets a release and checks it: its signature (Sigstore, made by quirecms/server's release
+#      workflow for that very version), its archive's checksum and its image's signature; nothing is
+#      run that doesn't check out. Puts the server in /srv/quire/server, its settings and new secrets
+#      in server.env (root only), and the "quire-server" command in /usr/local/bin.
+#   3. Starts the server without its front door (PostgreSQL, docker-proxy, agent), with the release's
+#      images, by digest (or the agent built from --source).
 #   4. Adopts the Quire sites already running from /srv/quire/sites (asks first): they're backed up
 #      and moved behind the front door, a few seconds offline each.
 #   5. Starts the front door, once nothing else holds ports 80 and 443. It never stops or removes
@@ -19,8 +22,8 @@
 # Options:
 #   --email=ADDRESS    Let's Encrypt writes here about certificates (expiry, problems)
 #   --yes              Answer yes to every question (installing Docker, adopting sites)
-#   --source=DIR       Install from this folder (a checkout of quirecms/server) instead of downloading a release
-#   --version=X.Y.Z    The release to download (this installer's own release by default)
+#   --source=DIR       Install from this folder (a checkout of quirecms/server) instead of a release
+#   --version=X.Y.Z    The release to install (this installer's own release, or the latest)
 #   --no-os-updates    Leave the operating system's updates as they are
 #   --test-certificates  Certificates from the front door's own authority, not Let's Encrypt (tests)
 #
@@ -56,8 +59,9 @@ at_least() {
 	printf '%s\n%s\n' "$1" "$2" | sed 's/^v//; s/[^0-9.].*//' | sort -c -t. -k1,1n -k2,2n -k3,3n 2>/dev/null
 }
 
+# From the server's folder: Compose reads COMPOSE_FILE (server.env) relative to where it runs.
 compose() {
-	docker compose --project-directory "$root/server" --env-file "$root/server/server.env" "$@"
+	(cd "$root/server" && docker compose --project-directory "$root/server" --env-file "$root/server/server.env" "$@")
 }
 
 random_hex() {
@@ -126,20 +130,66 @@ EOF
 	note "Docker Engine $(docker version --format '{{.Server.Version}}'), Compose $(docker compose version --short)"
 }
 
-# The server's files, from --source or a release, in a folder of its own: printed
+# The release workflow that signs releases, and cosign, which checks them (pinned by digest)
+repository=quirecms/server
+issuer=https://token.actions.githubusercontent.com
+cosign_image=ghcr.io/sigstore/cosign/cosign:v3.1.4@sha256:0f06154836d2de34f887a5c273506d52ca43edaa1d9e53e6510fa78a48f69c2d
+
+# The server's files, from --source, or from a release whose signatures check out: sets $from (a
+# folder) and $image (the release's agent image, by digest; empty for --source)
 fetch() {
+	image=''
 	if [ -n "$source" ]; then
 		[ -f "$source/compose.yaml" ] && [ -f "$source/bin/quire-server" ] || die "\"$source\" isn't Quire Server's folder (no compose.yaml, bin/quire-server)."
-		printf '%s\n' "$source"
+		from=$source
 
 		return
 	fi
 
-	[ -n "$version" ] || die 'There is no release of Quire Server yet: install from a checkout of quirecms/server with --source=<its folder>.'
+	if [ -z "$version" ]; then
+		latest=$(curl -fsSL --proto '=https' --tlsv1.2 -o /dev/null -w '%{url_effective}' "https://github.com/$repository/releases/latest") || die "Couldn't reach github.com/$repository."
+		case "$latest" in
+			*/releases/tag/v*) version=${latest##*/releases/tag/v} ;;
+			*) die 'There is no release of Quire Server yet: install from a checkout of quirecms/server with --source=<its folder>.' ;;
+		esac
+	fi
 	printf '%s\n' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$' || die "\"$version\" isn't a version."
-	download=$(mktemp -d)
-	curl -fsSL --proto '=https' --tlsv1.2 "https://github.com/quirecms/server/archive/refs/tags/v$version.tar.gz" | tar -xz -C "$download" --strip-components=1 --no-same-owner
-	printf '%s\n' "$download"
+
+	say "Checking Quire Server $version"
+	work=$(mktemp -d)
+	mkdir "$work/files"
+	download() {
+		curl -fsSL --proto '=https' --tlsv1.2 --retry 3 -o "$work/$1" "https://github.com/$repository/releases/download/v$version/$1" || die "Couldn't download $1 of Quire Server $version."
+	}
+	# Signed by this repository's release workflow, for this very tag, through GitHub's identity provider
+	identity="https://github.com/$repository/.github/workflows/release.yaml@refs/tags/v$version"
+	cosign() {
+		docker run --rm -v "$work:/release:ro" "$cosign_image" "$@"
+	}
+
+	download release.env
+	download release.env.sigstore.json
+	cosign verify-blob --bundle /release/release.env.sigstore.json --certificate-identity "$identity" --certificate-oidc-issuer "$issuer" /release/release.env >/dev/null 2>&1 \
+		|| die "The signature of Quire Server $version didn't check out: not installing. (Signed by $identity?)"
+	note 'Its signature checks out (Sigstore: signed by its release workflow)'
+
+	value() { sed -n "s/^$1=//p" "$work/release.env" | head -n 1; }
+	[ "$(value VERSION)" = "$version" ] || die 'The release names another version: not installing.'
+	archive=$(value ARCHIVE)
+	digest=$(value ARCHIVE_SHA256)
+	image=$(value IMAGE)
+	printf '%s\n' "$archive" | grep -Eq '^quire-server-[0-9A-Za-z.-]+\.tar\.gz$' || die 'The release names no archive: not installing.'
+	printf '%s\n' "$digest" | grep -Eq '^[0-9a-f]{64}$' || die 'The release names no checksum: not installing.'
+	printf '%s\n' "$image" | grep -Eq "^ghcr\.io/$repository@sha256:[0-9a-f]{64}\$" || die 'The release names no image: not installing.'
+
+	download "$archive"
+	[ "$(sha256sum "$work/$archive" | cut -d ' ' -f 1)" = "$digest" ] || die "$archive isn't the release's (its checksum differs): not installing."
+	cosign verify --certificate-identity "$identity" --certificate-oidc-issuer "$issuer" "$image" >/dev/null 2>&1 \
+		|| die "The signature of the release's image didn't check out: not installing."
+	note 'Its image'\''s signature checks out too'
+
+	tar -xzf "$work/$archive" -C "$work/files" --strip-components=1 --no-same-owner
+	from="$work/files"
 }
 
 install_files() {
@@ -149,14 +199,14 @@ install_files() {
 		return
 	fi
 
+	fetch
 	say "Putting the server in $root/server"
-	from=$(fetch)
 	mkdir -p "$root/server/domains" "$root/server/keys" "$root/sites" "$root/backups"
 	chmod 755 "$root" "$root/server" "$root/server/domains"
 	# Sites' folders hold their secrets; backups hold their data; keys read Git mode sites' repositories.
 	chmod 700 "$root/sites" "$root/backups" "$root/server/keys"
 	tar -C "$from" --exclude=./vendor --exclude=./var --exclude=./tests --exclude=./.git -cf - . | tar -C "$root/server" -xf - --no-same-owner
-	if [ "$from" != "$source" ]; then rm -rf "$from"; fi
+	if [ "$from" != "$source" ]; then rm -rf "$work"; fi
 	chown -R root:root "$root/server"
 	chmod -R go-w "$root/server"
 
@@ -166,6 +216,8 @@ install_files() {
 		-e "s/^QUIRE_SERVER_POSTGRES_PASSWORD=.*/QUIRE_SERVER_POSTGRES_PASSWORD=$(random_hex 24)/" \
 		-e "s/^QUIRE_SERVER_DATABASE_PASSWORD=.*/QUIRE_SERVER_DATABASE_PASSWORD=$(random_hex 24)/" \
 		-e "s/^QUIRE_SERVER_ACME_EMAIL=.*/QUIRE_SERVER_ACME_EMAIL=$email/" \
+		-e "s#^QUIRE_SERVER_IMAGE=.*#QUIRE_SERVER_IMAGE=$image#" \
+		-e "s#^COMPOSE_FILE=.*#COMPOSE_FILE=compose.yaml${source:+:compose.build.yaml}#" \
 		"$root/server/server.env.dist" >"$root/server/server.env.tmp"
 	if [ "$test_certificates" = 1 ]; then printf '\n# Tests: certificates from the front door'\''s own authority\nQUIRE_SERVER_TLS_GLOBAL=local_certs\n' >>"$root/server/server.env.tmp"; fi
 	chmod 600 "$root/server/server.env.tmp"
@@ -182,7 +234,10 @@ install_files() {
 
 start_core() {
 	say 'Starting the server (its front door last)'
-	if ! docker image inspect quire-server-agent >/dev/null 2>&1; then
+	if grep -q '^QUIRE_SERVER_IMAGE=.' "$root/server/server.env"; then
+		note 'Getting its images'
+		compose pull --quiet
+	elif ! docker image inspect quire-server-agent >/dev/null 2>&1; then
 		note 'Building the agent (a few minutes)'
 		compose build --pull --quiet agent
 	fi

@@ -1,5 +1,6 @@
 # Quire Server: the front door, the agent, the docker-proxy and PostgreSQL. Sites are Compose projects
-# of their own, in /srv/quire/sites, joined to these networks. Run it with "quire-server", or:
+# of their own, in /srv/quire/sites, joined to these networks. Every image is pinned by digest.
+# Run it with "quire-server", or:
 #
 #     docker compose --env-file server.env up --wait
 #
@@ -9,7 +10,7 @@ name: quire-server
 services:
   # The only part visitors reach: certificates and routing to sites by domain.
   front:
-    image: caddy:2.11.7-alpine
+    image: caddy:2.11.7-alpine@sha256:eb4d35b7452d1ab6171fbdbe8d9275b2301dad6dad92115d91e19fb9b24d510f
     restart: unless-stopped
     ports:
       - {name: http, target: 80, published: 80, protocol: tcp}
@@ -39,8 +40,9 @@ services:
   # The only part that can act on Docker (through the docker-proxy): adds and removes sites, keeps the
   # front door's domains in line. It has no network listener.
   agent:
-    build: .
-    image: quire-server-agent
+    # A release's image, by digest (written to server.env by install.sh, after checking its signature),
+    # or one built from this folder (compose.build.yaml, for installs from a checkout).
+    image: ${QUIRE_SERVER_IMAGE:-quire-server-agent}
     restart: unless-stopped
     depends_on:
       database: {condition: service_healthy}
@@ -52,6 +54,8 @@ services:
       QUIRE_SERVER_MAILER_DSN: ${QUIRE_SERVER_MAILER_DSN:-}
       QUIRE_SERVER_QUIRE_VERSION: ${QUIRE_SERVER_QUIRE_VERSION:-^0.1}
       QUIRE_SERVER_ROOT: ${QUIRE_SERVER_ROOT:-/srv/quire}
+      # Which release runs ("quire-server version")
+      QUIRE_SERVER_IMAGE: ${QUIRE_SERVER_IMAGE:-}
       # Git mode sites that deploy by themselves: how often their branch is asked for new commits
       QUIRE_SERVER_GIT_POLL_SECONDS: ${QUIRE_SERVER_GIT_POLL_SECONDS:-300}
       DOCKER_HOST: tcp://docker-proxy:2375
@@ -75,7 +79,7 @@ services:
   # The Docker API, limited to what the agent needs: no swarm, secrets, configs, plugins, nodes,
   # services, auth or distribution. Only the agent can reach it, on a network without a way out.
   docker-proxy:
-    image: tecnativa/docker-socket-proxy:v0.5.0
+    image: tecnativa/docker-socket-proxy:v0.5.0@sha256:1f5038b54f06c3e18422902cf00ba21803d1c97805aae032e5e6673d532d3459
     restart: unless-stopped
     environment:
       CONTAINERS: 1
@@ -105,7 +109,7 @@ services:
 
   # The server's PostgreSQL: the registry's database, and a database per site.
   database:
-    image: postgres:18-alpine
+    image: postgres:18-alpine@sha256:10a5c69a83035ab5239f5620d708520e8b28f5aa1f2b20143e6024532edadfb5
     restart: unless-stopped
     environment:
       POSTGRES_USER: postgres
