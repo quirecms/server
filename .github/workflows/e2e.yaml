@@ -29,9 +29,15 @@ concurrency:
 
 jobs:
   end-to-end:
-    name: Quire Server end to end
+    # Each part on a machine of its own, at the same time: the server installed, then adopting a site
+    # installed before it; adding, updating and removing sites; or Git mode.
+    name: End to end (${{ matrix.part }})
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [adopt, sites, git]
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 40
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -41,3 +47,5 @@ jobs:
         run: docker build --pull -t quire-server-agent:test .
       - name: Run the server end to end
         run: tests/e2e/run.sh quire-server-agent:test
+        env:
+          E2E_ONLY: ${{ matrix.part }}

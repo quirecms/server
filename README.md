@@ -24,8 +24,8 @@ A site is an ordinary Quire project in `/srv/quire/sites/<site>` (from `quire/sk
 On a Linux machine (Ubuntu or Debian for Docker to be installed for you; any distribution with Docker Engine 29 and Compose 2.24.4 or later), as root:
 
 ```bash
-git clone https://github.com/quirecms/framework.git /root/quire
-sh /root/quire/server/install.sh --source=/root/quire/server --email=you@example.com
+git clone https://github.com/quirecms/server.git /root/quire-server
+sh /root/quire-server/install.sh --source=/root/quire-server --email=you@example.com
 ```
 
 Once Quire Server is released, `--source` won't be needed: the installer downloads its release.
@@ -41,7 +41,7 @@ The installer:
 
 Running it again is safe: it keeps the secrets it made and finishes what's left, e.g. after you've freed ports 80 and 443. `--yes` answers yes to its questions; `--help` lists its options.
 
-**By hand,** for developers: copy this folder to `/srv/quire/server`, create `server.env` from `server.env.dist` (root only, with long random secrets), install `bin/quire-server` in `/usr/local/bin`, and run `quire-server up`.
+**By hand,** for developers: copy this repository to `/srv/quire/server`, create `server.env` from `server.env.dist` (root only, with long random secrets), install `bin/quire-server` in `/usr/local/bin`, and run `quire-server up`.
 
 ### A site installed before the server
 
@@ -154,3 +154,30 @@ The agent can act on Docker, and that's root on the machine, so the server is bu
 - **Nothing is deleted without a backup,** and every operation is recorded.
 
 What this doesn't protect against: a kernel exploit from inside a container (containers share the machine's kernel), a bug in Docker itself, and anyone who is root on the machine.
+
+## Working on Quire Server
+
+The tests and quality checks run in Docker, against a PostgreSQL of their own (`compose.dev.yaml`):
+
+```bash
+export HOST_UID=$(id -u) HOST_GID=$(id -g)
+docker compose -f compose.dev.yaml run --rm php composer install
+docker compose -f compose.dev.yaml run --rm php composer qa    # code style, Rector, PHPStan, tests
+```
+
+The end-to-end test runs the whole server in a Docker-in-Docker machine of its own: the installer, a site from Packagist, adopting, updating, Git mode. It needs privileged containers.
+
+```bash
+docker build -t quire-server-agent:test .
+tests/e2e/run.sh quire-server-agent:test                 # everything, about 35 minutes
+E2E_ONLY=git E2E_CACHE=1 tests/e2e/run.sh quire-server-agent:test   # one part, with a build cache
+KEEP=1 tests/e2e/run.sh quire-server-agent:test          # keep the machine, to look around
+```
+
+CI runs the three parts (`adopt`, `sites`, `git`) in parallel, on clean machines.
+
+Sites are found and managed through the contract every Quire site keeps (`Quire\Runtime\ServerContract`, [docs](https://github.com/quirecms/framework/blob/main/docs/docker.md#tools-that-manage-sites)): Quire Server uses no Quire code of its own.
+
+## License
+
+MIT: see [LICENSE](LICENSE).
