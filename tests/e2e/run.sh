@@ -10,6 +10,7 @@
 #                                             (its signatures checked) and adds a site with its agent
 #   E2E_ONLY=update tests/e2e/run.sh … the server, installed from this checkout, updates itself to the
 #                                             published release (E2E_UPDATE_TO, else the oldest: 0.1.0)
+#   E2E_ONLY=backups tests/e2e/run.sh … backups off the server (restic, on an S3 service of its own)
 #   E2E_CACHE=1 tests/e2e/run.sh …     keeps the machine's images and build cache between runs
 #                                             (in the volume quire-server-e2e-cache; one run at a time)
 #
@@ -42,6 +43,7 @@ echo '== A machine of its own (Docker-in-Docker)'
 want() { [ -z "${E2E_ONLY:-}" ] || [ "$E2E_ONLY" = "$1" ]; }
 release() { [ "${E2E_ONLY:-}" = release ]; }
 updating() { [ "${E2E_ONLY:-}" = update ]; }
+backingup() { [ "${E2E_ONLY:-}" = backups ]; }
 cache=''
 if [ "${E2E_CACHE:-}" = 1 ]; then cache='-v quire-server-e2e-cache:/var/lib/docker'; fi
 # shellcheck disable=SC2086 # $cache is empty or two words
@@ -153,6 +155,50 @@ echo '== Adding a site with the release'\''s agent'
 inside 'quire-server site:add jane --domain=jane.test --admin-email=jane@example.com --title="Jane" 2>&1' | tee "$logs"/add.log | sed 's/^/    /'
 check 'the site runs' "inside 'quire-server site:list' | grep -q running"
 check 'it is served through the front door' "inside \"curl -sk $resolve https://jane.test/\" | grep -q Jane"
+fi
+
+if backingup; then
+echo '== Backups off the server (restic, on S3-compatible storage of its own)'
+# The agent's own nightly backups and updates off on this machine: only the checks below make them.
+inside "printf 'QUIRE_SERVER_BACKUP_HOUR=off\\nQUIRE_SERVER_UPDATE_HOUR=off\\n' >> /srv/quire/server/server.env && quire-server up >/dev/null 2>&1"
+# The storage: rclone's S3 server, on the agent's network only, with a key of its own
+inside 'docker run -d --name s3 --network quire-data rclone/rclone:1.71.2 serve s3 --addr :9000 --auth-key e2e-key,e2e-secret /data >/dev/null'
+until inside 'docker logs s3 2>&1' | grep -q 'Starting s3 server'; do sleep 1; done
+inside 'quire-server site:add jane --domain=jane.test --admin-email=jane@example.com --title="Jane before" 2>&1' > "$logs"/add.log || sed 's/^/    /' "$logs"/add.log
+check 'there are none before they are set up' "inside 'quire-server backups jane 2>&1' | grep -q 'backups:setup'"
+
+repository='--repository=s3:http://s3:9000/quire-backups/server-1 --access-key=e2e-key --region=us-east-1'
+server_env=$(inside 'sha256sum /srv/quire/server/server.env')
+check 'connecting to a repository that isn'\''t there saves nothing' "! inside 'QUIRE_SERVER_BACKUP_SETUP_SECRET_KEY=e2e-secret QUIRE_SERVER_BACKUP_SETUP_PASSWORD=0123456789abcdefghijk quire-server backups:setup $repository --existing --yes 2>&1' | tee $logs/setup-missing.log | grep -q 'are set up' && grep -q 'no backup repository there' $logs/setup-missing.log && [ \"\$(inside 'sha256sum /srv/quire/server/server.env')\" = \"$server_env\" ]"
+inside "QUIRE_SERVER_BACKUP_SETUP_SECRET_KEY=e2e-secret quire-server backups:setup $repository --yes 2>&1" | tee "$logs"/setup.log | sed 's/^/    /'
+check 'setting them up creates the repository, and shows its password once' "grep -q 'are set up' $logs/setup.log && grep -q 'shown only now' $logs/setup.log"
+check 'its settings and password are root'\''s only' "[ \"\$(inside 'stat -c %a /srv/quire/server/server.env')\" = 600 ] && inside 'grep -q ^QUIRE_SERVER_BACKUP_PASSWORD=. /srv/quire/server/server.env'"
+password=$(inside "sed -n \"s/^QUIRE_SERVER_BACKUP_PASSWORD='\\(.*\\)'\$/\\1/p\" /srv/quire/server/server.env")
+check 'the agent has them' "inside 'quire-server backups jane 2>&1' | grep -q 'No backup of \"jane\" off the server yet'"
+
+inside 'quire-server backups:now 2>&1' | tee "$logs"/now.log | sed 's/^/    /'
+check 'every site and the server are backed up off the server' "grep -q 'Backed up off the server: jane, server' $logs/now.log"
+check 'each site'\''s backups are listed on their own' "[ \"\$(inside 'quire-server backups jane' | grep -cE '^ +[0-9a-f]{8} ')\" = 1 ] && [ \"\$(inside 'quire-server backups server' | grep -cE '^ +[0-9a-f]{8} ')\" = 1 ]"
+check 'what is stored is encrypted (no site data in it as text)' "! inside 'docker exec s3 sh -c \"grep -rl -e site_jane -e \\\"Jane before\\\" /data\"' >/dev/null 2>&1"
+check 'its secrets aren'\''t in its log' "! inside \"quire-server operations \$(inside 'quire-server operations' | grep backups.nightly | head -1 | awk '{print \$1}')\" | grep -q -e e2e-secret -e '$password'"
+
+inside "docker exec jane-php-1 bin/console quire:settings:set site.title 'Jane after'" >/dev/null
+check 'the site changed since its backup' "inside \"curl -sk $resolve https://jane.test/\" | grep -q 'Jane after'"
+server_snapshot=$(inside 'quire-server backups server' | grep -oE '^ +[0-9a-f]{8} ' | tr -d ' ' | head -1)
+check 'another backup than the site'\''s own isn'\''t restored to it' "inside 'quire-server backups:restore jane --snapshot=$server_snapshot --yes 2>&1' | grep -q 'no such backup' && inside \"curl -sk $resolve https://jane.test/\" | grep -q 'Jane after'"
+inside 'quire-server backups:restore jane --yes 2>&1' | tee "$logs"/restore.log | sed 's/^/    /'
+check 'restoring it from off the server puts it back as it was' "grep -q 'is as it was on' $logs/restore.log && inside \"curl -sk $resolve https://jane.test/\" | grep -q 'Jane before'"
+check 'the restore is recorded, and it was backed up first' "inside 'quire-server operations' | grep -q 'site.restore.*succeeded' && inside 'ls /srv/quire/backups/jane/before-restore-*.tar'"
+check 'nothing of the restore is left on the server' "[ -z \"\$(inside 'ls -d /srv/quire/backups/jane/from-off-server-* /srv/quire/backups/jane/off-server-*.tar 2>/dev/null')\" ]"
+
+inside 'quire-server backups:check 2>&1' > "$logs"/check.log || true
+check 'the stored data checks out' "grep -q 'The backups check out' $logs/check.log"
+
+server_env=$(inside 'sha256sum /srv/quire/server/server.env')
+check 'a wrong password for the repository saves nothing' "inside 'QUIRE_SERVER_BACKUP_SETUP_SECRET_KEY=e2e-secret QUIRE_SERVER_BACKUP_SETUP_PASSWORD=not-the-password-at-all quire-server backups:setup $repository --existing --yes 2>&1' | grep -q 'doesn.t open with this password' && [ \"\$(inside 'sha256sum /srv/quire/server/server.env')\" = \"$server_env\" ]"
+# As a server that replaces this one would: the repository, its keys and its password
+inside "QUIRE_SERVER_BACKUP_SETUP_SECRET_KEY=e2e-secret QUIRE_SERVER_BACKUP_SETUP_PASSWORD='$password' quire-server backups:setup $repository --existing --yes 2>&1" > "$logs"/setup-existing.log || true
+check 'another server connects to the repository with its password' "grep -q 'are set up' $logs/setup-existing.log && [ \"\$(inside 'quire-server backups jane' | grep -cE '^ +[0-9a-f]{8} ')\" -ge 1 ]"
 fi
 
 if want sites; then

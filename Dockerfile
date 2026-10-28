@@ -2,13 +2,14 @@
 
 # The agent: PHP for its code, the Docker CLI with Compose and Buildx (it acts through the docker-proxy,
 # never on the socket itself), Composer (to get the skeleton of new sites and work out updates, without
-# running any package's code), Git with SSH (Git mode sites' repositories), and cosign with curl and tar
-# (the updater checks and unpacks a new release of the server).
+# running any package's code), Git with SSH (Git mode sites' repositories), cosign with curl and tar
+# (the updater checks and unpacks a new release of the server), and restic (backups off the server).
 #
 # Images are pinned by digest (a tag can be moved, a digest can't); Dependabot proposes new ones.
 FROM docker:29.9.2-cli@sha256:5e6baf67325a79f64ed3bed6863954d5e05d0f3d4e57cbdb14809346814bbfdb AS docker_cli
 FROM composer:2.10.3@sha256:b6dcd72ca98fa19d0e5b8476de179859704891fad06dd9e0b96833d4c430a5fc AS composer
 FROM ghcr.io/sigstore/cosign/cosign:v3.1.4@sha256:0f06154836d2de34f887a5c273506d52ca43edaa1d9e53e6510fa78a48f69c2d AS cosign
+FROM restic/restic:0.19.1@sha256:136600b6ff6843d61d355f7f71f460a166429f35de6fd11b568fece3c9a4d510 AS restic
 FROM mlocati/php-extension-installer:2.12@sha256:ac4b252c153a9f6de5578ff2c417790aba836bb49855543144606033eceda253 AS php_extension_installer
 
 FROM php:8.5-cli-alpine@sha256:e899a75c775804e5466dbd9c96b31f8b6c6ae2ddb053a8466223a0c32992ff8e AS agent
@@ -25,6 +26,7 @@ COPY --from=docker_cli /usr/local/libexec/docker/cli-plugins/docker-compose /usr
 COPY --from=docker_cli /usr/local/libexec/docker/cli-plugins/docker-buildx /usr/local/libexec/docker/cli-plugins/docker-buildx
 COPY --from=composer /usr/bin/composer /usr/local/bin/composer
 COPY --from=cosign /ko-app/cosign /usr/local/bin/cosign
+COPY --from=restic /usr/bin/restic /usr/local/bin/restic
 
 RUN mv "$PHP_INI_DIR/php.ini-production" "$PHP_INI_DIR/php.ini"
 

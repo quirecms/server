@@ -133,14 +133,14 @@ final readonly class AutomaticUpdates
     /**
      * @throws \InvalidArgumentException When it's neither an hour from 0 to 23 nor "off"
      */
-    public static function parseHour(string $hour): ?int
+    public static function parseHour(string $hour, string $setting = 'QUIRE_SERVER_UPDATE_HOUR'): ?int
     {
         if ('off' === $hour) {
             return null;
         }
 
         if (1 !== preg_match('/^(?:[0-9]|1[0-9]|2[0-3])\z/', $hour)) {
-            throw new \InvalidArgumentException(\sprintf('QUIRE_SERVER_UPDATE_HOUR is "%s": an hour from 0 to 23 (UTC), or "off".', SiteName::printable($hour)));
+            throw new \InvalidArgumentException(\sprintf('%s is "%s": an hour from 0 to 23 (UTC), or "off".', $setting, SiteName::printable($hour)));
         }
 
         return (int) $hour;
