@@ -8,6 +8,8 @@
 #   E2E_ONLY=git tests/e2e/run.sh …    the server and one part only: adopt, sites or git
 #   E2E_ONLY=release tests/e2e/run.sh  this checkout's install.sh installs the latest published release
 #                                             (its signatures checked) and adds a site with its agent
+#   E2E_ONLY=update tests/e2e/run.sh … the server, installed from this checkout, updates itself to the
+#                                             published release (E2E_UPDATE_TO, else the oldest: 0.1.0)
 #   E2E_CACHE=1 tests/e2e/run.sh …     keeps the machine's images and build cache between runs
 #                                             (in the volume quire-server-e2e-cache; one run at a time)
 #
@@ -36,9 +38,10 @@ cleanup() {
 trap cleanup EXIT
 
 echo '== A machine of its own (Docker-in-Docker)'
-# Whether a part runs (all of them unless E2E_ONLY names one; the release only when named)
+# Whether a part runs (all of them unless E2E_ONLY names one; the release and the update only when named)
 want() { [ -z "${E2E_ONLY:-}" ] || [ "$E2E_ONLY" = "$1" ]; }
 release() { [ "${E2E_ONLY:-}" = release ]; }
+updating() { [ "${E2E_ONLY:-}" = update ]; }
 cache=''
 if [ "${E2E_CACHE:-}" = 1 ]; then cache='-v quire-server-e2e-cache:/var/lib/docker'; fi
 # shellcheck disable=SC2086 # $cache is empty or two words
@@ -110,6 +113,40 @@ fi
 server_env=$(inside 'sha256sum /srv/quire/server/server.env')
 inside "$install" > "$logs"/install-again.log || true
 check 'running the installer again changes nothing' "grep -q 'installed in /srv/quire/server already' $logs/install-again.log && grep -q 'Quire Server runs' $logs/install-again.log && [ \"\$(inside 'sha256sum /srv/quire/server/server.env')\" = \"$server_env\" ]"
+
+if updating; then
+to=${E2E_UPDATE_TO:-0.1.0}
+echo "== The server updates itself to Quire Server $to (published, its signatures checked)"
+inside 'mkdir -p /srv/quire/server/keys && echo key > /srv/quire/server/keys/blog && chmod 600 /srv/quire/server/keys/blog'
+check 'it says a release is available' "inside 'quire-server update --check' | grep -q 'is available (this server runs a build from a checkout)'"
+check 'a release that doesn'\''t exist changes nothing' "! inside 'quire-server update --to=0.0.0 --yes' >/dev/null 2>&1 && inside 'quire-server version' | grep -q 'built from a checkout'"
+check 'a version that isn'\''t one is refused' "! inside 'quire-server update \"--to=0.1.0/../x\" --yes' >/dev/null 2>&1"
+
+# A release that doesn't start in time (here: the wait cut to a second) is rolled back by itself.
+inside 'printf "QUIRE_SERVER_UPDATE_WAIT_SECONDS=1\n" >> /srv/quire/server/server.env'
+server_env=$(inside 'sha256sum /srv/quire/server/server.env')
+inside "quire-server update --to=$to --yes 2>&1" > "$logs"/update-failed.log || true
+sed 's/^/    /' "$logs"/update-failed.log
+check 'an update that doesn'\''t start is rolled back' "grep -q 'the server runs as it was' $logs/update-failed.log"
+check 'it runs as before: the build from the checkout' "inside 'quire-server version' | grep -q 'built from a checkout' && inside 'quire-server ps --format \"{{.Service}} {{.Health}}\"' | grep -q 'agent healthy'"
+check 'its files and settings are as before' "[ \"\$(inside 'sha256sum /srv/quire/server/server.env')\" = \"$server_env\" ] && inside 'grep -q \"^  updater:\" /srv/quire/server/compose.yaml'"
+check 'the failed update is recorded' "inside 'quire-server operations' | grep -q 'server.update.*failed'"
+check 'no backup is kept of a rolled-back update' "[ -z \"\$(inside 'ls /srv/quire/backups/server 2>/dev/null')\" ]"
+inside "sed -i '/^QUIRE_SERVER_UPDATE_WAIT_SECONDS=/d' /srv/quire/server/server.env"
+
+inside "quire-server update --to=$to --yes 2>&1" > "$logs"/update.log || true
+sed 's/^/    /' "$logs"/update.log
+check 'the update checked the release'\''s signature' "grep -q 'Its signature checks out' $logs/update.log"
+check "it runs Quire Server $to, the release's signed image by digest" "inside 'quire-server version' | grep -q \"^Quire Server $to\\\$\" && inside 'quire-server version' | grep -Eq '^Agent: ghcr.io/quirecms/server@sha256:[0-9a-f]{64}\$'"
+inside 'quire-server ps --format "{{.Service}} {{.State}} {{.Health}}"' > "$logs"/ps.log 2>&1 || true
+sed 's/^/    /' "$logs"/ps.log
+check 'every part runs, healthy' "[ \"\$(grep -c ' running' $logs/ps.log)\" = 4 ] && ! grep -Eq 'unhealthy|starting' $logs/ps.log"
+check 'it runs the release'\''s files, not a build' "inside 'grep -qx COMPOSE_FILE=compose.yaml /srv/quire/server/server.env || grep -qx \"COMPOSE_FILE='\''compose.yaml'\''\" /srv/quire/server/server.env' && [ -z \"\$(inside 'grep -l build: /srv/quire/server/compose.yaml')\" ]"
+check 'its settings, secrets and keys are kept' "inside 'grep -q ^QUIRE_SERVER_POSTGRES_PASSWORD=. /srv/quire/server/server.env' && [ \"\$(inside 'stat -c %a /srv/quire/server/server.env')\" = 600 ] && inside 'grep -qx key /srv/quire/server/keys/blog'"
+check 'it was backed up first (root only)' "inside 'ls /srv/quire/backups/server/*/files.tar /srv/quire/backups/server/*/database.dump' && [ \"\$(inside 'stat -c %a /srv/quire/backups/server/*/database.dump')\" = 600 ]"
+check 'the update is recorded' "inside 'quire-server operations' | grep -q 'server.update.*succeeded'"
+check 'its secrets never reached a command line' "! grep -q \"\$(inside 'sed -n s/^QUIRE_SERVER_POSTGRES_PASSWORD=//p /srv/quire/server/server.env' | tr -d \"'\")\" $logs/update.log"
+fi
 
 if release; then
 echo '== Adding a site with the release'\''s agent'

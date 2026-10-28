@@ -30,13 +30,14 @@ concurrency:
 jobs:
   end-to-end:
     # Each part on a machine of its own, at the same time: the server installed, then adopting a site
-    # installed before it; adding, updating and removing sites; Git mode; or the latest published
-    # release, checked and installed by this install.sh (with its agent: nothing built).
+    # installed before it; adding, updating and removing sites; Git mode; the latest published
+    # release, checked and installed by this install.sh (with its agent: nothing built); or the server,
+    # from this checkout, updating itself to a published release.
     name: End to end (${{ matrix.part }})
     strategy:
       fail-fast: false
       matrix:
-        part: [adopt, sites, git, release]
+        part: [adopt, sites, git, release, update]
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:

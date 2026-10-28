@@ -82,6 +82,7 @@ quire-server site:add jane --domain=jane.example --domain=www.jane.example --adm
 quire-server site:adopt demo            # a site installed before the server (see above)
 quire-server site:list
 quire-server version                    # which release this server runs
+quire-server update [--to=0.2.0] [--check] [--undo]   # the server itself, see "Updating the server"
 quire-server site:update jane [--to=0.2.0] [--dry-run]   # see "Updating a site"
 quire-server site:undo jane             # its last update or deploy, within a week
 quire-server site:audit jane            # known vulnerabilities in its packages
@@ -120,6 +121,20 @@ Then the update:
 `quire-server site:undo jane` undoes the last update within a week. If that update ran no migrations, only the code goes back. Otherwise its backup from before the update is restored too, and changes made since are lost; you're asked first.
 
 A site's versions are recorded in its folder's `composer.lock` (taken from its image when it's added or adopted). Its builds install exactly those versions; only updates change them.
+
+## Updating the server
+
+`quire-server update` moves the server itself (its agent, front door, docker-proxy and PostgreSQL's settings) to the latest release; `--to=0.2.0` to another one, `--check` only says whether there's a newer one. It runs in the **updater**, a container of the release that runs now: the new release is checked before any of it is used, and the agent isn't asked to replace itself.
+
+1. **Gets the release and checks it as the installer does:** `release.env` signed by Quire Server's release workflow for exactly that version's tag (Sigstore), the archive's checksum, the image by digest. Its Compose files must work with this server's settings. Its image is pulled. Nothing has changed yet.
+2. **Waits for operations on sites to finish** (none starts meanwhile), and stops the agent. Sites keep running.
+3. **Backs the server up** to `/srv/quire/backups/server/<time>/`: its files and `server.env`, and its database.
+4. **Replaces the server's files** with the release's (its `server.env`, the front door's domains and the deploy keys stay), names the new image in `server.env`, and starts it. Sites are offline only for the seconds the front door is replaced, when the release changes it.
+5. **Checks each part is healthy and the agent is the new release.** If not, it **rolls back by itself:** the files and settings from the backup, the database too if the new release's migrations ran.
+
+`quire-server update --undo` goes back to the release before the last update, within a week. If that update's migrations ran, its database backup is restored too, and what changed in the registry since is lost; you're asked first.
+
+A server installed from a checkout (`--source`) moves to releases the same way.
 
 ## Sites from a Git repository
 
@@ -173,6 +188,7 @@ The agent can act on Docker, and that's root on the machine, so the server is bu
   - database passwords sent to PostgreSQL only as SCRAM verifiers;
   - operation logs scrubbed of them.
 - **Nothing is deleted without a backup,** and every operation is recorded.
+- **Updates of the server are checked before any of their code runs,** by the release that runs (see "Updating the server"). The updater is the one part with Docker itself rather than the docker-proxy, since it may replace the docker-proxy: it runs only on demand, only the installed release's code, and takes nothing but a version.
 
 What this doesn't protect against: a kernel exploit from inside a container (containers share the machine's kernel), a bug in Docker itself, and anyone who is root on the machine.
 
@@ -194,9 +210,10 @@ tests/e2e/run.sh quire-server-agent:test                 # everything, about 35 
 E2E_ONLY=git E2E_CACHE=1 tests/e2e/run.sh quire-server-agent:test   # one part, with a build cache
 KEEP=1 tests/e2e/run.sh quire-server-agent:test          # keep the machine, to look around
 E2E_ONLY=release tests/e2e/run.sh                        # this install.sh installs the latest release
+E2E_ONLY=update tests/e2e/run.sh quire-server-agent:test # this checkout updates itself to a release
 ```
 
-CI runs the four parts (`adopt`, `sites`, `git`, `release`) in parallel, on clean machines.
+CI runs the five parts (`adopt`, `sites`, `git`, `release`, `update`) in parallel, on clean machines.
 
 Sites are found and managed through the contract every Quire site keeps (`Quire\Runtime\ServerContract`, [docs](https://github.com/quirecms/framework/blob/main/docs/docker.md#tools-that-manage-sites)): Quire Server uses no Quire code of its own.
 

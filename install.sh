@@ -228,8 +228,9 @@ install_files() {
 	mv "$root/server/server.env.tmp" "$root/server/server.env"
 	umask 022
 
-	# The command, knowing where the server is
-	sed "s#^root=\${QUIRE_SERVER_ROOT:-/srv/quire}#root=\${QUIRE_SERVER_ROOT:-$root}#" "$root/server/bin/quire-server" >/usr/local/bin/quire-server.tmp
+	# The command: the one of the release in the server's folder (an update brings its own), knowing
+	# where the server is
+	printf '#!/bin/sh\n# Quire Server: runs the command of the release installed in %s/server.\nQUIRE_SERVER_ROOT=%s exec sh %s/server/bin/quire-server "$@"\n' "$root" "$root" "$root" >/usr/local/bin/quire-server.tmp
 	chmod 755 /usr/local/bin/quire-server.tmp
 	mv /usr/local/bin/quire-server.tmp /usr/local/bin/quire-server
 	note "Settings and secrets: $root/server/server.env (root only)"
@@ -351,6 +352,11 @@ main() {
 			*) die "Unknown option: $argument (see --help)" ;;
 		esac
 	done
+
+	# It's written into the quire-server command and Compose's paths: a plain absolute path only.
+	if ! printf '%s\n' "$root" | grep -Eq '^/[A-Za-z0-9._/-]+$' || printf '%s\n' "$root" | grep -q '\.\.'; then
+		die "\"$root\" (QUIRE_SERVER_ROOT) isn't a plain absolute path."
+	fi
 
 	if [ -n "$email" ]; then
 		printf '%s\n' "$email" | grep -Eq '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$' || die "\"$email\" isn't an email address."
