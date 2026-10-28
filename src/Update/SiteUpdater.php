@@ -154,6 +154,65 @@ final readonly class SiteUpdater
     }
 
     /**
+     * Restores a backup of the site (e.g. one from off the server): its database and files as the
+     * backup has them. The site is backed up as it is first; if it doesn't answer after the restore,
+     * that backup is put back.
+     *
+     * @param array<string, scalar>  $parameters What's recorded of where it came from
+     * @param \Closure(string): void $say
+     *
+     * @throws UpdateFailed When it failed (the site as it was, or not even that: see its message)
+     */
+    public function restoreBackup(SiteName $name, string $backup, array $parameters, string $channel, string $requestedBy, \Closure $say): void
+    {
+        $this->lock->run($name, function () use ($name, $backup, $parameters, $channel, $requestedBy, $say): void {
+            $site = $this->running($name);
+            $project = $this->sites->projectOf($site);
+            $operation = $this->operations->start('site.restore', $name, $parameters, $channel, $requestedBy);
+            $step = $this->stepper($operation, $say);
+            $current = null;
+
+            try {
+                $step('Backing it up, as it is');
+                $current = $this->sites->backup($name, $project, 'before-restore');
+                $operation->line('Backed up to '.$current);
+
+                $step('Restoring the backup');
+                $this->restore($project, $backup, $operation);
+
+                $step('Checking it');
+                $this->check($project, $site);
+            } catch (\Throwable $e) {
+                $operation->line('!! '.$e->getMessage());
+
+                if (null === $current) {
+                    $operation->fail('Restoring it failed before anything changed: '.$e->getMessage());
+
+                    throw new UpdateFailed($operation->id, true, $e->getMessage(), $e);
+                }
+
+                $step('Putting it back as it was before the restore');
+
+                try {
+                    $this->restore($project, $current, $operation);
+                    $this->check($project, $site);
+                } catch (\Throwable $failure) {
+                    $this->registry->setStatus($name, Site::FAILED);
+                    $operation->fail(\sprintf('Restoring the backup failed (%s), and putting the site back failed too (%s). Its backup from before: %s.', $e->getMessage(), $failure->getMessage(), $current));
+
+                    throw new UpdateFailed($operation->id, false, $e->getMessage(), $e);
+                }
+
+                $operation->fail('Restoring the backup failed, and the site is as it was before: '.$e->getMessage());
+
+                throw new UpdateFailed($operation->id, true, $e->getMessage(), $e);
+            }
+
+            $operation->succeed();
+        });
+    }
+
+    /**
      * Undoes the site's last update or deploy (within a week): its files and image before it, and,
      * when its migrations ran (or it isn't known), its database and files as they were then.
      *

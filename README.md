@@ -92,6 +92,11 @@ quire-server site:key blog              # Git mode: a site's deploy key (see "Si
 quire-server site:deploy blog [--commit=…]
 quire-server site:poll blog on|off      # Git mode: deploy new commits by itself
 quire-server site:remove jane          # asks you to type its name; backs it up first
+quire-server backups:setup              # backups off the server: where, and their password (see "Backups")
+quire-server backups jane | backups server      # what's stored off the server
+quire-server backups:now [jane]         # back up now (everything, or one site)
+quire-server backups:restore jane [--snapshot=…]   # put a site back as a backup has it
+quire-server backups:check [--read=5]   # check the stored backups
 quire-server operations [--site=jane]  # what was done, by whom, and how it ended
 quire-server operations <id>           # an operation's log
 quire-server up | down | ps | logs     # the server itself
@@ -154,6 +159,29 @@ A site's versions are recorded in its folder's `composer.lock` (taken from its i
 
 A server installed from a checkout (`--source`) moves to releases the same way.
 
+## Backups
+
+Every site is backed up on the server before anything risky (an update, a restore, removing it), in `/srv/quire/backups/<site>/`. **Backups off the server** are what survive losing the server itself: set them up once.
+
+```bash
+quire-server backups:setup
+```
+
+It asks for an S3-compatible bucket (DigitalOcean Spaces, Backblaze B2, Hetzner Object Storage, AWS S3…) and a key for it, checks they work, creates the backup repository there, and **shows its password once: keep it, with the bucket's key, somewhere other than this server** (a password manager). Without them the backups can't be read, and if the server is lost, they're the way back.
+
+Then, every night (from 02:00 UTC; `QUIRE_SERVER_BACKUP_HOUR` in `server.env`, or `off`):
+
+- **every running site** is backed up (`quire:backup`: its database and files) and **the server's own** (its registry, the front door's domains, Git mode sites' deploy keys);
+- they're sent off the server with [restic](https://restic.net): **encrypted on the server** (AES-256) before they leave it, and stored once per unique piece, so a night adds only what changed;
+- **kept** 7 daily, 4 weekly and 6 monthly, for each site on its own (`QUIRE_SERVER_BACKUP_KEEP`); on Sundays the storage only forgotten backups used is freed, and 5% of the stored data is read back to check it;
+- a site that fails doesn't stop the others; `quire-server operations` shows each night's run.
+
+`quire-server backups jane` lists a site's backups off the server; `quire-server backups:restore jane` puts it back as its latest one has it (or `--snapshot=<ID>`): the site is backed up as it is first, and put back if it doesn't answer after. `quire-server backups:check` checks them at any time.
+
+A new server connects to the same backups with `quire-server backups:setup --existing` (the bucket, its key and the password). Restoring a site into a new server, and a whole server, come next.
+
+The bucket's key can delete backups: someone who takes over the server can too. For backups that survive that, give the key no right to delete, and let the bucket's own rules (object lock, lifecycle) keep and expire them.
+
 ## Sites from a Git repository
 
 For developers: a site can follow a branch of your repository (a project made from `quire/skeleton`) instead of being managed by the server. Its code, Quire's version and its extensions are then yours to change, in the repository; the server builds and runs what you commit.
@@ -205,7 +233,7 @@ The agent can act on Docker, and that's root on the machine, so the server is bu
   - files readable by root only, never in images or command lines;
   - database passwords sent to PostgreSQL only as SCRAM verifiers;
   - operation logs scrubbed of them.
-- **Nothing is deleted without a backup,** and every operation is recorded.
+- **Nothing is deleted without a backup,** and every operation is recorded. **Backups off the server are encrypted on it** (restic) before they leave; their password and the bucket's keys are in `server.env` (root only), never in a command line or a log.
 - **Sites build on Quire's runtime images only when they check out:** before every build, each runtime image a site's Dockerfile names (`ghcr.io/quirecms/runtime`, `RUNTIME_BUILDER` and `RUNTIME`) must be signed by quirecms/framework's runtime workflow (Sigstore), and the build gets it by the digest that was checked. One that doesn't check out stops the build (an update is rolled back). Other base images are the site's choice, built on as they are and noted in the operation's log.
 - **Updates of the server are checked before any of their code runs,** by the release that runs (see "Updating the server"). The updater is the one part with Docker itself rather than the docker-proxy, since it may replace the docker-proxy: it runs only on demand, only the installed release's code, and takes nothing but a version.
 

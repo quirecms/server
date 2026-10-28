@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Quire\Server\Console;
 
+use Quire\Server\Backup\OffsiteBackups;
 use Quire\Server\FrontDoor\DomainDirectory;
 use Quire\Server\Git\GitPoller;
 use Quire\Server\Operation\OperationLog;
@@ -20,8 +21,8 @@ use Symfony\Component\Console\Style\SymfonyStyle;
     help: <<<'HELP'
         Runs as the agent container's main process. When it starts, operations a crash or a restart
         interrupted are marked failed. Then, every minute, the front door's list of domains is made to
-        match the sites that run, new commits of Git mode sites that poll are deployed, sites due for
-        their nightly automatic updates get them, and a heartbeat file says the agent is alive (for
+        match the sites that run, new commits of Git mode sites that poll are deployed, the nightly
+        backups off the server are made when due, sites due for their nightly automatic updates get them, and a heartbeat file says the agent is alive (for
         Docker's health check; also at each step of a long deploy or update).
         HELP,
 )]
@@ -37,6 +38,7 @@ final class AgentCommand
         private readonly DomainDirectory $frontDoor,
         private readonly GitPoller $poller,
         private readonly AutomaticUpdates $updates,
+        private readonly OffsiteBackups $backups,
     ) {
     }
 
@@ -75,6 +77,7 @@ final class AgentCommand
 
             touch(self::HEARTBEAT);
             $this->poller->poll($this->alive(static fn (string $line) => $io->writeln('Git: '.$line)));
+            $this->backUp($io);
             $this->updates->run(false, 'agent', $this->alive(static fn (string $line) => $io->writeln('Updates: '.$line)));
             touch(self::HEARTBEAT);
 
@@ -84,6 +87,20 @@ final class AgentCommand
         } while (!$once && !$this->stopping);
 
         return Command::SUCCESS;
+    }
+
+    /**
+     * Tonight's backups off the server, when they're due (a failure is in their operation's log).
+     */
+    private function backUp(SymfonyStyle $io): void
+    {
+        try {
+            if ($this->backups->due()) {
+                $this->backups->nightly('agent', 'automatic', $this->alive(static fn (string $line) => $io->writeln('Backups: '.$line)));
+            }
+        } catch (\Throwable $e) {
+            $io->writeln('Backups: '.$e->getMessage());
+        }
     }
 
     /**

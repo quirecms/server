@@ -60,6 +60,15 @@ services:
       QUIRE_SERVER_GIT_POLL_SECONDS: ${QUIRE_SERVER_GIT_POLL_SECONDS:-300}
       # The hour (UTC) from which sites get their automatic updates each night ("site:updates"), or "off"
       QUIRE_SERVER_UPDATE_HOUR: ${QUIRE_SERVER_UPDATE_HOUR:-3}
+      # Backups off the server ("quire-server backups:setup"): restic, on S3-compatible storage
+      QUIRE_SERVER_BACKUP_REPOSITORY: ${QUIRE_SERVER_BACKUP_REPOSITORY:-}
+      QUIRE_SERVER_BACKUP_ACCESS_KEY: ${QUIRE_SERVER_BACKUP_ACCESS_KEY:-}
+      QUIRE_SERVER_BACKUP_SECRET_KEY: ${QUIRE_SERVER_BACKUP_SECRET_KEY:-}
+      QUIRE_SERVER_BACKUP_PASSWORD: ${QUIRE_SERVER_BACKUP_PASSWORD:-}
+      QUIRE_SERVER_BACKUP_REGION: ${QUIRE_SERVER_BACKUP_REGION:-us-east-1}
+      QUIRE_SERVER_BACKUP_HOST: ${QUIRE_SERVER_BACKUP_HOST:-quire-server}
+      QUIRE_SERVER_BACKUP_HOUR: ${QUIRE_SERVER_BACKUP_HOUR:-2}
+      QUIRE_SERVER_BACKUP_KEEP: ${QUIRE_SERVER_BACKUP_KEEP:-7 daily, 4 weekly, 6 monthly}
       DOCKER_HOST: tcp://docker-proxy:2375
     volumes:
       # The same paths inside as on the host: Compose resolves sites' paths for the Docker daemon.

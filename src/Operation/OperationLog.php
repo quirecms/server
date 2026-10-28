@@ -82,6 +82,16 @@ final readonly class OperationLog
     /**
      * Operations a crash or a restart left "running": marked failed, so none looks busy forever.
      */
+    /**
+     * When an action last started, or null when it never did.
+     */
+    public function lastStarted(string $action): ?\DateTimeImmutable
+    {
+        $at = $this->connection->fetchOne(\sprintf('SELECT max(started_at) FROM %s.operation WHERE action = ?', $this->schema()), [$action]);
+
+        return \is_string($at) ? new \DateTimeImmutable($at) : null;
+    }
+
     public function abandonRunning(): int
     {
         return (int) $this->connection->executeStatement(\sprintf("UPDATE %s.operation SET status = 'failed', error = 'Interrupted: the agent stopped while it ran.', finished_at = now() WHERE status = 'running'", $this->schema()));

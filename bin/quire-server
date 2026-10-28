@@ -7,6 +7,7 @@
 #   quire-server site:key blog | site:deploy blog | site:poll blog on   (Git mode)
 #   quire-server site:list | site:remove jane | operations
 #   quire-server update [--to=X.Y.Z] [--check] [--undo]   (the server itself, to a newer release)
+#   quire-server backups:setup | backups jane | backups:now [jane] | backups:restore jane | backups:check
 #   quire-server up | down | logs | ps          (the server itself)
 #
 # Runs as root (it acts on Docker); everything it does is recorded with who asked.
@@ -31,8 +32,10 @@ case "${1:-help}" in
 	logs) shift; compose logs "$@" ;;
 	ps) shift; compose ps "$@" ;;
 	help|-h|--help) compose exec -T agent bin/console list server ;;
-	update)
-		# In the updater, not the agent (it replaces the agent): one at a time, its name says so.
+	update | backups:setup)
+		# In the updater, not the agent (it replaces the agent, or saves server.env): one at a time,
+		# its name says so. Secrets for automation come from the environment, never from arguments.
+		command=$1
 		shift
 		tty=-T
 		if [ -t 0 ] && [ -t 1 ]; then tty=; fi
@@ -41,7 +44,9 @@ case "${1:-help}" in
 			exit 1
 		fi
 		exec docker compose --project-directory "$root/server" --env-file "$root/server/server.env" --profile update \
-			run --rm --no-deps --name quire-server-updater $tty -e "QUIRE_SERVER_REQUESTED_BY=${SUDO_USER:-$(id -un)}" updater bin/console server:update "$@"
+			run --rm --no-deps --name quire-server-updater $tty -e "QUIRE_SERVER_REQUESTED_BY=${SUDO_USER:-$(id -un)}" \
+			-e QUIRE_SERVER_BACKUP_SETUP_SECRET_KEY -e QUIRE_SERVER_BACKUP_SETUP_PASSWORD \
+			updater bin/console "server:$command" "$@"
 		;;
 	*)
 		command=$1
