@@ -13,6 +13,7 @@ use Quire\Server\Docker\SkeletonInstaller;
 use Quire\Server\FrontDoor\DomainDirectory;
 use Quire\Server\Git\DeployKeys;
 use Quire\Server\Git\Git;
+use Quire\Server\Git\Repository;
 use Quire\Server\Operation\OperationLog;
 use Quire\Server\Operation\SiteManager;
 use Quire\Server\Operation\SiteRequest;
@@ -202,6 +203,26 @@ final class SiteManagerTest extends RegistryTestCase
         self::assertSame([], $this->frontDoor->all());
         self::assertSame(Site::REMOVED, $this->registry->get($this->name)?->status);
         self::assertSame('failed', $this->operations->latest()[0]['status']);
+    }
+
+    public function testRestoringAGitModeSiteTakesItsCodeFromItsRepository(): void
+    {
+        [, $backup] = $this->backedUpSite();
+        $commit = 'c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1';
+        $this->script['git -c'] = static function (array $command): ProcessResult {
+            // git clone: the branch's files, in the folder named last
+            new Filesystem()->dumpFile(self::argument($command, \count($command) - 1).'/.git/info/exclude', '');
+
+            return self::ok($command, '');
+        };
+        $this->script['git -C'] = static fn (array $command): ProcessResult => self::ok($command, $commit."\n");
+
+        $site = $this->manager()->restoreAsNew($this->name, $this->request()->domains, new Repository('https://example.com/jane.git', 'main'), $backup, [], 'cli', 'darko', static fn (): null => null, poll: true);
+
+        self::assertSame(Site::RUNNING, $site->status);
+        $git = new SiteGit($this->connection, $this->schema)->of($this->name);
+        self::assertSame(['https://example.com/jane.git', 'main', $commit, true], [$git['repository']->url ?? null, $git['repository']->branch ?? null, $git['deployed'] ?? null, $git['poll'] ?? null]);
+        self::assertContains('quire:restore', array_map(static fn (array $command): string => $command[12] ?? '', $this->commands));
     }
 
     public function testOnlyASitesFolderIsRestoredAsOne(): void
