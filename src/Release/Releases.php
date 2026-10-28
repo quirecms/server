@@ -17,9 +17,9 @@ use Quire\Server\Process\ProcessRunner;
 final readonly class Releases
 {
     public const string REPOSITORY = 'quirecms/server';
-    private const string ISSUER = 'https://token.actions.githubusercontent.com';
 
     public function __construct(
+        private GitHubReleases $github,
         private ProcessRunner $runner,
     ) {
     }
@@ -31,17 +31,7 @@ final readonly class Releases
      */
     public function latest(): ?Version
     {
-        $result = $this->runner->run([...$this->curl(), '-o', '/dev/null', '-w', '%{url_effective}', \sprintf('https://github.com/%s/releases/latest', self::REPOSITORY)], timeout: 60);
-
-        if (!$result->successful()) {
-            throw new ReleaseVerificationFailed(\sprintf('GitHub couldn\'t be reached for the latest release: %s', trim($result->errorOutput)));
-        }
-
-        if (1 !== preg_match('#^https://github\.com/'.preg_quote(self::REPOSITORY, '#').'/releases/tag/v([^/?\#]+)\z#', trim($result->output), $match)) {
-            return null;
-        }
-
-        return Version::tryFrom($match[1]) ?? throw new ReleaseVerificationFailed('The latest release\'s tag isn\'t a version.');
+        return $this->github->latest(self::REPOSITORY);
     }
 
     /**
@@ -59,23 +49,15 @@ final readonly class Releases
 
         // cosign may run as a user of its own: it reads these (public) files.
         chmod($work, 0o755);
-        $this->download($version, 'release.env', $work);
-        $this->download($version, 'release.env.sigstore.json', $work);
+        $releaseEnv = $this->github->download(self::REPOSITORY, $version, 'release.env', $work);
+        $this->github->download(self::REPOSITORY, $version, 'release.env.sigstore.json', $work);
 
-        $identity = self::identity($version);
-        $verified = $this->runner->run(
-            ['cosign', 'verify-blob', '--bundle', $work.'/release.env.sigstore.json', '--certificate-identity', $identity, '--certificate-oidc-issuer', self::ISSUER, $work.'/release.env'],
-            // Sigstore's trusted roots are cached in its home.
-            ['HOME' => $work],
-            timeout: 120,
-        );
-
-        if (!$verified->successful()) {
-            throw new ReleaseVerificationFailed(\sprintf('The signature of Quire Server %s didn\'t check out (it must be signed by %s): not using it.', $version, $identity));
+        if (!$this->github->signed(self::REPOSITORY, $version, $releaseEnv, $work)) {
+            throw new ReleaseVerificationFailed(\sprintf('The signature of Quire Server %s didn\'t check out (it must be signed by %s): not using it.', $version, self::identity($version)));
         }
 
         $say('Its signature checks out (Sigstore: signed by its release workflow, for v'.$version.')');
-        $values = $this->values((string) file_get_contents($work.'/release.env'));
+        $values = $this->values((string) file_get_contents($releaseEnv));
 
         if (($values['VERSION'] ?? null) !== $version->value) {
             throw new ReleaseVerificationFailed('The release names another version: not using it.');
@@ -97,13 +79,13 @@ final readonly class Releases
             throw new ReleaseVerificationFailed('The release names no image: not using it.');
         }
 
-        $this->download($version, $archive, $work);
+        $file = $this->github->download(self::REPOSITORY, $version, $archive, $work);
 
-        if (!hash_equals($checksum, (string) hash_file('sha256', $work.'/'.$archive))) {
+        if (!hash_equals($checksum, (string) hash_file('sha256', $file))) {
             throw new ReleaseVerificationFailed(\sprintf('%s isn\'t the release\'s (its checksum differs): not using it.', $archive));
         }
 
-        $this->extract($work.'/'.$archive, $work.'/files');
+        $this->extract($file, $work.'/files');
 
         return new Release($version, $image, $work.'/files');
     }
@@ -113,18 +95,7 @@ final readonly class Releases
      */
     public static function identity(Version $version): string
     {
-        return \sprintf('https://github.com/%s/.github/workflows/release.yaml@refs/tags/v%s', self::REPOSITORY, $version);
-    }
-
-    private function download(Version $version, string $file, string $work): void
-    {
-        $result = $this->runner->run([...$this->curl(), '--retry', '3', '-o', $work.'/'.$file, \sprintf('https://github.com/%s/releases/download/v%s/%s', self::REPOSITORY, $version, $file)], timeout: 300);
-
-        if (!$result->successful()) {
-            throw new ReleaseVerificationFailed(\sprintf('%s of Quire Server %s couldn\'t be downloaded (is there such a release?).', $file, $version));
-        }
-
-        chmod($work.'/'.$file, 0o644);
+        return GitHubReleases::identity(self::REPOSITORY, $version);
     }
 
     /**
@@ -146,14 +117,6 @@ final readonly class Releases
         if (!is_file($into.'/compose.yaml') || !is_file($into.'/bin/quire-server')) {
             throw new ReleaseVerificationFailed('The release\'s archive isn\'t Quire Server\'s (no compose.yaml, bin/quire-server): not using it.');
         }
-    }
-
-    /**
-     * @return list<string>
-     */
-    private function curl(): array
-    {
-        return ['curl', '-fsSL', '--proto', '=https', '--tlsv1.2', '--max-filesize', '104857600'];
     }
 
     /**

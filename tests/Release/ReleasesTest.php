@@ -7,6 +7,7 @@ namespace Quire\Server\Tests\Release;
 use PHPUnit\Framework\TestCase;
 use Quire\Server\Process\ProcessResult;
 use Quire\Server\Process\SymfonyProcessRunner;
+use Quire\Server\Release\GitHubReleases;
 use Quire\Server\Release\Releases;
 use Quire\Server\Release\ReleaseVerificationFailed;
 use Quire\Server\Release\Version;
@@ -73,7 +74,7 @@ final class ReleasesTest extends TestCase
     public function testAReleaseThatChecksOutIsExtracted(): void
     {
         $said = [];
-        $release = new Releases($this->runner)->fetch(new Version('0.2.0'), $this->work, static function (string $line) use (&$said): void {
+        $release = new Releases(new GitHubReleases($this->runner), $this->runner)->fetch(new Version('0.2.0'), $this->work, static function (string $line) use (&$said): void {
             $said[] = $line;
         });
 
@@ -159,30 +160,30 @@ final class ReleasesTest extends TestCase
 
     public function testTheLatestRelease(): void
     {
-        self::assertSame('0.2.0', new Releases($this->runner)->latest()?->value);
+        self::assertSame('0.2.0', new Releases(new GitHubReleases($this->runner), $this->runner)->latest()?->value);
 
         // No release yet: GitHub's "latest" leads to the list of releases.
         $this->latest = 'https://github.com/quirecms/server/releases';
-        self::assertNull(new Releases($this->runner)->latest());
+        self::assertNull(new Releases(new GitHubReleases($this->runner), $this->runner)->latest());
     }
 
     public function testALatestTagThatIsNotAVersionIsRefused(): void
     {
         $this->latest = 'https://github.com/quirecms/server/releases/tag/v0.2.0;rm';
         $this->expectException(ReleaseVerificationFailed::class);
-        new Releases($this->runner)->latest();
+        new Releases(new GitHubReleases($this->runner), $this->runner)->latest();
     }
 
     public function testALatestReleaseElsewhereIsIgnored(): void
     {
         $this->latest = 'https://github.com/evil/server/releases/tag/v9.0.0';
-        self::assertNull(new Releases($this->runner)->latest());
+        self::assertNull(new Releases(new GitHubReleases($this->runner), $this->runner)->latest());
     }
 
     private function refused(string $message): void
     {
         try {
-            new Releases($this->runner)->fetch(new Version('0.2.0'), $this->work, static function (): void {});
+            new Releases(new GitHubReleases($this->runner), $this->runner)->fetch(new Version('0.2.0'), $this->work, static function (): void {});
             self::fail('The release was used.');
         } catch (ReleaseVerificationFailed $e) {
             self::assertMatchesRegularExpression($message, $e->getMessage());

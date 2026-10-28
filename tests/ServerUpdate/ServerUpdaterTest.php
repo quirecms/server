@@ -10,6 +10,7 @@ use Quire\Server\Operation\OperationLog;
 use Quire\Server\Process\ProcessResult;
 use Quire\Server\Process\SymfonyProcessRunner;
 use Quire\Server\Registry\SiteLock;
+use Quire\Server\Release\GitHubReleases;
 use Quire\Server\Release\Releases;
 use Quire\Server\Release\Version;
 use Quire\Server\ServerUpdate\ServerBackup;
@@ -386,7 +387,7 @@ final class ServerUpdaterTest extends RegistryTestCase
     private function updater(string $running): ServerUpdater
     {
         return new ServerUpdater(
-            new Releases($this->runner),
+            new Releases(new GitHubReleases($this->runner), $this->runner),
             new ServerFolder($this->runner, $this->root),
             new ServerStack($this->runner, 'unix:///var/run/docker.sock', 's3cret'),
             new SiteLock($this->connection),

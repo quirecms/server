@@ -156,6 +156,9 @@ check 'it is served through the front door' "inside \"curl -sk $resolve https://
 fi
 
 if want sites; then
+# The agent's nightly updates off on this machine: only the checks below update the site.
+inside "printf 'QUIRE_SERVER_UPDATE_HOUR=off\\n' >> /srv/quire/server/server.env && quire-server up >/dev/null 2>&1"
+check 'automatic updates can be off for the whole server' "inside 'quire-server logs agent' | grep -q 'Automatic updates: off on this server'"
 echo '== Adding a site (a few minutes: it is built)'
 inside 'quire-server site:add jane --domain=jane.test --domain=www.jane.test --admin-email=jane@example.com --title="Jane" 2>&1' | tee "$logs"/add.log | sed 's/^/    /'
 check 'the site runs' "inside 'quire-server site:list' | grep -q running"
@@ -212,6 +215,18 @@ check 'the site answers as before' "[ \"\$(inside \"curl -sk $resolve -o /dev/nu
 check 'its database is kept: no migrations ran, as quire:about said' "! inside \"quire-server operations \$(inside 'quire-server operations' | grep site.update | head -1 | awk '{print \$1}')\" | grep -q 'Restoring its backup'"
 check 'it is still running' "inside 'quire-server site:list' | grep jane | grep -q running"
 inside 'rm -rf /srv/quire/sites/jane/src/EventListener'
+
+echo '== Automatic updates (what the night does, run now)'
+check 'a site gets security updates by default' "inside 'quire-server site:updates jane' | grep -q 'fix a known vulnerability'"
+inside 'quire-server site:updates jane off >/dev/null'
+check 'a site whose automatic updates are off gets none' "inside 'quire-server site:update --all --automatic 2>&1' | grep -q 'No site gets automatic updates'"
+inside 'quire-server site:updates jane security >/dev/null'
+inside 'quire-server site:update --all --automatic 2>&1' | tee "$logs"/automatic.log | sed 's/^/    /'
+check 'its known vulnerability is fixed by itself' "grep -Eq 'jane +updated +fixes symfony/yaml' $logs/automatic.log && ! inside 'grep -A1 \"\\\"name\\\": \\\"symfony/yaml\\\"\" /srv/quire/sites/jane/composer.lock' | grep -q '\"v8.1.0\"'"
+check 'it is recorded as made by itself' "inside 'quire-server operations' | grep site.update | head -1 | grep -q 'automatic'"
+check 'it answers after its automatic update' "[ \"\$(inside \"curl -sk $resolve -o /dev/null -w '%{http_code}' https://jane.test/\")\" = 200 ]"
+inside 'quire-server site:update --all --automatic 2>&1' > "$logs"/automatic-again.log
+check 'the next run finds nothing to fix' "grep -Eq 'jane +up to date +no known vulnerability' $logs/automatic-again.log"
 fi
 
 if want git; then

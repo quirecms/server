@@ -14,6 +14,8 @@ use Quire\Server\Process\ProcessRunner;
  */
 final readonly class Composer
 {
+    private const string PACKAGE = '#^[a-z0-9]([_.-]?[a-z0-9]+)*/[a-z0-9](([_.]|-{1,2})?[a-z0-9]+)*\z#';
+
     public function __construct(
         private ProcessRunner $runner,
     ) {
@@ -21,13 +23,21 @@ final readonly class Composer
 
     /**
      * Updates the lock in this folder to the newest versions its composer.json allows, with temporary
-     * constraints on top (e.g. "quire/core:0.2.0", "symfony/yaml:8.1.*").
+     * constraints on top (e.g. "quire/core:0.2.0", "symfony/yaml:8.1.*"): every package, or only these
+     * (and what they need).
      *
      * @param list<string>                  $with
      * @param (\Closure(string): void)|null $output
+     * @param list<string>                  $packages
      */
-    public function update(string $directory, array $with, ?\Closure $output = null): void
+    public function update(string $directory, array $with, ?\Closure $output = null, array $packages = []): void
     {
+        foreach ($packages as $package) {
+            if (1 !== preg_match(self::PACKAGE, $package)) {
+                throw new \InvalidArgumentException(\sprintf('"%s" isn\'t a package name.', $package));
+            }
+        }
+
         foreach ($with as $constraint) {
             if (1 !== preg_match('#^[a-z0-9]([_.-]?[a-z0-9]+)*/[a-z0-9](([_.]|-{1,2})?[a-z0-9]+)*:[0-9A-Za-z.*^~<>=|, -]+\z#', $constraint)) {
                 throw new \InvalidArgumentException(\sprintf('"%s" isn\'t a package constraint.', $constraint));
@@ -35,7 +45,7 @@ final readonly class Composer
         }
 
         $this->composer($directory, [
-            'update', '--with-all-dependencies', '--no-install', '--no-scripts', '--no-plugins', '--no-audit', '--no-progress',
+            'update', ...$packages, '--with-all-dependencies', '--no-install', '--no-scripts', '--no-plugins', '--no-audit', '--no-progress',
             // The site's image has the extensions (the agent doesn't); its build checks them.
             '--ignore-platform-req=ext-*',
             ...array_map(static fn (string $constraint): string => '--with='.$constraint, $with),

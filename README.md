@@ -84,6 +84,8 @@ quire-server site:list
 quire-server version                    # which release this server runs
 quire-server update [--to=0.2.0] [--check] [--undo]   # the server itself, see "Updating the server"
 quire-server site:update jane [--to=0.2.0] [--dry-run]   # see "Updating a site"
+quire-server site:update --all [--automatic]             # every site; --automatic: what the night does, now
+quire-server site:updates jane [security|all|off]        # which updates it gets by itself, every night
 quire-server site:undo jane             # its last update or deploy, within a week
 quire-server site:audit jane            # known vulnerabilities in its packages
 quire-server site:key blog              # Git mode: a site's deploy key (see "Sites from a Git repository")
@@ -119,6 +121,22 @@ Then the update:
 6. **Rolls back by itself if anything fails:** the files and image it had, and its backup restored if the new version's migrations ran (or that can't be known, for sites older than Quire 0.1.1). If even that fails, the site is marked failed, and the operation's log says where its backup is.
 
 `quire-server site:undo jane` undoes the last update within a week. If that update ran no migrations, only the code goes back. Otherwise its backup from before the update is restored too, and changes made since are lost; you're asked first.
+
+### Automatic updates
+
+Every night (from 03:00 UTC; `QUIRE_SERVER_UPDATE_HOUR` in `server.env` sets the hour, or `off` for none on the server), each site gets the updates its policy says, made as above: built beside, backed up, checked, rolled back by itself.
+
+- **`security`** (the default): when a package the site runs has a known vulnerability, that package (and what it needs) is updated, if an update fixes it. Nothing else changes.
+- **`all`**: everything its `composer.json` allows.
+- **`off`**: none; `site:update` by hand.
+
+`quire-server site:updates jane all` sets it; `quire-server operations` shows what was done, by `automatic`. Some updates always wait for you: one that changes files of the skeleton the site edited, and one that changes Quire's version without Quire's signed release feed vouching for it. Git mode sites get none: their updates are made in their repository.
+
+`quire-server site:update --all` updates every site now, one after the other (asking once); `--all --automatic` does what tonight would.
+
+### Quire's release feed
+
+Each Quire release publishes a feed, signed by Quire's release workflow (Sigstore): every release, its security fixes, what to do when updating, and what it requires. Before an update changes a site's Quire, the server checks the feed's signature and reads it: the plan shows the security fixes and upgrade notes, and a release this server can't run is refused (one that keeps a newer server contract: update the server first; one that needs a newer PostgreSQL than the server's, for sites on the server's PostgreSQL).
 
 A site's versions are recorded in its folder's `composer.lock` (taken from its image when it's added or adopted). Its builds install exactly those versions; only updates change them.
 

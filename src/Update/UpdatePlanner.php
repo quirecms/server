@@ -28,8 +28,9 @@ final readonly class UpdatePlanner
     /**
      * @param string|null                   $to     A Quire release to move to (e.g. a new minor version); within its composer.json's constraints otherwise
      * @param (\Closure(string): void)|null $output
+     * @param list<string>                  $only   Only these packages (and what they need), e.g. those with known vulnerabilities
      */
-    public function plan(SiteName $name, ?string $to = null, ?\Closure $output = null): UpdatePlan
+    public function plan(SiteName $name, ?string $to = null, ?\Closure $output = null, array $only = []): UpdatePlan
     {
         if (null !== $to && 1 !== preg_match(self::VERSION, $to)) {
             throw new \InvalidArgumentException(\sprintf('"%s" isn\'t a Quire release, e.g. "0.2.0".', $to));
@@ -53,7 +54,7 @@ final readonly class UpdatePlanner
             $advisoriesBefore = $this->composer->audit($workspace.'/composer');
             $with = [...$this->moveTo($workspace.'/composer/composer.json', $to), ...$this->symfonyMinor($workspace.'/composer/composer.json', $from)];
 
-            $this->composer->update($workspace.'/composer', $with, $output);
+            $this->composer->update($workspace.'/composer', $with, $output, $only);
 
             $toLock = Lock::read($workspace.'/composer/composer.lock');
             $composerJson = (string) file_get_contents($workspace.'/composer/composer.json');

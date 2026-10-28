@@ -128,4 +128,19 @@ final class Schema
             "ALTER TABLE {$s}.site_update ADD COLUMN commit_after text",
         ];
     }
+
+    /**
+     * Each site's automatic updates: which it gets, and when they were last looked for.
+     *
+     * @return list<string>
+     */
+    public static function version4(string $schema = self::NAME): array
+    {
+        $s = '"'.str_replace('"', '""', $schema).'"';
+
+        return [
+            "ALTER TABLE {$s}.site ADD COLUMN updates text NOT NULL DEFAULT 'security' CHECK (updates IN ('security', 'all', 'off'))",
+            "ALTER TABLE {$s}.site ADD COLUMN updates_checked_at timestamptz",
+        ];
+    }
 }
