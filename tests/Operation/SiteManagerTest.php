@@ -8,6 +8,7 @@ use Quire\Server\Database\SiteDatabases;
 use Quire\Server\Docker\Compose;
 use Quire\Server\Docker\ComposePolicy;
 use Quire\Server\Docker\PolicyViolation;
+use Quire\Server\Docker\RuntimeImages;
 use Quire\Server\Docker\SkeletonInstaller;
 use Quire\Server\FrontDoor\DomainDirectory;
 use Quire\Server\Git\DeployKeys;
@@ -428,7 +429,7 @@ final class SiteManagerTest extends RegistryTestCase
             new SkeletonInstaller($runner),
             $this->databases,
             new \Quire\Server\Site\SiteFiles(),
-            new Compose($runner, new ComposePolicy(), 'tcp://docker-proxy:2375'),
+            new Compose($runner, new ComposePolicy(), new RuntimeImages($runner), 'tcp://docker-proxy:2375'),
             $this->frontDoor,
             $this->paths,
             new Git($runner, $keys = new DeployKeys($runner, $this->paths)),
