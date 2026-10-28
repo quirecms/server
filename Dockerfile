@@ -7,7 +7,7 @@
 # Images are pinned by digest (a tag can be moved, a digest can't); Dependabot proposes new ones.
 FROM docker:29.9.2-cli@sha256:5e6baf67325a79f64ed3bed6863954d5e05d0f3d4e57cbdb14809346814bbfdb AS docker_cli
 FROM composer:2.10.3@sha256:b6dcd72ca98fa19d0e5b8476de179859704891fad06dd9e0b96833d4c430a5fc AS composer
-FROM mlocati/php-extension-installer:2.8@sha256:11cc39eda4403fa4ee6b47df9fdf6d1d1546f76196a1e90d58a1b6e4ffd05655 AS php_extension_installer
+FROM mlocati/php-extension-installer:2.12@sha256:ac4b252c153a9f6de5578ff2c417790aba836bb49855543144606033eceda253 AS php_extension_installer
 
 FROM php:8.5-cli-alpine@sha256:e899a75c775804e5466dbd9c96b31f8b6c6ae2ddb053a8466223a0c32992ff8e AS agent
 
