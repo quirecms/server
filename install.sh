@@ -158,8 +158,12 @@ fetch() {
 	say "Checking Quire Server $version"
 	work=$(mktemp -d)
 	mkdir "$work/files"
+	# cosign's image runs as a user of its own: it may read the release's files (public ones, which
+	# only root may change), whatever root's umask.
+	chmod 755 "$work"
 	download() {
 		curl -fsSL --proto '=https' --tlsv1.2 --retry 3 -o "$work/$1" "https://github.com/$repository/releases/download/v$version/$1" || die "Couldn't download $1 of Quire Server $version."
+		chmod 644 "$work/$1"
 	}
 	# Signed by this repository's release workflow, for this very tag, through GitHub's identity provider
 	identity="https://github.com/$repository/.github/workflows/release.yaml@refs/tags/v$version"

@@ -6,6 +6,8 @@
 #   tests/e2e/run.sh [agent-image]
 #   KEEP=1 tests/e2e/run.sh …          keeps the machine and the sites afterwards, to look around
 #   E2E_ONLY=git tests/e2e/run.sh …    the server and one part only: adopt, sites or git
+#   E2E_ONLY=release tests/e2e/run.sh  this checkout's install.sh installs the latest published release
+#                                             (its signatures checked) and adds a site with its agent
 #   E2E_CACHE=1 tests/e2e/run.sh …     keeps the machine's images and build cache between runs
 #                                             (in the volume quire-server-e2e-cache; one run at a time)
 #
@@ -34,8 +36,9 @@ cleanup() {
 trap cleanup EXIT
 
 echo '== A machine of its own (Docker-in-Docker)'
-# Whether a part runs (all of them unless E2E_ONLY names one)
+# Whether a part runs (all of them unless E2E_ONLY names one; the release only when named)
 want() { [ -z "${E2E_ONLY:-}" ] || [ "$E2E_ONLY" = "$1" ]; }
+release() { [ "${E2E_ONLY:-}" = release ]; }
 cache=''
 if [ "${E2E_CACHE:-}" = 1 ]; then cache='-v quire-server-e2e-cache:/var/lib/docker'; fi
 # shellcheck disable=SC2086 # $cache is empty or two words
@@ -61,17 +64,31 @@ echo '== Installing the server with install.sh (it adopts the site)'
 docker exec "$dind" mkdir -p /root/quire-server
 tar -C "$here" --exclude=./.git --exclude=./vendor --exclude=./var --exclude=./tests -cf - . | docker exec -i "$dind" tar -C /root/quire-server -xf -
 
-if [ -n "$image" ]; then
-	docker save "$image" | docker exec -i "$dind" docker load -q
-	inside "docker tag $image quire-server-agent"
+if release; then
+	# The latest release, as a user gets it, but checked by this checkout's install.sh; with root's
+	# umask as strict as it gets (cosign runs as a user of its own and must still read the files).
+	install='umask 077; sh /root/quire-server/install.sh --yes --test-certificates --no-os-updates 2>&1'
+	check 'a release that doesn'\''t exist, or a version that isn'\''t one, installs nothing' "! inside 'sh /root/quire-server/install.sh --version=0.0.0 --yes --no-os-updates' && ! inside 'sh /root/quire-server/install.sh \"--version=0.1.0/../..\" --yes --no-os-updates' && ! inside 'test -e /srv/quire/server'"
+else
+	install='sh /root/quire-server/install.sh --source=/root/quire-server --yes --test-certificates --no-os-updates 2>&1'
+	if [ -n "$image" ]; then
+		docker save "$image" | docker exec -i "$dind" docker load -q
+		inside "docker tag $image quire-server-agent"
+	fi
 fi
 
-inside 'sh /root/quire-server/install.sh --source=/root/quire-server --yes --test-certificates --no-os-updates 2>&1' | tee "$logs"/install.log | sed 's/^/    /'
+inside "$install" | tee "$logs"/install.log | sed 's/^/    /'
 check 'the installer finished' "grep -q 'Quire Server runs' $logs/install.log"
 check 'the stack is up and healthy' "inside 'quire-server ps --format \"{{.Service}} {{.Health}}\" | grep -q \"agent healthy\"'"
 published=$(inside "docker ps --format '{{.Names}} {{.Ports}}'" | grep -c '0.0.0.0' || true)
 check 'only the front door publishes ports' "[ $published = 1 ]"
+if release; then
+check 'the release'\''s signatures were checked' "grep -q 'Its signature checks out' $logs/install.log && grep -q 'Its image'\''s signature checks out too' $logs/install.log"
+check 'it runs the release'\''s signed image, by digest' "inside 'quire-server version' | grep -Eq '^Agent: ghcr.io/quirecms/server@sha256:[0-9a-f]{64}\$' && [ \"\$(inside 'docker inspect quire-server-agent-1 --format {{.Config.Image}}')\" = \"\$(inside 'sed -n s/^QUIRE_SERVER_IMAGE=//p /srv/quire/server/server.env')\" ]"
+check 'nothing was built on the machine' "[ -z \"\$(inside 'docker images -q quire-server-agent')\" ]"
+else
 check 'it says it was built from a checkout (no release image)' "inside 'quire-server version' | grep -q 'built from a checkout'"
+fi
 check 'every image of the stack is pinned by digest' "! inside 'cd /srv/quire/server && docker compose --env-file server.env config --images' | grep -v '^quire-server-agent\$' | grep -vq '@sha256:'"
 check 'the docker-proxy network has no way out' "inside 'docker network inspect quire-docker --format \"{{.Internal}}\"' | grep -q true"
 check 'its secrets are root'\''s only' "[ \"\$(inside 'stat -c %a /srv/quire/server/server.env')\" = 600 ] && [ \"\$(inside 'stat -c %a /srv/quire/sites')\" = 700 ]"
@@ -91,8 +108,15 @@ check 'its versions are recorded in its folder' "inside 'test -f /srv/quire/site
 fi
 
 server_env=$(inside 'sha256sum /srv/quire/server/server.env')
-inside 'sh /root/quire-server/install.sh --source=/root/quire-server --yes --test-certificates --no-os-updates 2>&1' > "$logs"/install-again.log || true
+inside "$install" > "$logs"/install-again.log || true
 check 'running the installer again changes nothing' "grep -q 'installed in /srv/quire/server already' $logs/install-again.log && grep -q 'Quire Server runs' $logs/install-again.log && [ \"\$(inside 'sha256sum /srv/quire/server/server.env')\" = \"$server_env\" ]"
+
+if release; then
+echo '== Adding a site with the release'\''s agent'
+inside 'quire-server site:add jane --domain=jane.test --admin-email=jane@example.com --title="Jane" 2>&1' | tee "$logs"/add.log | sed 's/^/    /'
+check 'the site runs' "inside 'quire-server site:list' | grep -q running"
+check 'it is served through the front door' "inside \"curl -sk $resolve https://jane.test/\" | grep -q Jane"
+fi
 
 if want sites; then
 echo '== Adding a site (a few minutes: it is built)'
