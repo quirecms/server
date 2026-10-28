@@ -30,12 +30,13 @@ concurrency:
 jobs:
   end-to-end:
     # Each part on a machine of its own, at the same time: the server installed, then adopting a site
-    # installed before it; adding, updating and removing sites; or Git mode.
+    # installed before it; adding, updating and removing sites; Git mode; or the latest published
+    # release, checked and installed by this install.sh (with its agent: nothing built).
     name: End to end (${{ matrix.part }})
     strategy:
       fail-fast: false
       matrix:
-        part: [adopt, sites, git]
+        part: [adopt, sites, git, release]
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
@@ -44,8 +45,9 @@ jobs:
         with:
           persist-credentials: false
       - name: Build the agent
+        if: matrix.part != 'release'
         run: docker build --pull -t quire-server-agent:test .
       - name: Run the server end to end
-        run: tests/e2e/run.sh quire-server-agent:test
+        run: tests/e2e/run.sh ${{ matrix.part != 'release' && 'quire-server-agent:test' || '' }}
         env:
           E2E_ONLY: ${{ matrix.part }}

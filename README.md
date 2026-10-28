@@ -193,9 +193,10 @@ docker build -t quire-server-agent:test .
 tests/e2e/run.sh quire-server-agent:test                 # everything, about 35 minutes
 E2E_ONLY=git E2E_CACHE=1 tests/e2e/run.sh quire-server-agent:test   # one part, with a build cache
 KEEP=1 tests/e2e/run.sh quire-server-agent:test          # keep the machine, to look around
+E2E_ONLY=release tests/e2e/run.sh                        # this install.sh installs the latest release
 ```
 
-CI runs the three parts (`adopt`, `sites`, `git`) in parallel, on clean machines.
+CI runs the four parts (`adopt`, `sites`, `git`, `release`) in parallel, on clean machines.
 
 Sites are found and managed through the contract every Quire site keeps (`Quire\Runtime\ServerContract`, [docs](https://github.com/quirecms/framework/blob/main/docs/docker.md#tools-that-manage-sites)): Quire Server uses no Quire code of its own.
 
