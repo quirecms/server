@@ -206,6 +206,12 @@ check 'the image it ran is kept to undo' "inside 'docker image inspect jane-php-
 inside 'quire-server site:undo jane --yes 2>&1' | tee "$logs"/undo.log | sed 's/^/    /'
 check 'undoing it puts the older version back' "grep -q 'as it was before its update' $logs/undo.log && inside 'grep -A1 \"\\\"name\\\": \\\"symfony/yaml\\\"\" /srv/quire/sites/jane/composer.lock' | grep -q '\"v8.1.0\"' && [ \"\$(inside \"curl -sk $resolve -o /dev/null -w '%{http_code}' https://jane.test/\")\" = 200 ]"
 
+# A runtime image not signed by Quire's runtime workflow (a tag that never is): nothing is built on it.
+inside "sed -i '1a ARG RUNTIME=ghcr.io/quirecms/runtime:0.0-unsigned' /srv/quire/sites/jane/Dockerfile"
+inside 'quire-server site:update jane --yes 2>&1' | tee "$logs"/unsigned.log | sed 's/^/    /'
+check 'a runtime image that doesn'\''t check out isn'\''t built on' "grep -q 'runtime:0.0-unsigned didn.t check out' $logs/unsigned.log && grep -q 'the site is as it was before' $logs/unsigned.log && inside 'grep -A1 \"\\\"name\\\": \\\"symfony/yaml\\\"\" /srv/quire/sites/jane/composer.lock' | grep -q '\"v8.1.0\"'"
+inside "sed -i '/0.0-unsigned/d' /srv/quire/sites/jane/Dockerfile"
+
 # A broken update: the site's own code fails every request in the new version.
 inside 'mkdir -p /srv/quire/sites/jane/src/EventListener && printf "%s\n" "<?php" "namespace App\\EventListener;" "use Symfony\\Component\\EventDispatcher\\Attribute\\AsEventListener;" "use Symfony\\Component\\HttpKernel\\Event\\RequestEvent;" "final class Broken { #[AsEventListener] public function __invoke(RequestEvent \$event): void { throw new \\RuntimeException(\"broken on purpose\"); } }" > /srv/quire/sites/jane/src/EventListener/Broken.php'
 inside 'quire-server site:update jane --yes 2>&1' | tee "$logs"/broken.log | sed 's/^/    /'

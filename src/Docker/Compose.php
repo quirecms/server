@@ -9,13 +9,15 @@ use Quire\Server\Process\ProcessRunner;
 
 /**
  * Docker Compose for sites, through the docker-proxy. Building and starting always check the site's
- * whole configuration against the policy first: there's no way to start a site without it.
+ * whole configuration against the policy first: there's no way to start a site without it. Building
+ * checks Quire's runtime images it's built on too (RuntimeImages).
  */
 final readonly class Compose
 {
     public function __construct(
         private ProcessRunner $runner,
         private ComposePolicy $policy,
+        private RuntimeImages $runtime,
         private string $dockerHost,
     ) {
     }
@@ -60,7 +62,16 @@ final readonly class Compose
     public function build(SiteProject $project, ?\Closure $output = null): void
     {
         $this->check($project);
-        $this->compose($project, ['build', '--pull'], timeout: 1800, output: $output)->orFail('Building the site');
+        $say = $output ?? static function (string $line): void {};
+        // On Quire's runtime images by the digests checked (the command line's arguments win over the site's)
+        $arguments = [];
+
+        foreach ($this->runtime->pinned($project->directory, static fn (string $line) => $say($line."\n")) as $name => $image) {
+            $arguments[] = '--build-arg';
+            $arguments[] = $name.'='.$image;
+        }
+
+        $this->compose($project, ['build', '--pull', ...$arguments], timeout: 1800, output: $output)->orFail('Building the site');
     }
 
     /**
