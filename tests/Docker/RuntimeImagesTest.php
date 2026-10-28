@@ -144,4 +144,19 @@ final class RuntimeImagesTest extends TestCase
     {
         file_put_contents($this->site.'/Dockerfile', $content);
     }
+
+    public function testAnImageCheckedInTheLastMinutesIsntCheckedAgain(): void
+    {
+        $now = 1000;
+        $runtime = new RuntimeImages($this->runner, static function () use (&$now): int {
+            return $now;
+        });
+        $runtime->pinned($this->site, static function (): void {});
+        $runtime->pinned($this->site, static function (): void {});
+        self::assertCount(2, $this->runner->runs, 'Each image checked once.');
+
+        $now += 601;
+        $this->signed['ghcr.io/quirecms/runtime:8.5'] = 'sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd';
+        self::assertSame('ghcr.io/quirecms/runtime:8.5@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd', $runtime->pinned($this->site, static function (): void {})['RUNTIME'] ?? null, 'Then checked again: a newer build.');
+    }
 }

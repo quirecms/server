@@ -54,8 +54,9 @@ final class UpdatePoliciesTest extends RegistryTestCase
 
     public function testRunningSitesTheServerUpdatesAreDueOncePerNight(): void
     {
-        // Hour 0: tonight's window is open; Git mode, off and failed sites aren't due.
-        self::assertSame(['jane'], $this->names($this->policies->due(0)));
+        // Hour 0: tonight's window is open; off and failed sites aren't due (Git mode ones are: for a newer runtime).
+        self::assertSame(['blog', 'jane'], $this->names($this->policies->due(0)));
+        $this->policies->checked(new SiteName('blog'));
 
         $this->policies->checked(new SiteName('jane'));
         self::assertSame([], $this->policies->due(0), 'Looked at tonight: not again before tomorrow night.');
@@ -70,6 +71,11 @@ final class UpdatePoliciesTest extends RegistryTestCase
     public function testEverySiteTheServerUpdatesWhateverItsPolicy(): void
     {
         self::assertSame(['jane', 'quiet'], $this->names($this->policies->updatable()));
+    }
+
+    public function testEveryRunningSiteWithAutomaticUpdates(): void
+    {
+        self::assertSame(['blog', 'jane'], $this->names($this->policies->automatic()));
     }
 
     /**

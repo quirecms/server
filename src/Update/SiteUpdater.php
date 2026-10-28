@@ -154,6 +154,25 @@ final readonly class SiteUpdater
     }
 
     /**
+     * Builds the site again, its code as it is, on the runtime images its Dockerfile names (a newer
+     * build of them, with its security fixes), and starts it as an update would: built beside, backed
+     * up, checked, rolled back by itself.
+     *
+     * @param \Closure(string): void $say
+     *
+     * @throws UpdateFailed When it failed (rolled back, or not even that: see its message)
+     */
+    public function rebuild(SiteName $name, string $why, string $channel, string $requestedBy, \Closure $say): void
+    {
+        $this->lock->run($name, function () use ($name, $why, $channel, $requestedBy, $say): void {
+            $site = $this->running($name);
+            $operation = $this->operations->start('site.rebuild', $name, ['why' => $why], $channel, $requestedBy);
+            $this->release($site, $operation, $this->stepper($operation, $say), 'rebuild', static function (): void {}, static function (): void {});
+            $operation->succeed();
+        });
+    }
+
+    /**
      * Restores a backup of the site (e.g. one from off the server): its database and files as the
      * backup has them. The site is backed up as it is first; if it doesn't answer after the restore,
      * that backup is put back.

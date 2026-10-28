@@ -143,4 +143,25 @@ final class Schema
             "ALTER TABLE {$s}.site ADD COLUMN updates_checked_at timestamptz",
         ];
     }
+
+    /**
+     * The runtime images each site's image was last built on (by digest): a newer one, with its
+     * security fixes, is built on at night.
+     *
+     * @return list<string>
+     */
+    public static function version5(string $schema = self::NAME): array
+    {
+        $s = '"'.str_replace('"', '""', $schema).'"';
+
+        return [
+            <<<SQL
+                CREATE TABLE {$s}.site_runtime (
+                    project text PRIMARY KEY,
+                    images jsonb NOT NULL,
+                    built_at timestamptz NOT NULL DEFAULT now()
+                )
+                SQL,
+        ];
+    }
 }

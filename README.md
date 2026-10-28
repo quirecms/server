@@ -135,6 +135,8 @@ Every night (from 03:00 UTC; `QUIRE_SERVER_UPDATE_HOUR` in `server.env` sets the
 - **`all`**: everything its `composer.json` allows.
 - **`off`**: none; `site:update` by hand.
 
+**A newer runtime is built on too:** a site whose Dockerfile builds on Quire's runtime images (sites from Quire's skeleton) is built again, its code as it is, when they have a newer signed build than the one it was built on (they're rebuilt every week with PHP's and Debian's security fixes), Git mode sites included, with the same backup, check and rollback (`site.rebuild` in the operations).
+
 `quire-server site:updates jane all` sets it; `quire-server operations` shows what was done, by `automatic`. Some updates always wait for you: one that changes files of the skeleton the site edited, and one that changes Quire's version without Quire's signed release feed vouching for it. Git mode sites get none: their updates are made in their repository.
 
 `quire-server site:update --all` updates every site now, one after the other (asking once); `--all --automatic` does what tonight would.
