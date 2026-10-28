@@ -47,7 +47,7 @@ services:
     depends_on:
       database: {condition: service_healthy}
       docker-proxy: {condition: service_started}
-    environment:
+    environment: &agent-environment
       APP_SECRET: ${QUIRE_SERVER_APP_SECRET:?Set QUIRE_SERVER_APP_SECRET in server.env}
       DATABASE_URL: postgresql://quire_server:${QUIRE_SERVER_DATABASE_PASSWORD:?Set QUIRE_SERVER_DATABASE_PASSWORD in server.env}@quire-database:5432/quire_server?serverVersion=18&charset=utf8
       QUIRE_SERVER_POSTGRES_ADMIN_URL: postgresql://postgres:${QUIRE_SERVER_POSTGRES_PASSWORD:?Set QUIRE_SERVER_POSTGRES_PASSWORD in server.env}@quire-database:5432/postgres?serverVersion=18&charset=utf8
@@ -69,6 +69,37 @@ services:
     networks:
       - quire-data
       - quire-docker
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 1g
+    pids_limit: 1024
+
+  # Updates the server itself ("quire-server update"): only run on demand, never by "up". It is the
+  # release that runs now (it checks the new one before using any of it), and it replaces the server's
+  # files and containers, the docker-proxy's too: so it gets Docker itself and the server's folder.
+  # It runs only this release's code and takes no input but a version; it ends with its update.
+  updater:
+    image: ${QUIRE_SERVER_IMAGE:-quire-server-agent}
+    profiles: [update]
+    entrypoint: [/sbin/tini, --]
+    command: [bin/console, server:update]
+    environment:
+      <<: *agent-environment
+      DOCKER_HOST: unix:///var/run/docker.sock
+      QUIRE_SERVER_UPDATER: 1
+      # pg_dump and pg_restore of the server's database, in its container
+      QUIRE_SERVER_POSTGRES_PASSWORD: ${QUIRE_SERVER_POSTGRES_PASSWORD:?Set QUIRE_SERVER_POSTGRES_PASSWORD in server.env}
+      QUIRE_SERVER_UPDATE_WAIT_SECONDS: ${QUIRE_SERVER_UPDATE_WAIT_SECONDS:-300}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      # The same paths inside as on the host: Compose resolves the server's paths for the Docker daemon.
+      - ${QUIRE_SERVER_ROOT:-/srv/quire}/server:${QUIRE_SERVER_ROOT:-/srv/quire}/server
+      - ${QUIRE_SERVER_ROOT:-/srv/quire}/backups:${QUIRE_SERVER_ROOT:-/srv/quire}/backups
+    networks:
+      - quire-data
+    read_only: true
     tmpfs: [/tmp]
     cap_drop: [ALL]
     cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]

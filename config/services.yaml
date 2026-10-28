@@ -19,6 +19,8 @@ services:
             - '../src/Process/{ProcessResult,ProcessFailed}.php'
             - '../src/Update/{Lock,UpdatePlan,SkeletonFiles,UpdateFailed}.php'
             - '../src/Git/Repository.php'
+            - '../src/Release/{Release,Version,ReleaseVerificationFailed}.php'
+            - '../src/ServerUpdate/{ServerBackup,ServerUpdateFailed}.php'
 
     Quire\Server\Process\ProcessRunner: '@Quire\Server\Process\SymfonyProcessRunner'
 
@@ -48,6 +50,25 @@ services:
         arguments:
             $version: '%env(QUIRE_SERVER_VERSION)%'
             $image: '%env(QUIRE_SERVER_IMAGE)%'
+
+    Quire\Server\ServerUpdate\ServerFolder:
+        arguments:
+            $root: '%quire_server.root%'
+
+    Quire\Server\ServerUpdate\ServerStack:
+        arguments:
+            $dockerHost: '%env(DOCKER_HOST)%'
+            $postgresPassword: '%env(QUIRE_SERVER_POSTGRES_PASSWORD)%'
+
+    Quire\Server\ServerUpdate\ServerUpdater:
+        arguments:
+            $root: '%quire_server.root%'
+            $running: '%env(QUIRE_SERVER_VERSION)%'
+            $wait: '%env(int:QUIRE_SERVER_UPDATE_WAIT_SECONDS)%'
+
+    Quire\Server\Console\ServerUpdateCommand:
+        arguments:
+            $inUpdater: '%env(bool:QUIRE_SERVER_UPDATER)%'
 
     Quire\Server\Console\AddSiteCommand:
         arguments:
