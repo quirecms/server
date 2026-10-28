@@ -19,7 +19,7 @@ services:
             - '../src/Process/{ProcessResult,ProcessFailed}.php'
             - '../src/Update/{Lock,UpdatePlan,SkeletonFiles,UpdateFailed}.php'
             - '../src/Git/Repository.php'
-            - '../src/Release/{Release,Version,ReleaseVerificationFailed}.php'
+            - '../src/Release/{Release,Version,ReleaseVerificationFailed,Feed}.php'
             - '../src/ServerUpdate/{ServerBackup,ServerUpdateFailed}.php'
 
     Quire\Server\Process\ProcessRunner: '@Quire\Server\Process\SymfonyProcessRunner'
@@ -69,6 +69,14 @@ services:
     Quire\Server\Console\ServerUpdateCommand:
         arguments:
             $inUpdater: '%env(bool:QUIRE_SERVER_UPDATER)%'
+
+    Quire\Server\Update\AutomaticUpdates:
+        arguments:
+            $hour: '%env(QUIRE_SERVER_UPDATE_HOUR)%'
+
+    Quire\Server\Update\ReleaseCheck:
+        arguments:
+            $admin: '@doctrine.dbal.admin_connection'
 
     Quire\Server\Console\AddSiteCommand:
         arguments:

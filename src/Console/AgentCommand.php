@@ -8,6 +8,7 @@ use Quire\Server\FrontDoor\DomainDirectory;
 use Quire\Server\Git\GitPoller;
 use Quire\Server\Operation\OperationLog;
 use Quire\Server\Registry\SiteRegistry;
+use Quire\Server\Update\AutomaticUpdates;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Attribute\Option;
 use Symfony\Component\Console\Command\Command;
@@ -19,8 +20,9 @@ use Symfony\Component\Console\Style\SymfonyStyle;
     help: <<<'HELP'
         Runs as the agent container's main process. When it starts, operations a crash or a restart
         interrupted are marked failed. Then, every minute, the front door's list of domains is made to
-        match the sites that run, new commits of Git mode sites that poll are deployed, and a heartbeat
-        file says the agent is alive (for Docker's health check).
+        match the sites that run, new commits of Git mode sites that poll are deployed, sites due for
+        their nightly automatic updates get them, and a heartbeat file says the agent is alive (for
+        Docker's health check; also at each step of a long deploy or update).
         HELP,
 )]
 final class AgentCommand
@@ -34,6 +36,7 @@ final class AgentCommand
         private readonly OperationLog $operations,
         private readonly DomainDirectory $frontDoor,
         private readonly GitPoller $poller,
+        private readonly AutomaticUpdates $updates,
     ) {
     }
 
@@ -50,6 +53,9 @@ final class AgentCommand
             pcntl_signal(\SIGINT, fn (): true => $this->stopping = true);
         }
 
+        // A wrong setting stops the agent at once, rather than every night.
+        $hour = $this->updates->hour();
+        $io->writeln(null === $hour ? 'Automatic updates: off on this server' : \sprintf('Automatic updates: every night from %02d:00 UTC', $hour));
         $abandoned = $this->operations->abandonRunning();
 
         if ($abandoned > 0) {
@@ -68,7 +74,8 @@ final class AgentCommand
             }
 
             touch(self::HEARTBEAT);
-            $this->poller->poll(static fn (string $line) => $io->writeln('Git: '.$line));
+            $this->poller->poll($this->alive(static fn (string $line) => $io->writeln('Git: '.$line)));
+            $this->updates->run(false, 'agent', $this->alive(static fn (string $line) => $io->writeln('Updates: '.$line)));
             touch(self::HEARTBEAT);
 
             for ($slept = 0; !$once && !$this->stopping && $slept < max(5, $interval); ++$slept) {
@@ -77,5 +84,20 @@ final class AgentCommand
         } while (!$once && !$this->stopping);
 
         return Command::SUCCESS;
+    }
+
+    /**
+     * The same output, saying the agent is alive at each line (a deploy or an update takes minutes).
+     *
+     * @param \Closure(string): void $say
+     *
+     * @return \Closure(string): void
+     */
+    private function alive(\Closure $say): \Closure
+    {
+        return static function (string $line) use ($say): void {
+            touch(self::HEARTBEAT);
+            $say($line);
+        };
     }
 }

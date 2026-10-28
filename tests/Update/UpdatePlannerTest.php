@@ -100,6 +100,23 @@ final class UpdatePlannerTest extends TestCase
         self::assertDirectoryDoesNotExist($plan->workspace);
     }
 
+    public function testOnlyThePackagesNamed(): void
+    {
+        // The security policy: the vulnerable package, and what it needs
+        $this->planner()->plan($this->name, only: ['symfony/yaml']);
+        $update = $this->command('composer update');
+
+        $at = array_search('update', $update, true);
+        self::assertIsInt($at);
+        self::assertSame(['update', 'symfony/yaml', '--with-all-dependencies'], \array_slice($update, $at, 3));
+    }
+
+    public function testOnlyPackageNamesAreNamed(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->planner()->plan($this->name, only: ['--no-blocking']);
+    }
+
     public function testMovingToAnotherRelease(): void
     {
         $this->resolved = ['quire/core' => 'v0.2.0', 'quire/admin' => 'v0.2.0', 'symfony/yaml' => 'v8.1.9'];

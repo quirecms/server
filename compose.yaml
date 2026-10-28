@@ -58,6 +58,8 @@ services:
       QUIRE_SERVER_IMAGE: ${QUIRE_SERVER_IMAGE:-}
       # Git mode sites that deploy by themselves: how often their branch is asked for new commits
       QUIRE_SERVER_GIT_POLL_SECONDS: ${QUIRE_SERVER_GIT_POLL_SECONDS:-300}
+      # The hour (UTC) from which sites get their automatic updates each night ("site:updates"), or "off"
+      QUIRE_SERVER_UPDATE_HOUR: ${QUIRE_SERVER_UPDATE_HOUR:-3}
       DOCKER_HOST: tcp://docker-proxy:2375
     volumes:
       # The same paths inside as on the host: Compose resolves sites' paths for the Docker daemon.
