@@ -18,6 +18,7 @@ use Quire\Server\Git\Repository;
 use Quire\Server\Operation\OperationLog;
 use Quire\Server\Operation\SiteManager;
 use Quire\Server\Process\ProcessResult;
+use Quire\Server\Registry\RuntimeBuilds;
 use Quire\Server\Registry\SiteGit;
 use Quire\Server\Registry\SiteLock;
 use Quire\Server\Registry\SiteRegistry;
@@ -194,6 +195,36 @@ final class SiteUpdaterTest extends RegistryTestCase
         self::assertNotNull($update);
         self::assertSame([self::OLD, self::NEW, false, 'v0.1.0', 'v0.1.1'], [$update['image_before'], $update['image_after'], $update['migrations_ran'], $update['quire_from'], $update['quire_to']]);
         self::assertSame(['site.update', 'succeeded'], [$this->operations->latest()[0]['action'], $this->operations->latest()[0]['status']]);
+    }
+
+    public function testRebuildingASiteOnANewerRuntime(): void
+    {
+        $site = $this->paths->site($this->name);
+        $before = [(string) file_get_contents($site.'/composer.lock'), (string) file_get_contents($site.'/Dockerfile')];
+
+        $this->updater()->rebuild($this->name, 'Quire\'s runtime has a newer build', 'agent', 'automatic', static fn (): null => null);
+
+        self::assertSame(self::NEW, $this->running, 'Built again, and started.');
+        self::assertSame($before, [(string) file_get_contents($site.'/composer.lock'), (string) file_get_contents($site.'/Dockerfile')], 'Its code as it was.');
+        self::assertSame(['docker compose build', 'docker compose cp', 'docker compose up'], array_values(array_filter($this->runner->keys(), static fn (string $key): bool => \in_array($key, ['docker compose build', 'docker compose up', 'docker compose cp'], true))), 'Built beside, backed up, then started.');
+        self::assertSame(['site.rebuild', 'succeeded', 'automatic'], [$this->operations->latest()[0]['action'], $this->operations->latest()[0]['status'], $this->operations->latest()[0]['requested_by']]);
+        self::assertNull($this->updates->undoable($this->name), 'Not an update to undo.');
+    }
+
+    public function testARebuildThatDoesntAnswerIsRolledBack(): void
+    {
+        $this->healthy = [self::OLD];
+
+        try {
+            $this->updater()->rebuild($this->name, 'Quire\'s runtime has a newer build', 'agent', 'automatic', static fn (): null => null);
+            self::fail('It didn\'t fail.');
+        } catch (UpdateFailed $e) {
+            self::assertTrue($e->restored);
+        }
+
+        self::assertSame(self::OLD, $this->running, 'The image it had runs again.');
+        self::assertSame([], $this->restored, 'No migration ran: its database is kept.');
+        self::assertSame(Site::RUNNING, $this->registry->get($this->name)?->status);
     }
 
     public function testAFailedBuildChangesNothing(): void
@@ -487,7 +518,7 @@ final class SiteUpdaterTest extends RegistryTestCase
 
     private function updater(): SiteUpdater
     {
-        $compose = new Compose($this->runner, new ComposePolicy(), new RuntimeImages($this->runner), 'tcp://docker-proxy:2375');
+        $compose = new Compose($this->runner, new ComposePolicy(), new RuntimeImages($this->runner), new RuntimeBuilds($this->connection, $this->schema), 'tcp://docker-proxy:2375');
         $sites = new SiteManager(
             $this->registry,
             $this->operations,

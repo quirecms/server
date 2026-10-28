@@ -4,8 +4,13 @@ declare(strict_types=1);
 
 namespace Quire\Server\Update;
 
+use Quire\Server\Docker\RuntimeImages;
+use Quire\Server\Registry\RuntimeBuilds;
+use Quire\Server\Registry\SiteGit;
 use Quire\Server\Registry\SiteRegistry;
 use Quire\Server\Registry\UpdatePolicies;
+use Quire\Server\Site\ServerPaths;
+use Quire\Server\Site\Site;
 use Quire\Server\Site\SiteName;
 
 /**
@@ -18,9 +23,11 @@ use Quire\Server\Site\SiteName;
  * - "off": none.
  *
  * Each goes as a manual update does (built beside, backed up, checked, rolled back by itself), and is
- * recorded as asked by "automatic". Never without a person: an update that changes the skeleton's
+ * recorded as asked by "automatic". A site that wasn't just updated is built again on Quire's runtime
+ * images when they have a newer (checked) build than the one it was built on: their security fixes
+ * reach it, Git mode sites' too. Never without a person: an update that changes the skeleton's
  * files the site edited, or Quire's version without the signed release feed vouching for it (or
- * with it saying this server can't run it). Git mode sites never: their updates are made in their
+ * with it saying this server can't run it). Git mode sites get no updates: they're made in their
  * repository.
  */
 final readonly class AutomaticUpdates
@@ -28,6 +35,7 @@ final readonly class AutomaticUpdates
     public const string REQUESTER = 'automatic';
 
     public const string UPDATED = 'updated';
+    public const string REBUILT = 'rebuilt';
     public const string UP_TO_DATE = 'up to date';
     public const string SKIPPED = 'skipped';
     public const string FAILED = 'failed';
@@ -38,6 +46,10 @@ final readonly class AutomaticUpdates
         private UpdatePlanner $planner,
         private SiteUpdater $updater,
         private ReleaseCheck $releases,
+        private SiteGit $repositories,
+        private RuntimeImages $runtime,
+        private RuntimeBuilds $builds,
+        private ServerPaths $paths,
         private string $hour = '3',
     ) {
     }
@@ -54,7 +66,7 @@ final readonly class AutomaticUpdates
         $hour = $this->hour();
 
         if ($now) {
-            $sites = array_values(array_filter($this->policies->updatable(), fn (SiteName $site): bool => UpdatePolicies::OFF !== $this->policies->of($site)));
+            $sites = $this->policies->automatic();
         } elseif (null !== $hour) {
             $sites = $this->policies->due($hour);
         } else {
@@ -66,7 +78,17 @@ final readonly class AutomaticUpdates
         foreach ($sites as $site) {
             // Before: a site whose update fails isn't tried again every minute, only the next night.
             $this->policies->checked($site);
-            [$outcome, $detail] = $this->update($site, $this->policies->of($site), $channel, static fn (string $step) => $say(\sprintf('%s: %s', $site, $step)));
+            $steps = static fn (string $step) => $say(\sprintf('%s: %s', $site, $step));
+            // Git mode sites' updates are made in their repository: they're only built on a newer runtime.
+            [$outcome, $detail] = null === $this->repositories->of($site)
+                ? $this->update($site, $this->policies->of($site), $channel, $steps)
+                : [self::UP_TO_DATE, 'updated in its repository'];
+
+            // Not just built: on a newer runtime, if there is one.
+            if (self::UPDATED !== $outcome && self::FAILED !== $outcome) {
+                [$outcome, $detail] = $this->refresh($site, $channel, $steps) ?? [$outcome, $detail];
+            }
+
             $say(\sprintf('%s: %s%s', $site, $outcome, '' === $detail ? '' : ' ('.$detail.')'));
             $outcomes[] = ['site' => $site->value, 'outcome' => $outcome, 'detail' => $detail];
         }
@@ -99,7 +121,7 @@ final readonly class AutomaticUpdates
         }
 
         $registered = $this->registry->get($site);
-        $skip = self::reasonToSkip($plan, $policy, $registered instanceof \Quire\Server\Site\Site ? $this->releases->check($plan, $registered) : null);
+        $skip = self::reasonToSkip($plan, $policy, $registered instanceof Site ? $this->releases->check($plan, $registered) : null);
 
         if (null !== $skip) {
             $plan->discard();
@@ -118,6 +140,60 @@ final readonly class AutomaticUpdates
         $fixed = array_keys($plan->fixedAdvisories());
 
         return [self::UPDATED, [] === $fixed ? \sprintf('%d package(s)', \count($plan->packages)) : 'fixes '.implode(', ', $fixed)];
+    }
+
+    /**
+     * Whether a site's image must be built again: its Dockerfile names Quire's runtime images, and
+     * their newest checked builds aren't the ones it was built on (or that isn't known).
+     *
+     * @param array<string, string>      $newest By build argument
+     * @param array<string, string>|null $built
+     */
+    public static function needsRebuild(array $newest, ?array $built): bool
+    {
+        if ([] === $newest) {
+            return false;
+        }
+
+        ksort($newest);
+
+        if (null !== $built) {
+            ksort($built);
+        }
+
+        return $newest !== $built;
+    }
+
+    /**
+     * The site built again when a newer runtime came: null when there's none.
+     *
+     * @param \Closure(string): void $say
+     *
+     * @return array{string, string}|null
+     */
+    private function refresh(SiteName $name, string $channel, \Closure $say): ?array
+    {
+        $site = $this->registry->get($name);
+
+        if (!$site instanceof Site) {
+            return null;
+        }
+
+        try {
+            $newest = $this->runtime->pinned($this->paths->site($name), static function (): void {});
+
+            if (!self::needsRebuild($newest, $this->builds->of($site->project))) {
+                return null;
+            }
+
+            $this->updater->rebuild($name, 'Quire\'s runtime has a newer build', $channel, self::REQUESTER, $say);
+        } catch (UpdateFailed $e) {
+            return [self::FAILED, ($e->restored ? 'rebuilding on the newer runtime rolled back: ' : 'rebuilding on the newer runtime needs you: ').$e->getMessage()];
+        } catch (\Throwable $e) {
+            return [self::FAILED, 'its runtime: '.$e->getMessage()];
+        }
+
+        return [self::REBUILT, 'on Quire\'s newer runtime'];
     }
 
     /**

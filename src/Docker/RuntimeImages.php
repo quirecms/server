@@ -16,15 +16,25 @@ use Quire\Server\Process\ProcessRunner;
  * Other base images (a site that changed its Dockerfile) are the site's choice: built on as they are,
  * and said so in the operation's log.
  */
-final readonly class RuntimeImages
+final class RuntimeImages
 {
+    /** How long a checked digest is taken as the runtime's newest (a night checks many sites) */
+    private const int FRESH_FOR = 600;
+
     public const string REPOSITORY = 'ghcr.io/quirecms/runtime';
     private const string IDENTITY = 'https://github.com/quirecms/framework/.github/workflows/runtime.yaml@refs/heads/main';
     private const string ISSUER = 'https://token.actions.githubusercontent.com';
     private const array ARGUMENTS = ['RUNTIME_BUILDER', 'RUNTIME'];
 
+    /** @var array<string, array{string, int}> Image => the digest checked, and when */
+    private array $checked = [];
+
+    /**
+     * @param \Closure(): int $now
+     */
     public function __construct(
-        private ProcessRunner $runner,
+        private readonly ProcessRunner $runner,
+        private readonly \Closure $now = time(...),
     ) {
     }
 
@@ -79,6 +89,20 @@ final readonly class RuntimeImages
      * @return string The digest whose signature checked out
      */
     private function verify(string $image): string
+    {
+        [$digest, $at] = $this->checked[$image] ?? [null, 0];
+
+        if (null !== $digest && ($this->now)() - $at < self::FRESH_FOR) {
+            return $digest;
+        }
+
+        $digest = $this->check($image);
+        $this->checked[$image] = [$digest, ($this->now)()];
+
+        return $digest;
+    }
+
+    private function check(string $image): string
     {
         $result = $this->runner->run(
             ['cosign', 'verify', '--certificate-identity', self::IDENTITY, '--certificate-oidc-issuer', self::ISSUER, '--output', 'json', $image],

@@ -44,8 +44,9 @@ final readonly class UpdatePolicies
 
     /**
      * Running sites that get automatic updates, not looked at since the last night's window opened
-     * (once that window is open: the hour, in UTC, from which updates are looked for each day).
-     * Git mode sites aren't among them: their updates are made in their repository.
+     * (once that window is open: the hour, in UTC, from which updates are looked for each day). Git
+     * mode sites are among them: their updates are made in their repository, but they're built
+     * again on a newer runtime.
      *
      * @return list<SiteName>
      */
@@ -55,13 +56,24 @@ final readonly class UpdatePolicies
             <<<'SQL'
                 SELECT s.name FROM %1$s.site s
                 WHERE s.status = 'running' AND s.updates <> 'off'
-                  AND NOT EXISTS (SELECT 1 FROM %1$s.site_git g WHERE g.site = s.name)
                   AND now() >= date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' + make_interval(hours => ?)
                   AND (s.updates_checked_at IS NULL OR s.updates_checked_at < date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' + make_interval(hours => ?))
                 ORDER BY s.name
                 SQL,
             $this->schema(),
         ), [$hour, $hour]);
+
+        return array_map(static fn (mixed $name): SiteName => new SiteName(\is_string($name) ? $name : ''), $names);
+    }
+
+    /**
+     * Running sites that get automatic updates (Git mode ones too), whenever they were looked at.
+     *
+     * @return list<SiteName>
+     */
+    public function automatic(): array
+    {
+        $names = $this->connection->fetchFirstColumn(\sprintf("SELECT name FROM %s.site WHERE status = 'running' AND updates <> 'off' ORDER BY name", $this->schema()));
 
         return array_map(static fn (mixed $name): SiteName => new SiteName(\is_string($name) ? $name : ''), $names);
     }

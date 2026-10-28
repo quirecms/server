@@ -97,4 +97,15 @@ final class AutomaticUpdatesTest extends TestCase
             }
         }
     }
+
+    public function testASiteIsBuiltAgainOnlyOnANewerRuntime(): void
+    {
+        $newest = ['RUNTIME_BUILDER' => 'ghcr.io/quirecms/runtime:8.5-builder@sha256:bb', 'RUNTIME' => 'ghcr.io/quirecms/runtime:8.5@sha256:rr'];
+
+        self::assertFalse(AutomaticUpdates::needsRebuild($newest, ['RUNTIME' => 'ghcr.io/quirecms/runtime:8.5@sha256:rr', 'RUNTIME_BUILDER' => 'ghcr.io/quirecms/runtime:8.5-builder@sha256:bb']), 'Built on these (in any order)');
+        self::assertTrue(AutomaticUpdates::needsRebuild($newest, ['RUNTIME_BUILDER' => 'ghcr.io/quirecms/runtime:8.5-builder@sha256:bb', 'RUNTIME' => 'ghcr.io/quirecms/runtime:8.5@sha256:old']), 'A newer runtime');
+        self::assertTrue(AutomaticUpdates::needsRebuild($newest, null), 'Not known what it was built on');
+        self::assertTrue(AutomaticUpdates::needsRebuild($newest, []), 'Built before it named the runtime');
+        self::assertFalse(AutomaticUpdates::needsRebuild([], null), 'It doesn\'t build on Quire\'s runtime');
+    }
 }

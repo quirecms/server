@@ -6,6 +6,7 @@ namespace Quire\Server\Docker;
 
 use Quire\Server\Process\ProcessResult;
 use Quire\Server\Process\ProcessRunner;
+use Quire\Server\Registry\RuntimeBuilds;
 
 /**
  * Docker Compose for sites, through the docker-proxy. Building and starting always check the site's
@@ -18,6 +19,7 @@ final readonly class Compose
         private ProcessRunner $runner,
         private ComposePolicy $policy,
         private RuntimeImages $runtime,
+        private RuntimeBuilds $builds,
         private string $dockerHost,
     ) {
     }
@@ -65,13 +67,16 @@ final readonly class Compose
         $say = $output ?? static function (string $line): void {};
         // On Quire's runtime images by the digests checked (the command line's arguments win over the site's)
         $arguments = [];
+        $pinned = $this->runtime->pinned($project->directory, static fn (string $line) => $say($line."\n"));
 
-        foreach ($this->runtime->pinned($project->directory, static fn (string $line) => $say($line."\n")) as $name => $image) {
+        foreach ($pinned as $name => $image) {
             $arguments[] = '--build-arg';
             $arguments[] = $name.'='.$image;
         }
 
         $this->compose($project, ['build', '--pull', ...$arguments], timeout: 1800, output: $output)->orFail('Building the site');
+        // What it's built on now: a newer runtime is built on at night.
+        $this->builds->record($project->name(), $pinned);
     }
 
     /**
