@@ -8,6 +8,7 @@ use Quire\Server\Backup\OffsiteBackups;
 use Quire\Server\Site\SiteName;
 use Symfony\Component\Console\Attribute\Argument;
 use Symfony\Component\Console\Attribute\AsCommand;
+use Symfony\Component\Console\Attribute\Option;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Style\SymfonyStyle;
 
@@ -17,6 +18,7 @@ use Symfony\Component\Console\Style\SymfonyStyle;
     help: <<<'HELP'
           <info>quire-server backups jane</info>     the site's, newest first, with their IDs (for "backups:restore")
           <info>quire-server backups server</info>   the server's own (its registry, domains and deploy keys)
+          <info>quire-server backups jane --from-server=old-server</info>   another server's, in the same bucket
         HELP,
 )]
 final readonly class BackupsCommand
@@ -30,6 +32,8 @@ final readonly class BackupsCommand
         SymfonyStyle $io,
         #[Argument(description: 'A site\'s short name, or "server"')]
         string $name,
+        #[Option(description: 'Another server\'s backups in the same bucket (its QUIRE_SERVER_BACKUP_HOST)')]
+        ?string $fromServer = null,
     ): int {
         if (!$this->backups->configured()) {
             $io->error('There are no backups off the server yet: "quire-server backups:setup" sets them up.');
@@ -38,7 +42,7 @@ final readonly class BackupsCommand
         }
 
         try {
-            $snapshots = $this->backups->list('server' === $name ? null : new SiteName($name));
+            $snapshots = $this->backups->list('server' === $name ? null : new SiteName($name), $fromServer);
         } catch (\Throwable $e) {
             $io->error($e->getMessage());
 

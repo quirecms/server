@@ -153,6 +153,65 @@ final class SiteManagerTest extends RegistryTestCase
         self::assertSame(Site::RUNNING, $this->manager()->add($this->request(), 'cli', 'darko', static fn (): null => null)->site->status);
     }
 
+    public function testRestoringABackupAsANewSite(): void
+    {
+        [$code, $backup] = $this->backedUpSite();
+        $said = [];
+        $site = $this->manager()->restoreAsNew($this->name, $this->request()->domains, $code, $backup, ['snapshot' => '1a2b3c4d', 'from_site' => 'jane'], 'cli', 'darko', static function (string $step) use (&$said): void {
+            $said[] = $step;
+        });
+
+        self::assertSame(Site::RUNNING, $site->status);
+        self::assertSame(['Recording the site', 'Putting its code in place, as the backup has it', 'Creating its database', 'Writing its settings', 'Checking and building it (a few minutes)', 'Starting it', 'Restoring its database and files from the backup', 'Opening it to visitors'], $said);
+        $directory = $this->paths->site($this->name);
+        self::assertSame('<?php // the site\'s own code', file_get_contents($directory.'/src/Kernel.php'), 'Its code, as backed up.');
+        self::assertFileDoesNotExist($directory.'/prod.env.before-server');
+
+        // Its settings are its own: none of the backed-up site's secrets.
+        $env = (string) file_get_contents($directory.'/prod.env');
+        self::assertStringNotContainsString('the-old-secret', $env);
+        self::assertStringNotContainsString('the-old-password', $env);
+        self::assertMatchesRegularExpression("/^APP_SECRET='[0-9a-f]{64}'\$/m", $env);
+        self::assertStringNotContainsString('old-site', (string) file_get_contents($directory.'/compose.server.yaml'));
+        self::assertTrue($this->databases->exists($this->name));
+
+        // Its data restored, streamed in; never installed afresh.
+        $consoles = array_map(static fn (array $command): string => $command[12] ?? '', array_filter($this->commands, static fn (array $command): bool => 'exec' === ($command[8] ?? null)));
+        self::assertContains('quire:restore', $consoles);
+        self::assertNotContains('quire:install', $consoles);
+        self::assertSame([$this->name->value, $this->name->value], array_values($this->frontDoor->all()));
+        self::assertSame(['site.restore_as_new', 'succeeded'], [$this->operations->latest()[0]['action'], $this->operations->latest()[0]['status']]);
+    }
+
+    public function testARestoreAsANewSiteThatFailsUndoesEverything(): void
+    {
+        [$code, $backup] = $this->backedUpSite();
+        $this->script['docker compose exec'] = static fn (array $command): ProcessResult => 'quire:restore' === ($command[12] ?? '')
+            ? new ProcessResult(self::strings($command), 1, '', "The backup is of another version of Quire.\n")
+            : self::ok($command, '');
+
+        try {
+            $this->manager()->restoreAsNew($this->name, $this->request()->domains, $code, $backup, [], 'cli', 'darko', static fn (): null => null);
+            self::fail('It didn\'t fail.');
+        } catch (\RuntimeException $e) {
+            self::assertStringContainsString('another version of Quire', $e->getMessage());
+        }
+
+        self::assertFileDoesNotExist($this->paths->site($this->name).'/compose.yaml', 'Its folder moved away.');
+        self::assertFalse($this->databases->exists($this->name));
+        self::assertSame([], $this->frontDoor->all());
+        self::assertSame(Site::REMOVED, $this->registry->get($this->name)?->status);
+        self::assertSame('failed', $this->operations->latest()[0]['status']);
+    }
+
+    public function testOnlyASitesFolderIsRestoredAsOne(): void
+    {
+        [$code, $backup] = $this->backedUpSite();
+        unlink($code.'/compose.prod.yaml');
+        $this->expectExceptionMessageIsOrContains('isn\'t a Quire site\'s');
+        $this->manager()->restoreAsNew($this->name, $this->request()->domains, $code, $backup, [], 'cli', 'darko', static fn (): null => null);
+    }
+
     public function testAHostileConfigurationIsNeverBuilt(): void
     {
         $this->script['docker compose config'] = fn (array $command): ProcessResult => self::ok($command, json_encode(array_replace_recursive($this->config(), ['services' => ['php' => ['privileged' => true]]]), \JSON_THROW_ON_ERROR));
@@ -462,6 +521,35 @@ final class SiteManagerTest extends RegistryTestCase
         $key = 'docker' === $command[0] ? 'docker compose '.$command[8] : $command[0].' '.$command[1];
 
         return ($this->script[$key] ?? throw new \LogicException('Unexpected command: '.implode(' ', $command)))($command);
+    }
+
+    /**
+     * A site's folder and its quire:backup file, as a backup off the server has them.
+     *
+     * @return array{string, string}
+     */
+    private function backedUpSite(): array
+    {
+        $code = $this->root.'/restored/srv/quire/sites/old-site';
+        $filesystem = new Filesystem();
+
+        foreach ([
+            'compose.yaml' => 'services: {}',
+            'compose.prod.yaml' => 'services: {}',
+            'composer.json' => '{"require": {"quire/core": "^0.1"}}',
+            'composer.lock' => '{"packages": []}',
+            'src/Kernel.php' => '<?php // the site\'s own code',
+            'prod.env' => "APP_SECRET='the-old-secret'\nQUIRE_DATABASE_PASSWORD='the-old-password'\n",
+            'prod.env.before-server' => "APP_SECRET='the-old-secret'\n",
+            'compose.server.yaml' => '# old-site',
+        ] as $path => $content) {
+            $filesystem->dumpFile($code.'/'.$path, $content);
+        }
+
+        $backup = $this->root.'/restored/srv/quire/backups/old-site/off-server.tar';
+        $filesystem->dumpFile($backup, 'backup');
+
+        return [$code, $backup];
     }
 
     private function request(): SiteRequest

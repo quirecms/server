@@ -96,6 +96,7 @@ quire-server backups:setup              # backups off the server: where, and the
 quire-server backups jane | backups server      # what's stored off the server
 quire-server backups:now [jane]         # back up now (everything, or one site)
 quire-server backups:restore jane [--snapshot=…]   # put a site back as a backup has it
+quire-server backups:restore jane --as=copy --domain=…   # a new site from it (--from-server: another server's)
 quire-server backups:check [--read=5]   # check the stored backups
 quire-server operations [--site=jane]  # what was done, by whom, and how it ended
 quire-server operations <id>           # an operation's log
@@ -180,7 +181,14 @@ Then, every night (from 02:00 UTC; `QUIRE_SERVER_BACKUP_HOUR` in `server.env`, o
 
 `quire-server backups jane` lists a site's backups off the server; `quire-server backups:restore jane` puts it back as its latest one has it (or `--snapshot=<ID>`): the site is backed up as it is first, and put back if it doesn't answer after. `quire-server backups:check` checks them at any time.
 
-A new server connects to the same backups with `quire-server backups:setup --existing` (the bucket, its key and the password). Restoring a site into a new server, and a whole server, come next.
+**A backup can become a new site:** a copy on this server (to try an update on, say), or a site moved from another server that backs up to the same bucket. Its code and files are the backup's (each site's folder is backed up with its data, but what a build makes again), its data is restored, and its settings are its own: its database, password and secret (everyone signs in again).
+
+```bash
+quire-server backups:restore jane --as=jane-copy --domain=copy.jane.example
+quire-server backups:restore jane --from-server=old-server --as=jane --domain=jane.example
+```
+
+To move sites to a new server: install it, connect it to the same backups with `quire-server backups:setup --existing --host=new-server` (the bucket, its key and the password; each server names itself in the backups with `--host`), list the old server's with `quire-server backups jane --from-server=old-server`, and restore each. A Git mode site's code is in its repository, not its backups: add it from there, then restore its data with `backups:restore`. Restoring a whole server in one step comes next.
 
 The bucket's key can delete backups: someone who takes over the server can too. For backups that survive that, give the key no right to delete, and let the bucket's own rules (object lock, lifecycle) keep and expire them.
 
