@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Quire\Server\Backup;
 
+use Quire\Server\Git\Repository;
 use Quire\Server\Operation\Operation;
 use Quire\Server\Operation\OperationLog;
 use Quire\Server\Operation\SiteManager;
@@ -11,6 +12,7 @@ use Quire\Server\Process\ProcessRunner;
 use Quire\Server\Registry\SiteGit;
 use Quire\Server\Registry\SiteLock;
 use Quire\Server\Registry\SiteRegistry;
+use Quire\Server\Registry\UpdatePolicies;
 use Quire\Server\Site\Domain;
 use Quire\Server\Site\ServerPaths;
 use Quire\Server\Site\Site;
@@ -21,8 +23,8 @@ use Symfony\Component\Filesystem\Filesystem;
 
 /**
  * Backups off the server, with restic: every night (from QUIRE_SERVER_BACKUP_HOUR, UTC), each running
- * site (quire:backup: its database and files) and the server's own (its registry, the front door's
- * domains, the deploy keys), then the retention (each site's on its own); on Sundays, the storage only
+ * site (quire:backup: its database and files, and its folder) and the server's own (its registry, a
+ * manifest of its sites, the front door's domains, the deploy keys), then the retention (each site's on its own); on Sundays, the storage only
  * forgotten backups used is freed, and a part of the stored data is read back to check it. A site
  * that fails doesn't stop the others; the night's operation says which.
  */
@@ -33,6 +35,8 @@ final readonly class OffsiteBackups
     public const string SERVER_TAG = 'quire-server';
     /** A Git mode site's: its code is its repository's, so it isn't in its backup */
     public const string GIT_TAG = 'git';
+    /** The server's list of its sites, in its backup */
+    private const string MANIFEST = 'sites.json';
 
     /** What a site's folder has that its build makes again: not in its backups */
     private const array BUILT = ['vendor', 'var', 'node_modules', 'public/assets', '.git'];
@@ -49,6 +53,7 @@ final readonly class OffsiteBackups
         private SiteLock $lock,
         private SiteUpdater $updater,
         private SiteGit $repositories,
+        private UpdatePolicies $policies,
         private OperationLog $operations,
         private ServerPaths $paths,
         private ProcessRunner $runner,
@@ -274,9 +279,127 @@ final readonly class OffsiteBackups
         }
 
         if (\in_array(self::GIT_TAG, $chosen['tags'], true)) {
-            throw new \DomainException(\sprintf('"%s" follows a Git repository: its code is there, not in its backups. Add it from its repository ("site:add %s --git=…"), then restore its data ("backups:restore %2$s").', $source, $name));
+            throw new \DomainException(\sprintf('"%s" follows a Git repository: its code is there, not in its backups. Add it from its repository ("site:add %s --git=…"), then restore its data ("backups:restore %2$s"); or restore its whole server ("backups:restore-server").', $source, $name));
         }
 
+        $this->restoreSite($source, $chosen, $name, $domains, null, false, $server, $channel, $requestedBy, $say);
+
+        return ['id' => $chosen['id'], 'time' => $chosen['time']];
+    }
+
+    /**
+     * Every site another server had when it was last backed up (its manifest), each restored as a new
+     * site of this one from its latest backup: the same name and domains, its update policy, a Git
+     * mode site from its repository (with its deploy key). Those whose name is taken here are left
+     * out; one that fails doesn't stop the others.
+     *
+     * @param \Closure(string): void $say
+     *
+     * @return list<array{site: string, outcome: string, detail: string}>
+     */
+    public function restoreServer(string $server, string $channel, string $requestedBy, \Closure $say): array
+    {
+        $manifest = $this->manifest($server);
+        $outcomes = [];
+
+        try {
+            foreach ($manifest['sites'] as $entry) {
+                $name = new SiteName($entry['name']);
+                $say(\sprintf('"%s"', $name));
+
+                try {
+                    $existing = $this->registry->get($name);
+
+                    if ($existing instanceof Site && Site::REMOVED !== $existing->status) {
+                        $outcomes[] = ['site' => $name->value, 'outcome' => 'skipped', 'detail' => 'a site of this server has its name'];
+
+                        continue;
+                    }
+
+                    $chosen = $this->list($name, $server)[0] ?? throw new \DomainException('it has no backup');
+                    $repository = null;
+
+                    if (null !== $entry['git']) {
+                        $repository = new Repository($entry['git']['url'], $entry['git']['branch']);
+                        $this->restoreKey($manifest['keys'], $name);
+                    }
+
+                    $this->restoreSite($name, $chosen, $name, array_map(static fn (string $domain): Domain => new Domain($domain), $entry['domains']), $repository, $entry['git']['poll'] ?? false, $server, $channel, $requestedBy, static fn (string $step) => $say('  '.$step));
+                    $this->policies->set($name, $entry['updates']);
+                    $outcomes[] = ['site' => $name->value, 'outcome' => 'restored', 'detail' => 'as of '.$chosen['time']];
+                } catch (\Throwable $e) {
+                    $outcomes[] = ['site' => $name->value, 'outcome' => 'failed', 'detail' => $e->getMessage()];
+                }
+            }
+        } finally {
+            $this->filesystem->remove($manifest['into']);
+        }
+
+        return $outcomes;
+    }
+
+    /**
+     * The sites another server had when it was last backed up, from its manifest (with its deploy
+     * keys, got with it into a folder of their own: remove it after).
+     *
+     * @return array{sites: list<array{name: string, domains: list<string>, git: array{url: string, branch: string, poll: bool}|null, updates: string}>, keys: string, into: string, time: string}
+     */
+    public function manifest(string $server): array
+    {
+        $this->settings->validate();
+        $chosen = $this->list(null, $server)[0] ?? throw new \DomainException(\sprintf('There\'s no backup of the server "%s" off the server.', $server));
+        $file = null;
+        $keys = null;
+
+        foreach ($chosen['paths'] as $path) {
+            if (str_ends_with($path, '/'.self::MANIFEST)) {
+                $file = $path;
+            } elseif (str_ends_with($path, '/server/keys')) {
+                $keys = $path;
+            }
+        }
+
+        if (null === $file) {
+            throw new \DomainException(\sprintf('The server "%s"\'s latest backup has no list of its sites (it was made before servers backed it up): restore its sites one by one ("backups:restore <site> --from-server=%1$s --as=…").', $server));
+        }
+
+        $into = $this->paths->root.'/backups/.restoring-server-'.bin2hex(random_bytes(4));
+        $this->filesystem->mkdir($into, 0o700);
+
+        try {
+            $this->restic->restorePaths($chosen['id'], null === $keys ? [$file] : [$file, $keys], $into);
+            $data = json_decode((string) file_get_contents($into.$file), true, 8, \JSON_THROW_ON_ERROR);
+        } catch (\Throwable $e) {
+            $this->filesystem->remove($into);
+
+            throw $e instanceof \JsonException ? new BackupFailed('The server\'s list of its sites isn\'t one this server reads.', 0, $e) : $e;
+        }
+
+        $sites = [];
+
+        foreach (\is_array($data) && \is_array($data['sites'] ?? null) ? $data['sites'] : [] as $site) {
+            if (!\is_array($site) || !\is_string($site['name'] ?? null) || !\is_array($site['domains'] ?? null) || !\is_string($site['updates'] ?? null) || !\in_array($site['updates'], UpdatePolicies::POLICIES, true)) {
+                continue;
+            }
+
+            $git = \is_array($site['git'] ?? null) && \is_string($site['git']['url'] ?? null) && \is_string($site['git']['branch'] ?? null)
+                ? ['url' => $site['git']['url'], 'branch' => $site['git']['branch'], 'poll' => true === ($site['git']['poll'] ?? false)]
+                : null;
+            $sites[] = ['name' => $site['name'], 'domains' => array_values(array_filter($site['domains'], is_string(...))), 'git' => $git, 'updates' => $site['updates']];
+        }
+
+        return ['sites' => $sites, 'keys' => null === $keys ? '' : $into.$keys, 'into' => $into, 'time' => $chosen['time']];
+    }
+
+    /**
+     * Restores a site's backup as a new site.
+     *
+     * @param array{id: string, time: string, tags: list<string>, paths: list<string>} $chosen
+     * @param list<Domain>                                                             $domains
+     * @param \Closure(string): void                                                   $say
+     */
+    private function restoreSite(SiteName $source, array $chosen, SiteName $name, array $domains, ?Repository $repository, bool $poll, ?string $server, string $channel, string $requestedBy, \Closure $say): void
+    {
         $file = $this->backupFile($chosen['paths']);
         $folder = null;
 
@@ -286,7 +409,7 @@ final readonly class OffsiteBackups
             }
         }
 
-        if (null === $file || null === $folder) {
+        if (null === $file || (null === $folder && !$repository instanceof Repository)) {
             throw new \DomainException('That backup was made before sites\' folders were backed up: it can only be restored to its site ("backups:restore" without --as).');
         }
 
@@ -295,13 +418,35 @@ final readonly class OffsiteBackups
 
         try {
             $say(\sprintf('Getting the backup of "%s" of %s from off the server', $source, $chosen['time']));
-            $this->restic->restorePaths($chosen['id'], [$file, $folder], $into);
-            $this->sites->restoreAsNew($name, $domains, $into.$folder, $into.$file, ['snapshot' => $chosen['id'], 'from_site' => $source->value, 'from_server' => $server ?? $this->settings->host], $channel, $requestedBy, $say);
+            $this->restic->restorePaths($chosen['id'], $repository instanceof Repository ? [$file] : [$file, $folder], $into);
+            $from = ['snapshot' => $chosen['id'], 'from_site' => $source->value, 'from_server' => $server ?? $this->settings->host];
+            $this->sites->restoreAsNew($name, $domains, $repository ?? $into.$folder, $into.$file, $from, $channel, $requestedBy, $say, $poll);
         } finally {
             $this->filesystem->remove($into);
         }
+    }
 
-        return ['id' => $chosen['id'], 'time' => $chosen['time']];
+    /**
+     * A Git mode site's deploy key, from its old server's backup, where this server keeps it (unless
+     * it has one already).
+     */
+    private function restoreKey(string $keys, SiteName $name): void
+    {
+        $from = $keys.'/'.$name->value;
+        $to = $this->paths->root.'/server/keys/'.$name->value;
+
+        if ('' === $keys || !is_dir($from) || file_exists($to)) {
+            return;
+        }
+
+        $this->filesystem->mirror($from, $to);
+        $this->filesystem->chmod($to, 0o700);
+
+        $files = glob($to.'/*');
+
+        foreach (false === $files ? [] : $files as $file) {
+            $this->filesystem->chmod($file, 0o600);
+        }
     }
 
     /**
@@ -376,10 +521,31 @@ final readonly class OffsiteBackups
             umask($previous);
         }
 
+        // What a new server needs to restore it all: its sites, their domains, Git settings and policies
+        $manifest = $directory.'/'.self::MANIFEST;
+        $sites = [];
+
+        foreach ($this->registry->all() as $site) {
+            if (Site::RUNNING !== $site->status) {
+                continue;
+            }
+
+            $git = $this->repositories->of($site->name);
+            $sites[] = [
+                'name' => $site->name->value,
+                'domains' => array_map(static fn (Domain $domain): string => $domain->value, $site->domains),
+                'git' => null === $git ? null : ['url' => $git['repository']->url, 'branch' => $git['repository']->branch, 'poll' => $git['poll']],
+                'updates' => $this->policies->of($site->name),
+            ];
+        }
+
+        file_put_contents($manifest, json_encode(['schema' => 1, 'sites' => $sites], \JSON_PRETTY_PRINT | \JSON_UNESCAPED_SLASHES | \JSON_THROW_ON_ERROR)."\n");
+        chmod($manifest, 0o600);
+
         try {
-            return $this->restic->backup(array_values(array_filter([$dump, $this->paths->domains(), $this->paths->root.'/server/keys'], file_exists(...))), [self::SERVER_TAG]);
+            return $this->restic->backup(array_values(array_filter([$dump, $manifest, $this->paths->domains(), $this->paths->root.'/server/keys'], file_exists(...))), [self::SERVER_TAG]);
         } finally {
-            $this->filesystem->remove($dump);
+            $this->filesystem->remove([$dump, $manifest]);
         }
     }
 

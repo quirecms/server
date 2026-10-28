@@ -97,6 +97,7 @@ quire-server backups jane | backups server      # what's stored off the server
 quire-server backups:now [jane]         # back up now (everything, or one site)
 quire-server backups:restore jane [--snapshot=…]   # put a site back as a backup has it
 quire-server backups:restore jane --as=copy --domain=…   # a new site from it (--from-server: another server's)
+quire-server backups:restore-server --from-server=old   # every site of another server, from its backups
 quire-server backups:check [--read=5]   # check the stored backups
 quire-server operations [--site=jane]  # what was done, by whom, and how it ended
 quire-server operations <id>           # an operation's log
@@ -188,7 +189,7 @@ quire-server backups:restore jane --as=jane-copy --domain=copy.jane.example
 quire-server backups:restore jane --from-server=old-server --as=jane --domain=jane.example
 ```
 
-To move sites to a new server: install it, connect it to the same backups with `quire-server backups:setup --existing --host=new-server` (the bucket, its key and the password; each server names itself in the backups with `--host`), list the old server's with `quire-server backups jane --from-server=old-server`, and restore each. A Git mode site's code is in its repository, not its backups: add it from there, then restore its data with `backups:restore`. Restoring a whole server in one step comes next.
+To move sites to a new server: install it, connect it to the same backups with `quire-server backups:setup --existing --host=new-server` (the bucket, its key and the password; each server names itself in the backups with `--host`), list the old server's with `quire-server backups jane --from-server=old-server`, and restore each. A Git mode site's code is in its repository, not its backups: add it from there, then restore its data with `backups:restore`. **A whole server, in one step:** on a new server connected to the old one's backups, `quire-server backups:restore-server --from-server=old-server` restores every site the old one had when it was last backed up (its backup lists them), from each one's latest backup, with the same name and domains and its update policy; Git mode sites come from their repository, with their deploy key from the old server's backup. Then point the domains' DNS at the new server.
 
 The bucket's key can delete backups: someone who takes over the server can too. For backups that survive that, give the key no right to delete, and let the bucket's own rules (object lock, lifecycle) keep and expire them.
 

@@ -161,19 +161,19 @@ final readonly class SiteManager
 
     /**
      * Adds a site from a backup (e.g. one from off the server, of a site of this server or another):
-     * its code and files as the backup's folder has them (but its settings, which are written anew:
-     * its own database and password, a new secret), its database and stored files restored from the
-     * backup. If anything fails, everything done is undone.
+     * its code and files as the backup's folder has them, or (Git mode) its repository's branch; its
+     * settings written anew (its own database and password, a new secret); its database and stored
+     * files restored from the backup. If anything fails, everything done is undone.
      *
      * @param list<Domain>           $domains
-     * @param string                 $code    The site's folder, as backed up
+     * @param string|Repository      $code    The site's folder, as backed up, or its repository
      * @param string                 $backup  Its quire:backup file
      * @param array<string, scalar>  $from    What's recorded of where it came from
      * @param \Closure(string): void $say
      */
-    public function restoreAsNew(SiteName $name, array $domains, string $code, string $backup, array $from, string $channel, string $requestedBy, \Closure $say): Site
+    public function restoreAsNew(SiteName $name, array $domains, string|Repository $code, string $backup, array $from, string $channel, string $requestedBy, \Closure $say, bool $poll = false): Site
     {
-        return $this->lock->run($name, function () use ($name, $domains, $code, $backup, $from, $channel, $requestedBy, $say): Site {
+        return $this->lock->run($name, function () use ($name, $domains, $code, $backup, $from, $channel, $requestedBy, $say, $poll): Site {
             $operation = $this->operations->start('site.restore_as_new', $name, ['domains' => array_map(static fn (Domain $domain): string => $domain->value, $domains), ...$from], $channel, $requestedBy);
             $directory = $this->paths->site($name);
             $undo = [];
@@ -192,21 +192,32 @@ final readonly class SiteManager
                     throw new \DomainException(\sprintf('The folder "%s" exists already: choose another name, or move it away first.', $directory));
                 }
 
-                foreach (['compose.yaml', 'compose.prod.yaml', 'composer.json'] as $file) {
-                    if (!is_file($code.'/'.$file)) {
-                        throw new \DomainException(\sprintf('The backup\'s folder has no %s: it isn\'t a Quire site\'s.', $file));
+                if (\is_string($code)) {
+                    foreach (['compose.yaml', 'compose.prod.yaml', 'composer.json'] as $file) {
+                        if (!is_file($code.'/'.$file)) {
+                            throw new \DomainException(\sprintf('The backup\'s folder has no %s: it isn\'t a Quire site\'s.', $file));
+                        }
                     }
+                } elseif ($code->overSsh() && !$this->keys->exists($name)) {
+                    throw new \DomainException(\sprintf('The site has no deploy key: create it with "quire-server site:key %s" and add it to the repository first.', $name));
                 }
 
                 $step('Recording the site');
                 $this->registry->add($name, $domains, Site::SHARED_DATABASE, $name->value);
                 $undo[] = fn () => $this->registry->setStatus($name, Site::REMOVED);
-
-                $step('Putting its code in place, as the backup has it');
                 $undo[] = fn () => $this->archive($name, $directory);
-                $this->filesystem->mirror($code, $directory);
-                // Its settings are this server's to write: none of the backed-up site's are kept.
-                $this->filesystem->remove(array_map(static fn (string $file): string => $directory.'/'.$file, [SiteFiles::ENV_FILE, SiteFiles::ENV_FILE.'.before-server', SiteFiles::OVERRIDE]));
+
+                if (\is_string($code)) {
+                    $step('Putting its code in place, as the backup has it');
+                    $this->filesystem->mirror($code, $directory);
+                    // Its settings are this server's to write: none of the backed-up site's are kept.
+                    $this->filesystem->remove(array_map(static fn (string $file): string => $directory.'/'.$file, [SiteFiles::ENV_FILE, SiteFiles::ENV_FILE.'.before-server', SiteFiles::OVERRIDE]));
+                } else {
+                    $this->repositories->follow($name, $code, $poll);
+                    $undo[] = fn () => $this->repositories->forget($name);
+                    $step(\sprintf('Getting its repository (%s, branch %s)', $code->url, $code->branch));
+                    $this->git->clone($code, $name, $directory, $operation->output(...));
+                }
 
                 $step('Creating its database');
                 $databasePassword = $this->databases->create($name);
@@ -234,7 +245,12 @@ final readonly class SiteManager
 
                 $step('Restoring its database and files from the backup');
                 $this->compose->exec($project, self::PHP, ['bin/console', 'quire:restore', '-', '--force', '--no-interaction'], $operation->output(...), 3600, $backup)->orFail('Restoring the backup');
-                $this->pinComposerLock($name, $project);
+
+                if ($code instanceof Repository) {
+                    $this->repositories->deployed($name, $this->git->head($code, $name, $directory));
+                } else {
+                    $this->pinComposerLock($name, $project);
+                }
 
                 $step('Opening it to visitors');
                 $this->registry->setStatus($name, Site::RUNNING);

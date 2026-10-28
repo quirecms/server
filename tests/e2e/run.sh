@@ -211,6 +211,14 @@ inside "QUIRE_SERVER_BACKUP_SETUP_SECRET_KEY=e2e-secret QUIRE_SERVER_BACKUP_SETU
 check 'another server'\''s backups are listed by its name' "! inside 'quire-server backups jane' | grep -qE '^ +[0-9a-f]{8} ' && inside 'quire-server backups jane --from-server=quire-server' | grep -qE '^ +[0-9a-f]{8} '"
 inside 'quire-server backups:restore jane --from-server=quire-server --as=moved --domain=moved.test --yes 2>&1' | tee "$logs"/moved.log | sed 's/^/    /'
 check 'a site moves from another server'\''s backups' "grep -q 'moved\" runs' $logs/moved.log && inside 'curl -sk --resolve moved.test:443:127.0.0.1 https://moved.test/' | grep -q 'Jane before'"
+
+echo '== A whole server from its backups (as a server that replaces it)'
+# The first server's sites, as its last backup lists them (only jane): gone from here first.
+inside 'quire-server site:remove jane --yes >/dev/null 2>&1'
+inside 'quire-server backups:restore-server --from-server=quire-server --yes 2>&1' | tee "$logs"/restore-server.log | sed 's/^/    /'
+check 'every site of the old server is restored, with its name and domains' "grep -Eq 'jane +restored' $logs/restore-server.log && inside \"curl -sk $resolve https://jane.test/\" | grep -q 'Jane before'"
+check 'with its update policy' "inside 'quire-server site:updates jane' | grep -q 'fix a known vulnerability'"
+check 'a server with no backups is refused' "inside 'quire-server backups:restore-server --from-server=no-such-server --yes 2>&1' | grep -q 'no backup of the server'"
 fi
 
 if want sites; then
