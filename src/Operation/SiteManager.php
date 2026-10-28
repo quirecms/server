@@ -154,27 +154,132 @@ final readonly class SiteManager
 
                 return new AddedSite($this->registry->get($request->name) ?? throw new \LogicException('The site was just added.'), $adminPassword);
             } catch (\Throwable $e) {
-                $operation->line('!! '.$e->getMessage());
-                $operation->line('== Undoing what was done');
+                $this->undo($operation, $e, $undo, $opened);
+            }
+        });
+    }
 
-                foreach (array_reverse($undo) as $revert) {
-                    try {
-                        $revert();
-                    } catch (\Throwable $failure) {
-                        $operation->line('!! Undoing failed too: '.$failure->getMessage());
+    /**
+     * Adds a site from a backup (e.g. one from off the server, of a site of this server or another):
+     * its code and files as the backup's folder has them (but its settings, which are written anew:
+     * its own database and password, a new secret), its database and stored files restored from the
+     * backup. If anything fails, everything done is undone.
+     *
+     * @param list<Domain>           $domains
+     * @param string                 $code    The site's folder, as backed up
+     * @param string                 $backup  Its quire:backup file
+     * @param array<string, scalar>  $from    What's recorded of where it came from
+     * @param \Closure(string): void $say
+     */
+    public function restoreAsNew(SiteName $name, array $domains, string $code, string $backup, array $from, string $channel, string $requestedBy, \Closure $say): Site
+    {
+        return $this->lock->run($name, function () use ($name, $domains, $code, $backup, $from, $channel, $requestedBy, $say): Site {
+            $operation = $this->operations->start('site.restore_as_new', $name, ['domains' => array_map(static fn (Domain $domain): string => $domain->value, $domains), ...$from], $channel, $requestedBy);
+            $directory = $this->paths->site($name);
+            $undo = [];
+            $opened = [];
+            $step = static function (string $what) use ($operation, $say): void {
+                $operation->line('== '.$what);
+                $say($what);
+            };
+
+            try {
+                if ([] === $domains) {
+                    throw new \InvalidArgumentException('A site needs at least one domain.');
+                }
+
+                if (file_exists($directory)) {
+                    throw new \DomainException(\sprintf('The folder "%s" exists already: choose another name, or move it away first.', $directory));
+                }
+
+                foreach (['compose.yaml', 'compose.prod.yaml', 'composer.json'] as $file) {
+                    if (!is_file($code.'/'.$file)) {
+                        throw new \DomainException(\sprintf('The backup\'s folder has no %s: it isn\'t a Quire site\'s.', $file));
                     }
                 }
 
-                // Only what this operation opened: a domain may belong to another site.
-                foreach ($opened as $domain) {
-                    $this->frontDoor->revoke($domain);
+                $step('Recording the site');
+                $this->registry->add($name, $domains, Site::SHARED_DATABASE, $name->value);
+                $undo[] = fn () => $this->registry->setStatus($name, Site::REMOVED);
+
+                $step('Putting its code in place, as the backup has it');
+                $undo[] = fn () => $this->archive($name, $directory);
+                $this->filesystem->mirror($code, $directory);
+                // Its settings are this server's to write: none of the backed-up site's are kept.
+                $this->filesystem->remove(array_map(static fn (string $file): string => $directory.'/'.$file, [SiteFiles::ENV_FILE, SiteFiles::ENV_FILE.'.before-server', SiteFiles::OVERRIDE]));
+
+                $step('Creating its database');
+                $databasePassword = $this->databases->create($name);
+                $operation->secret($databasePassword);
+                $undo[] = fn () => $this->databases->drop($name);
+
+                $step('Writing its settings');
+                $secret = bin2hex(random_bytes(32));
+                $operation->secret($secret);
+                $this->files->writeEnv($directory, $name, $domains[0], array_filter([
+                    'APP_SECRET' => $secret,
+                    'QUIRE_DATABASE_PASSWORD' => $databasePassword,
+                    'POSTGRES_PASSWORD' => bin2hex(random_bytes(24)),
+                    'MAILER_DSN' => $this->mailerDsn,
+                ], static fn (string $value): bool => '' !== $value));
+                $this->files->writeOverride($directory, $name, $domains, Site::SHARED_DATABASE);
+                $project = $this->project($name, $domains, $name->value, Site::SHARED_DATABASE);
+
+                $step('Checking and building it (a few minutes)');
+                $undo[] = fn () => $this->compose->down($project, volumes: true);
+                $this->compose->build($project, $operation->output(...));
+
+                $step('Starting it');
+                $this->compose->up($project, $operation->output(...));
+
+                $step('Restoring its database and files from the backup');
+                $this->compose->exec($project, self::PHP, ['bin/console', 'quire:restore', '-', '--force', '--no-interaction'], $operation->output(...), 3600, $backup)->orFail('Restoring the backup');
+                $this->pinComposerLock($name, $project);
+
+                $step('Opening it to visitors');
+                $this->registry->setStatus($name, Site::RUNNING);
+
+                foreach ($domains as $domain) {
+                    $this->frontDoor->allow($domain, $name);
+                    $opened[] = $domain;
                 }
 
-                $operation->fail($e->getMessage());
+                $operation->succeed();
 
-                throw $e;
+                return $this->registry->get($name) ?? throw new \LogicException('The site was just added.');
+            } catch (\Throwable $e) {
+                $this->undo($operation, $e, $undo, $opened);
             }
         });
+    }
+
+    /**
+     * Undoes what was done, last first, and the domains opened; records the failure and throws it on.
+     *
+     * @param list<\Closure(): mixed> $undo
+     * @param list<Domain>            $opened
+     */
+    private function undo(Operation $operation, \Throwable $e, array $undo, array $opened): never
+    {
+        $operation->line('!! '.$e->getMessage());
+        $operation->line('== Undoing what was done');
+
+        foreach (array_reverse($undo) as $revert) {
+            try {
+                $revert();
+            } catch (\Throwable $failure) {
+                $operation->line('!! Undoing failed too: '.$failure->getMessage());
+            }
+        }
+
+        // Only what this operation opened: a domain may belong to another site.
+        foreach ($opened as $domain) {
+            $this->frontDoor->revoke($domain);
+        }
+
+        $operation->fail($e->getMessage());
+
+        throw $e;
     }
 
     /**

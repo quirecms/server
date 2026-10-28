@@ -199,6 +199,18 @@ check 'a wrong password for the repository saves nothing' "inside 'QUIRE_SERVER_
 # As a server that replaces this one would: the repository, its keys and its password
 inside "QUIRE_SERVER_BACKUP_SETUP_SECRET_KEY=e2e-secret QUIRE_SERVER_BACKUP_SETUP_PASSWORD='$password' quire-server backups:setup $repository --existing --yes 2>&1" > "$logs"/setup-existing.log || true
 check 'another server connects to the repository with its password' "grep -q 'are set up' $logs/setup-existing.log && [ \"\$(inside 'quire-server backups jane' | grep -cE '^ +[0-9a-f]{8} ')\" -ge 1 ]"
+
+echo '== A site from a backup, as a new site: a copy here, and moved from another server'
+inside 'quire-server backups:restore jane --as=jane-copy --domain=copy.test --yes 2>&1' | tee "$logs"/copy.log | sed 's/^/    /'
+check 'a copy of a site runs from its backup, with its data' "grep -q 'jane-copy\" runs, as \"jane\" was' $logs/copy.log && inside 'curl -sk --resolve copy.test:443:127.0.0.1 https://copy.test/' | grep -q 'Jane before'"
+check 'the copy has settings of its own (no secret of the site'\''s)' "[ \"\$(inside \"sed -n 's/^APP_SECRET=//p' /srv/quire/sites/jane/prod.env\")\" != \"\$(inside \"sed -n 's/^APP_SECRET=//p' /srv/quire/sites/jane-copy/prod.env\")\" ] && inside 'quire-server site:list' | grep -q 'jane-copy.*running'"
+check 'the site itself is untouched' "inside \"curl -sk $resolve https://jane.test/\" | grep -q 'Jane before' && inside 'quire-server site:list' | grep -q 'jane .*running'"
+check 'a name taken isn'\''t restored over' "inside 'quire-server backups:restore jane --as=jane --domain=other.test --yes 2>&1' | grep -q 'exists already' && inside \"curl -sk $resolve https://jane.test/\" | grep -q 'Jane before'"
+# This machine as a second server, under another name in the same bucket: the first one's backups are another server's.
+inside "QUIRE_SERVER_BACKUP_SETUP_SECRET_KEY=e2e-secret QUIRE_SERVER_BACKUP_SETUP_PASSWORD='$password' quire-server backups:setup $repository --existing --host=server-2 --yes >/dev/null 2>&1"
+check 'another server'\''s backups are listed by its name' "! inside 'quire-server backups jane' | grep -qE '^ +[0-9a-f]{8} ' && inside 'quire-server backups jane --from-server=quire-server' | grep -qE '^ +[0-9a-f]{8} '"
+inside 'quire-server backups:restore jane --from-server=quire-server --as=moved --domain=moved.test --yes 2>&1' | tee "$logs"/moved.log | sed 's/^/    /'
+check 'a site moves from another server'\''s backups' "grep -q 'moved\" runs' $logs/moved.log && inside 'curl -sk --resolve moved.test:443:127.0.0.1 https://moved.test/' | grep -q 'Jane before'"
 fi
 
 if want sites; then

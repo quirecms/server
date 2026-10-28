@@ -122,4 +122,31 @@ final class ResticTest extends TestCase
     {
         return new Restic($this->runner, new BackupSettings('s3:https://host/bucket', 'the-key', 'the-secret', self::PASSWORD), '/srv/quire/backups/.restic-cache');
     }
+
+    public function testWhatABuildMakesAgainIsLeftOut(): void
+    {
+        $this->answers['backup'] = [0, "{\"message_type\":\"summary\",\"snapshot_id\":\"1a2b3c4d\"}\n", ''];
+        $this->restic()->backup(['/srv/quire/backups/jane/x.tar', '/srv/quire/sites/jane'], ['quire-site'], ['/srv/quire/sites/jane/vendor', '/srv/quire/sites/jane/var']);
+
+        self::assertSame(['restic', '--quiet', 'backup', '--json', '--host', 'quire-server', '--tag', 'quire-site', '--exclude=/srv/quire/sites/jane/vendor', '--exclude=/srv/quire/sites/jane/var', '--', '/srv/quire/backups/jane/x.tar', '/srv/quire/sites/jane'], $this->runner->runs[0]['command']);
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->restic()->backup(['/x'], [], ['relative/vendor']);
+    }
+
+    public function testAnotherServersSnapshots(): void
+    {
+        $this->answers['snapshots'] = [0, '[]', ''];
+        $this->restic()->snapshots(['quire-site'], 'old-server');
+        self::assertSame('old-server', $this->runner->runs[0]['command'][5]);
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->restic()->snapshots([], 'Old Server;rm');
+    }
+
+    public function testRestoringSeveralPaths(): void
+    {
+        $this->restic()->restorePaths('1a2b3c4d', ['/srv/quire/backups/jane/x.tar', '/srv/quire/sites/jane'], '/srv/quire/backups/.restoring');
+        self::assertSame(['restic', '--quiet', 'restore', '1a2b3c4d', '--target', '/srv/quire/backups/.restoring', '--include', '/srv/quire/backups/jane/x.tar', '--include', '/srv/quire/sites/jane'], $this->runner->runs[0]['command']);
+    }
 }

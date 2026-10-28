@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Quire\Server\Console;
 
 use Quire\Server\Backup\OffsiteBackups;
+use Quire\Server\Site\Domain;
 use Quire\Server\Site\SiteName;
 use Quire\Server\Update\UpdateFailed;
 use Symfony\Component\Console\Attribute\Argument;
@@ -23,6 +24,17 @@ use Symfony\Component\Console\Style\SymfonyStyle;
 
           <info>quire-server backups:restore jane</info>                    its latest backup
           <info>quire-server backups:restore jane --snapshot=1a2b3c4d</info>  that one ("quire-server backups jane")
+
+        As a new site, with its own name and domains (a copy, e.g. to try an update on), from this
+        server's backups or another's in the same bucket (moving a site: its old server's
+        QUIRE_SERVER_BACKUP_HOST). Its code and files are the backup's, its data restored; its settings
+        are its own (its database, password and secret: everyone signs in again):
+
+          <info>quire-server backups:restore jane --as=jane-copy --domain=copy.jane.example</info>
+          <info>quire-server backups:restore jane --from-server=old-server --as=jane --domain=jane.example</info>
+
+        A Git mode site's code is in its repository, not its backups: add it from there, then restore
+        its data in place.
         HELP,
 )]
 final readonly class BackupsRestoreCommand
@@ -32,6 +44,9 @@ final readonly class BackupsRestoreCommand
     ) {
     }
 
+    /**
+     * @param list<string> $domain
+     */
     public function __invoke(
         SymfonyStyle $io,
         #[Argument(description: 'The site\'s short name, e.g. "jane"')]
@@ -40,11 +55,21 @@ final readonly class BackupsRestoreCommand
         string $snapshot = 'latest',
         #[Option(description: 'Don\'t ask')]
         bool $yes = false,
+        #[Option(description: 'Restore it as a new site with this name, instead of over the site', name: 'as')]
+        ?string $as = null,
+        #[Option(description: 'With --as: a domain of the new site (repeatable); the first is the main one')]
+        array $domain = [],
+        #[Option(description: 'Another server\'s backups in the same bucket (its QUIRE_SERVER_BACKUP_HOST), with --as')]
+        ?string $fromServer = null,
     ): int {
         if (!$this->backups->configured()) {
             $io->error('Backups off the server aren\'t set up: "quire-server backups:setup".');
 
             return Command::FAILURE;
+        }
+
+        if (null !== $as || null !== $fromServer || [] !== $domain) {
+            return $this->asNew($io, $name, $snapshot, $as, $domain, $fromServer, $yes);
         }
 
         try {
@@ -70,6 +95,39 @@ final readonly class BackupsRestoreCommand
         }
 
         $io->success(\sprintf('"%s" is as it was on %s (backup %s).', $site, $restored['time'], substr($restored['id'], 0, 8)));
+
+        return Command::SUCCESS;
+    }
+
+    /**
+     * @param list<string> $domains
+     */
+    private function asNew(SymfonyStyle $io, string $name, string $snapshot, ?string $as, array $domains, ?string $fromServer, bool $yes): int
+    {
+        try {
+            $source = new SiteName($name);
+            $target = new SiteName($as ?? throw new \InvalidArgumentException('Name the new site: --as=<name> (and its --domain).'));
+            $domains = array_map(static fn (string $value): Domain => new Domain($value), $domains);
+
+            if ([] === $domains) {
+                throw new \InvalidArgumentException('Give the new site its domains: --domain=… (repeatable).');
+            }
+
+            if (!$yes && !$io->confirm(\sprintf('Add the site "%s" (%s) from the %s backup of "%s"%s?', $target, implode(', ', array_map(static fn (Domain $domain): string => $domain->unicode(), $domains)), $snapshot, $source, null === $fromServer ? '' : ' on '.$fromServer), true)) {
+                $io->writeln('Nothing changed.');
+
+                return Command::SUCCESS;
+            }
+
+            $restored = $this->backups->restoreAsNew($source, $snapshot, $target, $domains, $fromServer, Requester::CHANNEL, Requester::name(), static fn (string $step) => $io->writeln('  '.$step.'…'));
+        } catch (\Throwable $e) {
+            $io->error(['The site wasn\'t added (everything done was undone):', $e->getMessage()]);
+
+            return Command::FAILURE;
+        }
+
+        $io->success(\sprintf('"%s" runs, as "%s" was on %s (backup %s).', $target, $source, $restored['time'], substr($restored['id'], 0, 8)));
+        $io->writeln(\sprintf('Point the DNS of %s at this server: its certificate comes at the first visit. Everyone signs in again (it has a secret of its own).', implode(', ', array_map(static fn (Domain $domain): string => $domain->unicode(), $domains))));
 
         return Command::SUCCESS;
     }

@@ -51,14 +51,25 @@ final readonly class Restic
     }
 
     /**
-     * Backs up files and folders, tagged; returns its snapshot's ID.
+     * Backs up files and folders, tagged, but what the exclusions match; returns its snapshot's ID.
      *
      * @param list<string> $paths
      * @param list<string> $tags
+     * @param list<string> $exclude Absolute paths, e.g. a site's vendor folder
      */
-    public function backup(array $paths, array $tags): string
+    public function backup(array $paths, array $tags, array $exclude = []): string
     {
-        $result = $this->orFail($this->restic(['backup', '--json', '--host', $this->settings->host, ...$this->tags($tags), '--', ...$paths], 7200), 'Backing up off the server');
+        $excluded = [];
+
+        foreach ($exclude as $path) {
+            if (!str_starts_with($path, '/') || str_contains($path, '..')) {
+                throw new \InvalidArgumentException(\sprintf('"%s" isn\'t an absolute path.', $path));
+            }
+
+            $excluded[] = '--exclude='.$path;
+        }
+
+        $result = $this->orFail($this->restic(['backup', '--json', '--host', $this->settings->host, ...$this->tags($tags), ...$excluded, '--', ...$paths], 7200), 'Backing up off the server');
 
         foreach (array_reverse(explode("\n", trim($result->output))) as $line) {
             $message = json_decode($line, true);
@@ -72,15 +83,20 @@ final readonly class Restic
     }
 
     /**
-     * This server's snapshots, oldest first, of those with all these tags.
+     * A server's snapshots (this one's, or another's in the same repository), oldest first, of those
+     * with all these tags.
      *
      * @param list<string> $tags
      *
      * @return list<array{id: string, time: string, tags: list<string>, paths: list<string>}>
      */
-    public function snapshots(array $tags = []): array
+    public function snapshots(array $tags = [], ?string $host = null): array
     {
-        $result = $this->orFail($this->restic(['snapshots', '--json', '--host', $this->settings->host, ...([] === $tags ? [] : ['--tag', implode(',', $tags)])], 300), 'Listing the backups');
+        if (null !== $host && 1 !== preg_match('/^[a-z0-9][a-z0-9.-]{0,62}\z/', $host)) {
+            throw new \InvalidArgumentException(\sprintf('"%s" isn\'t a server\'s name in the backups.', $host));
+        }
+
+        $result = $this->orFail($this->restic(['snapshots', '--json', '--host', $host ?? $this->settings->host, ...([] === $tags ? [] : ['--tag', implode(',', $tags)])], 300), 'Listing the backups');
         $snapshots = json_decode($result->output, true);
         $list = [];
 
@@ -105,11 +121,7 @@ final readonly class Restic
      */
     public function restoreFile(string $snapshot, string $path, string $into): string
     {
-        if (1 !== preg_match(self::SNAPSHOT, $snapshot) || !str_starts_with($path, '/') || str_contains($path, '..')) {
-            throw new \InvalidArgumentException('Not a snapshot, or not a path in it.');
-        }
-
-        $this->orFail($this->restic(['restore', $snapshot, '--target', $into, '--include', $path], 7200), 'Getting the backup from off the server');
+        $this->restorePaths($snapshot, [$path], $into);
         $file = $into.$path;
 
         return is_file($file) ? $file : throw new BackupFailed('The snapshot doesn\'t have its backup file.');
@@ -131,6 +143,30 @@ final readonly class Restic
     public function check(int $percent): ProcessResult
     {
         return $this->restic(['check', '--read-data-subset', max(1, min(100, $percent)).'%'], 7200);
+    }
+
+    /**
+     * Restores files and folders of a snapshot into a folder (made here), at their paths under it.
+     *
+     * @param list<string> $paths
+     */
+    public function restorePaths(string $snapshot, array $paths, string $into): void
+    {
+        if (1 !== preg_match(self::SNAPSHOT, $snapshot) || [] === $paths) {
+            throw new \InvalidArgumentException('Not a snapshot, or not a path in it.');
+        }
+
+        $includes = [];
+
+        foreach ($paths as $path) {
+            if (!str_starts_with($path, '/') || str_contains($path, '..')) {
+                throw new \InvalidArgumentException('Not a snapshot, or not a path in it.');
+            }
+            $includes[] = '--include';
+            $includes[] = $path;
+        }
+
+        $this->orFail($this->restic(['restore', $snapshot, '--target', $into, ...$includes], 7200), 'Getting the backup from off the server');
     }
 
     /**

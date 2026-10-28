@@ -8,8 +8,10 @@ use Quire\Server\Operation\Operation;
 use Quire\Server\Operation\OperationLog;
 use Quire\Server\Operation\SiteManager;
 use Quire\Server\Process\ProcessRunner;
+use Quire\Server\Registry\SiteGit;
 use Quire\Server\Registry\SiteLock;
 use Quire\Server\Registry\SiteRegistry;
+use Quire\Server\Site\Domain;
 use Quire\Server\Site\ServerPaths;
 use Quire\Server\Site\Site;
 use Quire\Server\Site\SiteName;
@@ -29,6 +31,11 @@ final readonly class OffsiteBackups
     public const string NIGHTLY = 'backups.nightly';
     public const string SITE_TAG = 'quire-site';
     public const string SERVER_TAG = 'quire-server';
+    /** A Git mode site's: its code is its repository's, so it isn't in its backup */
+    public const string GIT_TAG = 'git';
+
+    /** What a site's folder has that its build makes again: not in its backups */
+    private const array BUILT = ['vendor', 'var', 'node_modules', 'public/assets', '.git'];
     private const int CHECK_PERCENT = 5;
 
     /**
@@ -41,6 +48,7 @@ final readonly class OffsiteBackups
         private SiteManager $sites,
         private SiteLock $lock,
         private SiteUpdater $updater,
+        private SiteGit $repositories,
         private OperationLog $operations,
         private ServerPaths $paths,
         private ProcessRunner $runner,
@@ -190,15 +198,16 @@ final readonly class OffsiteBackups
     }
 
     /**
-     * A site's backups off the server (or the server's own, with null), newest first.
+     * A site's backups off the server (or the server's own, with null), newest first: this server's,
+     * or another's that backs up to the same repository (its QUIRE_SERVER_BACKUP_HOST).
      *
      * @return list<array{id: string, time: string, tags: list<string>, paths: list<string>}>
      */
-    public function list(?SiteName $site): array
+    public function list(?SiteName $site, ?string $server = null): array
     {
         $this->settings->validate();
 
-        return array_reverse($this->restic->snapshots($site instanceof SiteName ? [self::SITE_TAG, 'site:'.$site->value] : [self::SERVER_TAG]));
+        return array_reverse($this->restic->snapshots($site instanceof SiteName ? [self::SITE_TAG, 'site:'.$site->value] : [self::SERVER_TAG], $server));
     }
 
     /**
@@ -221,7 +230,9 @@ final readonly class OffsiteBackups
         $chosen = array_find($snapshots, static fn ($candidate): bool => 'latest' === $snapshot || str_starts_with($candidate['id'], $snapshot));
 
         // Only one of the site's own: an ID of another site's backup isn't found among these.
-        if (null === $chosen || 1 !== \count($chosen['paths'])) {
+        $file = null === $chosen ? null : $this->backupFile($chosen['paths']);
+
+        if (null === $chosen || null === $file) {
             throw new \DomainException(\sprintf('The site "%s" has no such backup off the server ("quire-server backups %1$s" lists them).', $name));
         }
 
@@ -231,7 +242,7 @@ final readonly class OffsiteBackups
 
         try {
             $say(\sprintf('Getting its backup of %s from off the server', $chosen['time']));
-            $file = $this->restic->restoreFile($chosen['id'], $chosen['paths'][0], $into);
+            $file = $this->restic->restoreFile($chosen['id'], $file, $into);
             $this->updater->restoreBackup($name, $file, ['snapshot' => $chosen['id'], 'from' => 'off the server'], $channel, $requestedBy, $say);
         } finally {
             $this->filesystem->remove($into);
@@ -240,17 +251,96 @@ final readonly class OffsiteBackups
         return ['id' => $chosen['id'], 'time' => $chosen['time']];
     }
 
+    /**
+     * A new site from a site's backup off the server (of this server, or another's in the same
+     * repository: moving a site): its code as backed up, its data restored, its settings its own.
+     *
+     * @param list<Domain>           $domains
+     * @param \Closure(string): void $say
+     *
+     * @return array{id: string, time: string} The snapshot restored
+     */
+    public function restoreAsNew(SiteName $source, string $snapshot, SiteName $name, array $domains, ?string $server, string $channel, string $requestedBy, \Closure $say): array
+    {
+        $this->settings->validate();
+
+        if (1 !== preg_match(Restic::SNAPSHOT, $snapshot)) {
+            throw new \InvalidArgumentException(\sprintf('"%s" isn\'t a backup: "latest", or an ID from "quire-server backups %s".', SiteName::printable($snapshot), $source));
+        }
+        $chosen = array_find($this->list($source, $server), static fn ($candidate): bool => 'latest' === $snapshot || str_starts_with($candidate['id'], $snapshot));
+
+        if (null === $chosen) {
+            throw new \DomainException(\sprintf('There\'s no such backup of "%s" off the server%s.', $source, null === $server ? '' : ' (from '.$server.')'));
+        }
+
+        if (\in_array(self::GIT_TAG, $chosen['tags'], true)) {
+            throw new \DomainException(\sprintf('"%s" follows a Git repository: its code is there, not in its backups. Add it from its repository ("site:add %s --git=…"), then restore its data ("backups:restore %2$s").', $source, $name));
+        }
+
+        $file = $this->backupFile($chosen['paths']);
+        $folder = null;
+
+        foreach ($chosen['paths'] as $path) {
+            if (1 === preg_match('#^/.+/sites/'.preg_quote($source->value, '#').'\z#', $path)) {
+                $folder = $path;
+            }
+        }
+
+        if (null === $file || null === $folder) {
+            throw new \DomainException('That backup was made before sites\' folders were backed up: it can only be restored to its site ("backups:restore" without --as).');
+        }
+
+        $into = $this->paths->root.'/backups/.restoring-'.$name->value.'-'.bin2hex(random_bytes(4));
+        $this->filesystem->mkdir($into, 0o700);
+
+        try {
+            $say(\sprintf('Getting the backup of "%s" of %s from off the server', $source, $chosen['time']));
+            $this->restic->restorePaths($chosen['id'], [$file, $folder], $into);
+            $this->sites->restoreAsNew($name, $domains, $into.$folder, $into.$file, ['snapshot' => $chosen['id'], 'from_site' => $source->value, 'from_server' => $server ?? $this->settings->host], $channel, $requestedBy, $say);
+        } finally {
+            $this->filesystem->remove($into);
+        }
+
+        return ['id' => $chosen['id'], 'time' => $chosen['time']];
+    }
+
+    /**
+     * The quire:backup file among a snapshot's paths.
+     *
+     * @param list<string> $paths
+     */
+    private function backupFile(array $paths): ?string
+    {
+        foreach ($paths as $path) {
+            if (str_ends_with($path, '.tar')) {
+                return $path;
+            }
+        }
+
+        return null;
+    }
+
     private function now(): \DateTimeImmutable
     {
         return $this->now instanceof \Closure ? ($this->now)() : new \DateTimeImmutable();
     }
 
+    /**
+     * Its data (quire:backup), and its folder (its code and files, but what a build makes again; a
+     * Git mode site's code is its repository's).
+     */
     private function backUpSite(Site $site): string
     {
         $file = $this->sites->backup($site->name, $this->sites->projectOf($site), 'off-server');
+        $folder = $this->paths->site($site->name);
+        $git = null !== $this->repositories->of($site->name);
 
         try {
-            return $this->restic->backup([$file], [self::SITE_TAG, 'site:'.$site->name->value]);
+            return $this->restic->backup(
+                $git ? [$file] : [$file, $folder],
+                [self::SITE_TAG, 'site:'.$site->name->value, ...($git ? [self::GIT_TAG] : [])],
+                array_map(static fn (string $built): string => $folder.'/'.$built, self::BUILT),
+            );
         } finally {
             $this->filesystem->remove($file);
         }
