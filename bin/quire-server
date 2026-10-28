@@ -21,6 +21,9 @@ if [ "$(id -u)" -ne 0 ]; then
 	exit 1
 fi
 
+# Compose reads COMPOSE_FILE (server.env) relative to where it runs.
+cd "$root/server"
+
 case "${1:-help}" in
 	up) shift; compose up --detach --wait "$@" ;;
 	down) shift; compose down "$@" ;;

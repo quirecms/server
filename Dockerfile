@@ -3,14 +3,17 @@
 # The agent: PHP for its code, the Docker CLI with Compose and Buildx (it acts through the docker-proxy,
 # never on the socket itself), Composer (to get the skeleton of new sites and work out updates, without
 # running any package's code), and Git with SSH (Git mode sites' repositories).
-FROM docker:29.9.2-cli AS docker_cli
-FROM composer:2.10.3 AS composer
+#
+# Images are pinned by digest (a tag can be moved, a digest can't); Dependabot proposes new ones.
+FROM docker:29.9.2-cli@sha256:5e6baf67325a79f64ed3bed6863954d5e05d0f3d4e57cbdb14809346814bbfdb AS docker_cli
+FROM composer:2.10.3@sha256:b6dcd72ca98fa19d0e5b8476de179859704891fad06dd9e0b96833d4c430a5fc AS composer
+FROM mlocati/php-extension-installer:2.8@sha256:11cc39eda4403fa4ee6b47df9fdf6d1d1546f76196a1e90d58a1b6e4ffd05655 AS php_extension_installer
 
-FROM php:8.5-cli-alpine AS agent
+FROM php:8.5-cli-alpine@sha256:e899a75c775804e5466dbd9c96b31f8b6c6ae2ddb053a8466223a0c32992ff8e AS agent
 
 SHELL ["/bin/ash", "-euo", "pipefail", "-c"]
 
-COPY --from=mlocati/php-extension-installer:2.8 /usr/bin/install-php-extensions /usr/local/bin/
+COPY --from=php_extension_installer /usr/bin/install-php-extensions /usr/local/bin/
 RUN install-php-extensions intl pcntl pdo_pgsql opcache \
     && apk add --no-cache ca-certificates git openssh-client openssh-keygen tini \
     && rm /usr/local/bin/install-php-extensions
@@ -24,6 +27,16 @@ RUN mv "$PHP_INI_DIR/php.ini-production" "$PHP_INI_DIR/php.ini"
 
 WORKDIR /opt/quire-server
 ENV APP_ENV=prod APP_DEBUG=0 COMPOSER_ALLOW_SUPERUSER=1
+
+# Its release ("dev" when built from a checkout); set by the release workflow.
+ARG QUIRE_SERVER_VERSION=dev
+ENV QUIRE_SERVER_VERSION=${QUIRE_SERVER_VERSION}
+LABEL org.opencontainers.image.title="Quire Server" \
+      org.opencontainers.image.description="Quire Server's agent: many Quire sites on one machine, behind one front door." \
+      org.opencontainers.image.source="https://github.com/quirecms/server" \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.vendor="YorvoLabs" \
+      org.opencontainers.image.version="${QUIRE_SERVER_VERSION}"
 
 COPY --link composer.json composer.lock ./
 RUN composer install --no-dev --no-scripts --no-autoloader --no-progress --no-interaction \

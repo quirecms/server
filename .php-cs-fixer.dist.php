@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 $finder = new PhpCsFixer\Finder()
     ->in(__DIR__)
-    ->exclude(['var', 'vendor']);
+    ->exclude(['var', 'vendor'])
+    // Written by Symfony when the kernel boots
+    ->notPath(['config/reference.php']);
 
 return new PhpCsFixer\Config()
     ->setRiskyAllowed(true)

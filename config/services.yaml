@@ -44,6 +44,11 @@ services:
         arguments:
             $seconds: '%env(int:QUIRE_SERVER_GIT_POLL_SECONDS)%'
 
+    Quire\Server\Console\VersionCommand:
+        arguments:
+            $version: '%env(QUIRE_SERVER_VERSION)%'
+            $image: '%env(QUIRE_SERVER_IMAGE)%'
+
     Quire\Server\Console\AddSiteCommand:
         arguments:
             $defaultVersion: '%env(QUIRE_SERVER_QUIRE_VERSION)%'

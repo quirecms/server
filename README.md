@@ -24,24 +24,44 @@ A site is an ordinary Quire project in `/srv/quire/sites/<site>` (from `quire/sk
 On a Linux machine (Ubuntu or Debian for Docker to be installed for you; any distribution with Docker Engine 29 and Compose 2.24.4 or later), as root:
 
 ```bash
-git clone https://github.com/quirecms/server.git /root/quire-server
-sh /root/quire-server/install.sh --source=/root/quire-server --email=you@example.com
+curl -fsSL https://github.com/quirecms/server/releases/latest/download/install.sh -o install.sh
+sh install.sh --email=you@example.com
 ```
 
-Once Quire Server is released, `--source` won't be needed: the installer downloads its release.
+To check the installer itself first (with [cosign](https://docs.sigstore.dev/cosign/system_config/installation/)):
+
+```bash
+curl -fsSLO https://github.com/quirecms/server/releases/latest/download/install.sh.sigstore.json
+cosign verify-blob install.sh --bundle install.sh.sigstore.json \
+  --certificate-identity-regexp '^https://github\.com/quirecms/server/\.github/workflows/release\.yaml@refs/tags/v' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+From a checkout instead (a version not released yet, or your own changes): `git clone https://github.com/quirecms/server.git && sh server/install.sh --source=server`. The agent is then built on the machine.
 
 The installer:
 
 1. **Checks the machine,** and installs Docker from Docker's own repository if it's missing (it asks first, and checks Docker's signing key).
-2. **Puts the server in `/srv/quire/server`,** its settings and newly generated secrets in `server.env` (readable by root only), and the `quire-server` command in `/usr/local/bin`.
-3. **Starts PostgreSQL, the docker-proxy and the agent.**
-4. **Adopts the Quire sites already running from `/srv/quire/sites`** (it asks first; see below).
-5. **Starts the front door,** once nothing else holds ports 80 and 443. If another web server holds them, it says which and stops there. It never stops anything it didn't start.
-6. **Turns on automatic security updates** for the operating system (Ubuntu and Debian; `--no-os-updates` leaves them as they are).
+2. **Gets the release and checks it before running anything:** its signature (Sigstore: made by this repository's release workflow, for that very version), its archive's checksum, and its image's signature. Anything that doesn't check out stops the installation.
+3. **Puts the server in `/srv/quire/server`,** its settings and newly generated secrets in `server.env` (readable by root only), and the `quire-server` command in `/usr/local/bin`.
+4. **Starts PostgreSQL, the docker-proxy and the agent,** from images pinned by digest: the release's agent image (`ghcr.io/quirecms/server`), never built on the machine.
+5. **Adopts the Quire sites already running from `/srv/quire/sites`** (it asks first; see below).
+6. **Starts the front door,** once nothing else holds ports 80 and 443. If another web server holds them, it says which and stops there. It never stops anything it didn't start.
+7. **Turns on automatic security updates** for the operating system (Ubuntu and Debian; `--no-os-updates` leaves them as they are).
 
 Running it again is safe: it keeps the secrets it made and finishes what's left, e.g. after you've freed ports 80 and 443. `--yes` answers yes to its questions; `--help` lists its options.
 
-**By hand,** for developers: copy this repository to `/srv/quire/server`, create `server.env` from `server.env.dist` (root only, with long random secrets), install `bin/quire-server` in `/usr/local/bin`, and run `quire-server up`.
+**By hand,** for developers: copy this repository to `/srv/quire/server`, create `server.env` from `server.env.dist` (root only, with long random secrets, and `COMPOSE_FILE=compose.yaml:compose.build.yaml` to build the agent), install `bin/quire-server` in `/usr/local/bin`, and run `quire-server up`.
+
+### Releases
+
+Each release ([GitHub releases](https://github.com/quirecms/server/releases)) has:
+
+- **the agent's image,** `ghcr.io/quirecms/server:<version>`, for x86_64 and arm64, with its SBOM and build provenance, signed with Sigstore by the release workflow (keyless: no key to steal; the signature is in a public transparency log);
+- **`release.env`,** naming the image by digest and the files by checksum, signed the same way, with `release.env.sigstore.json`;
+- **the server's files** (`quire-server-<version>.tar.gz`) and **`install.sh`** (installing that version, with its own signature).
+
+Every image Quire Server runs, and every GitHub Action that builds it, is pinned by digest or commit; Dependabot proposes updates. `quire-server version` says which release a server runs.
 
 ### A site installed before the server
 
@@ -61,6 +81,7 @@ If anything fails, it's put back as it was, ports included. Its domains are thos
 quire-server site:add jane --domain=jane.example --domain=www.jane.example --admin-email=jane@example.com --title="Jane's notes" [--invite]
 quire-server site:adopt demo            # a site installed before the server (see above)
 quire-server site:list
+quire-server version                    # which release this server runs
 quire-server site:update jane [--to=0.2.0] [--dry-run]   # see "Updating a site"
 quire-server site:undo jane             # its last update or deploy, within a week
 quire-server site:audit jane            # known vulnerabilities in its packages

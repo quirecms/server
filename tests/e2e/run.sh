@@ -71,6 +71,8 @@ check 'the installer finished' "grep -q 'Quire Server runs' $logs/install.log"
 check 'the stack is up and healthy' "inside 'quire-server ps --format \"{{.Service}} {{.Health}}\" | grep -q \"agent healthy\"'"
 published=$(inside "docker ps --format '{{.Names}} {{.Ports}}'" | grep -c '0.0.0.0' || true)
 check 'only the front door publishes ports' "[ $published = 1 ]"
+check 'it says it was built from a checkout (no release image)' "inside 'quire-server version' | grep -q 'built from a checkout'"
+check 'every image of the stack is pinned by digest' "! inside 'cd /srv/quire/server && docker compose --env-file server.env config --images' | grep -v '^quire-server-agent\$' | grep -vq '@sha256:'"
 check 'the docker-proxy network has no way out' "inside 'docker network inspect quire-docker --format \"{{.Internal}}\"' | grep -q true"
 check 'its secrets are root'\''s only' "[ \"\$(inside 'stat -c %a /srv/quire/server/server.env')\" = 600 ] && [ \"\$(inside 'stat -c %a /srv/quire/sites')\" = 700 ]"
 
@@ -144,7 +146,9 @@ check 'undoing it puts the older version back' "grep -q 'as it was before its up
 inside 'mkdir -p /srv/quire/sites/jane/src/EventListener && printf "%s\n" "<?php" "namespace App\\EventListener;" "use Symfony\\Component\\EventDispatcher\\Attribute\\AsEventListener;" "use Symfony\\Component\\HttpKernel\\Event\\RequestEvent;" "final class Broken { #[AsEventListener] public function __invoke(RequestEvent \$event): void { throw new \\RuntimeException(\"broken on purpose\"); } }" > /srv/quire/sites/jane/src/EventListener/Broken.php'
 inside 'quire-server site:update jane --yes 2>&1' | tee "$logs"/broken.log | sed 's/^/    /'
 check 'a broken update is rolled back by itself' "grep -q 'the site is as it was before' $logs/broken.log && inside 'quire-server operations' | grep -q 'site.update.*failed'"
-check 'the site answers as before, with its database restored' "[ \"\$(inside \"curl -sk $resolve -o /dev/null -w '%{http_code}' https://jane.test/\")\" = 200 ] && inside \"quire-server operations \$(inside 'quire-server operations' | grep site.update | head -1 | awk '{print \$1}')\" | grep -q 'Restoring its backup'"
+check 'the site answers as before' "[ \"\$(inside \"curl -sk $resolve -o /dev/null -w '%{http_code}' https://jane.test/\")\" = 200 ]"
+# Quire 0.1.1 and later say how many migrations ran (quire:about): none did, so its data was kept.
+check 'its database is kept: no migrations ran, as quire:about said' "! inside \"quire-server operations \$(inside 'quire-server operations' | grep site.update | head -1 | awk '{print \$1}')\" | grep -q 'Restoring its backup'"
 check 'it is still running' "inside 'quire-server site:list' | grep jane | grep -q running"
 inside 'rm -rf /srv/quire/sites/jane/src/EventListener'
 fi

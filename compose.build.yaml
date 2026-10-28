@@ -1,0 +1,8 @@
+# The agent built from this folder, instead of a release's signed image: for installs from a checkout
+# (install.sh --source) and development. Added to COMPOSE_FILE in server.env.
+services:
+  agent:
+    build:
+      context: .
+      target: server
+    image: quire-server-agent

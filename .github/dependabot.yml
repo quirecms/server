@@ -1,0 +1,26 @@
+# New versions of what Quire Server is built from, proposed as pull requests: GitHub Actions (pinned by
+# commit), Docker images (pinned by digest: the Dockerfile's and compose.yaml's), and Composer packages.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ['*']
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: docker-compose
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: composer
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      development:
+        dependency-type: development
