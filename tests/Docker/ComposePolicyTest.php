@@ -73,6 +73,7 @@ final class ComposePolicyTest extends TestCase
         yield 'another site\'s image, built' => [['services' => ['php' => ['image' => 'quire-sites/blog/php-prod']]], 'the image it builds is named "quire-sites/blog/php-prod"'];
         yield 'an image whose name a site prefix could share' => [['services' => ['php' => ['image' => 'jane-php-prod']]], 'a site\'s images are named "quire-sites/jane/<name>"'];
         yield 'another site\'s image, as a build tag' => [['services' => ['php' => ['build' => ['tags' => ['quire-sites/blog/php-prod:latest']]]]], 'its build is tagged "quire-sites/blog/php-prod:latest"'];
+        yield 'the agent\'s image (installed from a checkout, it runs by that name)' => [['services' => ['php' => ['image' => 'quire-server-agent']]], 'the image it builds is named "quire-server-agent"'];
         yield 'another site\'s image, run' => [['services' => ['worker' => ['build' => null, 'image' => 'quire-sites/blog/php-prod']]], '"image: quire-sites/blog/php-prod" is another site\'s'];
         yield 'a service with Docker\'s default capabilities (NET_RAW)' => [['services' => ['sidecar' => ['image' => 'alpine:3.22', 'network_mode' => 'service:php']]], 'Service "sidecar": "cap_drop: [ALL]" is missing'];
         yield 'a service that may gain privileges' => [['services' => ['sidecar' => ['image' => 'alpine:3.22', 'cap_drop' => ['ALL'], 'mem_limit' => '64m', 'pids_limit' => 16]]], 'Service "sidecar": "security_opt: [no-new-privileges:true]" is missing'];
