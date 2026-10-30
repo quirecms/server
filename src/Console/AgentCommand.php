@@ -9,6 +9,7 @@ use Quire\Server\Backup\OffsiteBackups;
 use Quire\Server\FrontDoor\DomainDirectory;
 use Quire\Server\Git\GitPoller;
 use Quire\Server\Operation\OperationLog;
+use Quire\Server\Operation\SiteManager;
 use Quire\Server\Registry\SiteRegistry;
 use Quire\Server\Update\AutomaticUpdates;
 use Quire\Server\Update\SiteUpdater;
@@ -43,6 +44,7 @@ final class AgentCommand
         private readonly OffsiteBackups $backups,
         private readonly SiteUpdater $sites,
         private readonly LocalBackups $local,
+        private readonly SiteManager $manager,
     ) {
     }
 
@@ -66,6 +68,11 @@ final class AgentCommand
 
         if ($abandoned > 0) {
             $io->warning(\sprintf('%d operation(s) were interrupted and are marked failed.', $abandoned));
+        }
+
+        // Sites an add cut short left being created: removed, their names and domains free again.
+        foreach ($this->manager->removeUnfinished() as $site) {
+            $io->writeln(\sprintf('Recovery: "%s" was being added when the agent stopped: removed (add it again)', $site));
         }
 
         // Sites a crash or a power cut stopped in the middle of a release: as they were before it.

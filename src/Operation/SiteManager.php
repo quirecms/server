@@ -78,7 +78,7 @@ final readonly class SiteManager
             try {
                 // Checked before anything is done, so undoing never touches what was there before.
                 if (file_exists($directory)) {
-                    throw new \DomainException(\sprintf('The folder "%s" exists already: move it away first.', $directory));
+                    throw new \DomainException(\sprintf('The folder "%s" exists already: move it away first (if an add of "%s" was cut short, "quire-server site:remove %2$s --skip-backup" clears what it left).', $directory, $request->name));
                 }
 
                 if ($request->repository instanceof Repository && $request->repository->overSsh() && !$this->keys->exists($request->name)) {
@@ -464,7 +464,8 @@ final readonly class SiteManager
 
             $operation = $this->operations->start('site.remove', $name, ['backup' => $backup], $channel, $requestedBy);
             $directory = $this->paths->site($name);
-            $project = $this->project($name, $site->domains, $site->project, $site->databaseMode);
+            // A site whose add was cut short may have no folder yet: nothing of it to back up or stop.
+            $project = is_dir($directory) ? $this->project($name, $site->domains, $site->project, $site->databaseMode) : null;
             $step = static function (string $what) use ($operation, $say): void {
                 $operation->line('== '.$what);
                 $say($what);
@@ -473,10 +474,12 @@ final readonly class SiteManager
             try {
                 $file = null;
 
-                if ($backup) {
+                if ($backup && $project instanceof SiteProject) {
                     $step('Backing it up');
                     $file = $this->backup($name, $project, 'final');
                     $operation->line('Backed up to '.$file);
+                } elseif ($backup) {
+                    $operation->line('Its folder isn\'t there: nothing to back up');
                 }
 
                 $step('Closing it to visitors');
@@ -489,7 +492,7 @@ final readonly class SiteManager
 
                 $step('Stopping it and removing its containers and volumes');
 
-                if (is_file($directory.'/'.SiteFiles::ENV_FILE)) {
+                if ($project instanceof SiteProject && is_file($directory.'/'.SiteFiles::ENV_FILE)) {
                     $this->compose->down($project, volumes: true, output: $operation->output(...));
                 }
 
@@ -513,6 +516,26 @@ final readonly class SiteManager
                 throw $e;
             }
         });
+    }
+
+    /**
+     * At the agent's start: sites an add or a restore as a new site left being created (the agent
+     * stopped while it ran) are removed. They never ran; their names and domains are free again.
+     *
+     * @return list<string> The sites removed
+     */
+    public function removeUnfinished(): array
+    {
+        $removed = [];
+
+        foreach ($this->registry->all() as $site) {
+            if (Site::CREATING === $site->status) {
+                $this->remove($site->name, false, 'agent', 'agent', static fn (): null => null);
+                $removed[] = $site->name->value;
+            }
+        }
+
+        return $removed;
     }
 
     /**

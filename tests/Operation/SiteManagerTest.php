@@ -398,6 +398,30 @@ final class SiteManagerTest extends RegistryTestCase
         self::assertSame(['rm', '-f', $file], \array_slice($exec[1] ?? [], 11), 'Removed even though the backup failed.');
     }
 
+    public function testASiteWhoseAddWasCutShortBeforeItsFolderCanBeRemoved(): void
+    {
+        // The agent stopped right after recording it: no folder, no database, its name and domains taken
+        $this->registry->add($this->name, $this->request()->domains, Site::SHARED_DATABASE, $this->name->value);
+
+        $this->manager()->remove($this->name, true, 'cli', 'darko', static fn (): null => null);
+
+        self::assertSame(Site::REMOVED, $this->registry->get($this->name)?->status);
+        self::assertContains('Its folder isn\'t there: nothing to back up', $this->operations->lines($this->operations->latest()[0]['id']));
+        self::assertSame([], $this->commands(), 'Nothing to stop.');
+    }
+
+    public function testSitesLeftBeingCreatedAreRemovedAtTheAgentsStart(): void
+    {
+        $manager = $this->manager();
+        $manager->add($this->request(), 'cli', 'darko', static fn (): null => null);
+        $unfinished = new SiteName('t'.bin2hex(random_bytes(3)).'-kate');
+        $this->registry->add($unfinished, [new Domain('kate.example')], Site::SHARED_DATABASE, $unfinished->value);
+
+        self::assertSame([$unfinished->value], $manager->removeUnfinished());
+        self::assertSame(Site::REMOVED, $this->registry->get($unfinished)?->status);
+        self::assertSame(Site::RUNNING, $this->registry->get($this->name)?->status, 'A site that runs is left alone.');
+    }
+
     public function testAdoptingASiteThatRunsAlready(): void
     {
         $original = $this->siteInstalledByHand();
