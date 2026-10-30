@@ -54,4 +54,5 @@ To add a rule:
 1. Find the setting's shape in Compose's output (it's often not what you write): `docker compose config --format json --no-env-resolution` on a scratch file.
 2. Move the setting to the right list (or add it to its level in `NESTED_KEYS`), and check its value where the others are checked.
 3. Add hostile cases to `ComposePolicyTest::hostile()` (each a change to a valid site and the words of the refusal), and harmless values to `testHarmlessValuesOfForbiddenSettingsPass()`.
-4. Say it in the README's "Security" section.
+4. Add a golden case: a folder in `tests/Docker/golden/` with the site's `compose.yaml`, a `prod.env`, and in `expect.txt` the words of the refusal. `GoldenComposeTest` runs the real `docker compose config` on it, the agent image's own Compose, so the policy is checked against what Compose writes, not what we think it writes; a new Compose version that writes a setting another way fails here, in CI.
+5. Say it in the README's "Security" section.

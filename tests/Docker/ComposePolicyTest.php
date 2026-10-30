@@ -73,6 +73,7 @@ final class ComposePolicyTest extends TestCase
         yield '… in a network' => [['networks' => ['default' => ['some_future_key' => true]]], 'Network "default": "some_future_key" isn\'t a setting'];
         yield '… in a network\'s IPAM' => [['networks' => ['default' => ['ipam' => ['some_future_key' => true]]]], '"ipam.some_future_key" isn\'t a setting'];
         yield '… in a top-level secret' => [['secrets' => ['key' => ['file' => '/x', 'some_future_key' => true]]], 'Secret "key": "some_future_key" isn\'t a setting'];
+        yield 'an absolute Dockerfile' => [['services' => ['php' => ['build' => ['dockerfile' => '/srv/quire/sites/blog/Dockerfile']]]], 'its Dockerfile is outside the site\'s folder'];
         yield 'an IPAM plugin' => [['networks' => ['default' => ['ipam' => ['driver' => 'evil-plugin']]]], 'the IPAM driver "evil-plugin" isn\'t allowed'];
         yield 'oom_kill_disable, as a string' => [['services' => ['php' => ['oom_kill_disable' => 'true']]], '"oom_kill_disable" lets the container take the host\'s memory'];
         yield 'a privileged hook, as a string' => [['services' => ['php' => ['post_start' => [['command' => ['id'], 'privileged' => 'yes']]]]], '"post_start" runs a privileged command'];

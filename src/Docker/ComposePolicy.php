@@ -415,7 +415,8 @@ final readonly class ComposePolicy
 
         if (!$context->contains($buildContext)) {
             $violations[] = \sprintf('it builds from "%s", outside the site\'s folder.', $buildContext);
-        } elseif (isset($build['dockerfile']) && !$context->contains(rtrim($buildContext, '/').'/'.$this->string($build['dockerfile']))) {
+        } elseif (isset($build['dockerfile']) && !$context->contains(str_starts_with($this->string($build['dockerfile']), '/') ? $this->string($build['dockerfile']) : rtrim($buildContext, '/').'/'.$this->string($build['dockerfile']))) {
+            // Compose keeps an absolute one as it is: relative to the context it's another file.
             $violations[] = 'its Dockerfile is outside the site\'s folder.';
         }
 
