@@ -7,6 +7,7 @@
 #   quire-server site:key blog | site:deploy blog | site:poll blog on   (Git mode)
 #   quire-server site:list | site:remove jane | operations
 #   quire-server update [--to=X.Y.Z] [--check] [--undo]   (the server itself, to a newer release)
+#   quire-server database:upgrade [--check] [--to=19] [--undo] [--clean]   (its PostgreSQL, to a newer major)
 #   quire-server backups:setup | backups jane | backups:now [jane] | backups:restore jane | backups:check
 #   quire-server up | down | logs | ps          (the server itself)
 #
@@ -86,8 +87,8 @@ case "${1:-help}" in
 	logs) shift; compose logs "$@" ;;
 	ps) shift; compose ps "$@" ;;
 	help|-h|--help) compose exec -T agent bin/console list server ;;
-	update | backups:setup)
-		# In the updater, not the agent (it replaces the agent, or saves server.env): one at a time,
+	update | backups:setup | database:upgrade)
+		# In the updater, not the agent (it replaces the agent or PostgreSQL, or saves server.env): one at a time,
 		# its name says so. Secrets for automation come from the environment, never from arguments.
 		command=$1
 		shift

@@ -44,13 +44,32 @@ final readonly class ServerStack
     }
 
     /**
-     * Starts what changed and waits until every service is healthy.
+     * Stops PostgreSQL (and the agent first, which needs it), letting it shut down cleanly.
+     */
+    public function stopDatabase(ServerFolder $folder): void
+    {
+        $this->in($folder, ['stop', '--timeout', '120', 'agent', 'database'], 300)->orFail('Stopping the server\'s PostgreSQL');
+    }
+
+    /**
+     * Starts what changed (of these services, or all) and waits until each is healthy.
      *
      * @param (\Closure(string): void)|null $output
+     * @param list<string>                  $services
      */
-    public function up(ServerFolder $folder, int $wait, ?\Closure $output = null): void
+    public function up(ServerFolder $folder, int $wait, ?\Closure $output = null, array $services = []): void
     {
-        $this->in($folder, ['up', '--detach', '--no-build', '--wait', '--wait-timeout', (string) $wait], $wait + 600, $output)->orFail('Starting the server');
+        $this->in($folder, ['up', '--detach', '--no-build', '--wait', '--wait-timeout', (string) $wait, ...$services], $wait + 600, $output)->orFail('Starting the server');
+    }
+
+    /**
+     * Every site and the server backed up off the server, by the agent, now.
+     *
+     * @param \Closure(string): void $output
+     */
+    public function backUpOffsite(ServerFolder $folder, \Closure $output): void
+    {
+        $this->in($folder, ['exec', '-T', 'agent', 'bin/console', 'server:backups:now'], 6 * 3600, $output)->orFail('Backing up off the server');
     }
 
     /**
@@ -59,6 +78,15 @@ final readonly class ServerStack
     public function version(ServerFolder $folder): string
     {
         return trim($this->in($folder, ['exec', '-T', 'agent', 'bin/console', 'server:version'], 60)->orFail('Asking the agent its version')->output);
+    }
+
+    /**
+     * A query's rows on the server's PostgreSQL, as its superuser, in its container (one per line,
+     * columns separated by "|").
+     */
+    public function query(ServerFolder $folder, string $database, string $sql): string
+    {
+        return $this->in($folder, ['exec', '-T', '-e', 'PGPASSWORD', 'database', 'psql', '--no-psqlrc', '--no-align', '--tuples-only', '--username=postgres', '--dbname='.$database, '--set=ON_ERROR_STOP=1', '--command='.$sql], 600)->orFail('Asking the server\'s PostgreSQL')->output;
     }
 
     /**

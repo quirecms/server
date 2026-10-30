@@ -125,6 +125,12 @@ final readonly class ServerUpdateCommand
             return Command::FAILURE;
         }
 
+        if ($this->updater->databaseChangedSince($backup)) {
+            $io->error('PostgreSQL was upgraded (or the upgrade undone) after the last update: the update can\'t be undone any more.');
+
+            return Command::FAILURE;
+        }
+
         $io->title(\sprintf('Undoing the update from %s to %s of %s', $backup->from, $backup->to, $backup->createdAt->format('Y-m-d H:i')));
 
         if ($this->updater->undoRestoresDatabase($backup)) {

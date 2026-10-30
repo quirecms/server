@@ -12,6 +12,8 @@ use Quire\Server\Release\Release;
 use Quire\Server\Release\Releases;
 use Quire\Server\Release\ReleaseVerificationFailed;
 use Quire\Server\Release\Version;
+use Quire\Server\ServerDatabase\DatabaseUpgrade;
+use Quire\Server\ServerDatabase\PostgresImages;
 use Quire\Server\Site\EnvFile;
 use Symfony\Component\Filesystem\Filesystem;
 
@@ -94,9 +96,21 @@ final readonly class ServerUpdater
         $work = sys_get_temp_dir().'/quire-server-release-'.bin2hex(random_bytes(6));
 
         try {
+            if (DatabaseUpgrade::latest(DatabaseUpgrade::directory($this->root))?->unfinished() ?? false) {
+                throw new \DomainException('An upgrade of PostgreSQL was cut short: put the server back first ("quire-server database:upgrade --recover").');
+            }
+
             $log(\sprintf('Getting Quire Server %s and checking it', $target));
             $release = $this->releases->fetch($target, $work, $log);
-            $env = $this->folder->env()->with(['QUIRE_SERVER_IMAGE' => $release->image, 'COMPOSE_FILE' => 'compose.yaml']);
+            // The PostgreSQL major the server runs stays: changing it is an upgrade of its data.
+            $postgres = $this->postgresMajor();
+            $images = PostgresImages::of($release->files);
+
+            if (!$images->supports($postgres)) {
+                throw new \DomainException(\sprintf('Quire Server %s doesn\'t run PostgreSQL %d any more, which this server runs: upgrade it first ("quire-server database:upgrade").', $target, $postgres));
+            }
+
+            $env = $this->folder->env()->with(['QUIRE_SERVER_IMAGE' => $release->image, 'COMPOSE_FILE' => $images->composeFile('compose.yaml', $postgres)]);
             $staged = $work.'/server.env';
             ServerFolder::writeSecret($staged, $env->content());
             $this->stack->validate($release->files, $staged);
@@ -130,6 +144,15 @@ final readonly class ServerUpdater
     }
 
     /**
+     * Whether PostgreSQL's major changed since that backup: undoing the update would start the old
+     * major's data, out of date, so it can't be undone.
+     */
+    public function databaseChangedSince(ServerBackup $backup): bool
+    {
+        return DatabaseUpgrade::changedSince($this->root, $backup->createdAt);
+    }
+
+    /**
      * Whether undoing it puts back the database too (the update's migrations ran): what changed in the
      * registry since (sites added, operations) would be lost.
      */
@@ -154,6 +177,10 @@ final readonly class ServerUpdater
         };
 
         try {
+            if ($this->databaseChangedSince($backup)) {
+                throw new \DomainException('PostgreSQL was upgraded (or the upgrade undone) after that update: it can\'t be undone.');
+            }
+
             $log(\sprintf('Undoing the update from %s to %s (%s)', $backup->from, $backup->to, $backup->createdAt->format('Y-m-d H:i')));
             $safety = $this->swap(
                 new ServerBackup($this->backupDirectory(), $this->running, $backup->from, [], new \DateTimeImmutable()),
@@ -327,6 +354,20 @@ final readonly class ServerUpdater
     private function swapRecord(): string
     {
         return $this->root.'/backups/server/swap.json';
+    }
+
+    /**
+     * The server's PostgreSQL major version.
+     */
+    private function postgresMajor(): int
+    {
+        $number = trim($this->stack->query($this->folder, 'postgres', "SELECT current_setting('server_version_num')"));
+
+        if (!ctype_digit($number)) {
+            throw new \RuntimeException('The server\'s PostgreSQL doesn\'t say its version.');
+        }
+
+        return intdiv((int) $number, 10000);
     }
 
     private function backupDirectory(): string

@@ -87,6 +87,7 @@ quire-server site:adopt demo            # a site installed before the server (se
 quire-server site:list
 quire-server version                    # which release this server runs
 quire-server update [--to=0.2.0] [--check] [--undo]   # the server itself, see "Updating the server"
+quire-server database:upgrade [--check] [--to=19] [--undo] [--clean]   # its PostgreSQL, see "Upgrading PostgreSQL"
 quire-server site:update jane [--to=0.2.0] [--dry-run]   # see "Updating a site"
 quire-server site:update --all [--automatic]             # every site; --automatic: what the night does, now
 quire-server site:updates jane [security|all|off]        # which updates it gets by itself, every night
@@ -168,6 +169,30 @@ A site's versions are recorded in its folder's `composer.lock` (taken from its i
 `quire-server update --undo` goes back to the release before the last update, within a week. If that update's migrations ran, its database backup is restored too, and what changed in the registry since is lost; you're asked first.
 
 A server installed from a checkout (`--source`) moves to releases the same way.
+
+An update keeps the PostgreSQL major version the server runs (a release's patch versions of it come with the release). A release that no longer runs it is refused until PostgreSQL is upgraded.
+
+## Upgrading PostgreSQL
+
+A new major version of PostgreSQL (18 to 19) can't read the old one's data: moving to it is a step of its own, which you choose the time for. The sites that use the server's PostgreSQL are offline while their data is copied (minutes for most). Sites that keep their own PostgreSQL (adopted ones) aren't touched.
+
+```bash
+quire-server database:upgrade --check     # which major runs, and which this release can upgrade to
+quire-server database:upgrade             # to the newest one this release runs (--to=19 for another)
+```
+
+It runs in the updater, and:
+
+1. **Checks first, changing nothing:** this release runs the new major (its image pinned by digest, like every other), there's room on the server for a copy, and every database can be copied (PostgreSQL's own `postgres` database must be empty). It gets the new major's image.
+2. **Backs every site and the server up off the server**, when that's set up (`--no-backup` to skip it).
+3. **Waits for operations on sites to finish, stops the agent and every container that uses the server's PostgreSQL.** Visitors get the front door's "back in a moment" page. Nothing else may be connected, or it stops there: what it wrote would be lost.
+4. **Starts the new major beside the old one,** on the same volume, in a folder of its own (`/var/lib/postgresql/19`; the old one's data is never touched), and **copies the roles** (with their passwords' hashes, so sites keep theirs) **and every database** into it with the new major's own `pg_dump` and `pg_restore`.
+5. **Checks the copy against the original:** the same roles, rights and settings; in each database the same tables (with their exact row counts), indexes, sequences, functions, constraints, triggers and policies. Anything different stops it.
+6. **Switches:** `server.env` names the new major (`COMPOSE_FILE` gets `database/postgres-19.yaml`), PostgreSQL starts on it, then the sites and the agent.
+
+If anything fails, it **puts the server back by itself:** the old major starts on its data, the unfinished copy is removed, the sites start again. Each step is written down first (`/srv/quire/backups/database/`), so an upgrade cut short (the machine restarted) is put back with `quire-server database:upgrade --recover`; nothing else runs until it is.
+
+The old major's data stays on the server. `quire-server database:upgrade --undo` goes back to it, within a week: what the sites and the server wrote since is lost (it stays in the new major's data). `quire-server database:upgrade --clean` removes the data of the majors that don't run, once you're sure; until then the server holds both. An update of the server made before an upgrade can't be undone after it.
 
 ## Backups
 
@@ -254,6 +279,7 @@ The agent can act on Docker, and that's root on the machine, so the server is bu
   - operation logs scrubbed of them.
 - **Nothing is deleted without a backup,** and every operation is recorded. **Backups off the server are encrypted on it** (restic) before they leave; their password and the bucket's keys are in `server.env` (root only), never in a command line or a log.
 - **Sites build on Quire's runtime images only when they check out:** before every build, each runtime image a site's Dockerfile names (`ghcr.io/quirecms/runtime`, `RUNTIME_BUILDER` and `RUNTIME`) must be signed by quirecms/framework's runtime workflow (Sigstore), and the build gets it by the digest that was checked. One that doesn't check out stops the build (an update is rolled back). Other base images are the site's choice, built on as they are and noted in the operation's log.
+- **Upgrading PostgreSQL never changes the old major's data:** the new one is filled beside it, checked, and only then switched to. The copy runs with the new major's own tools, passwords only through the environment, and database names only as arguments of a fixed script (anything but plain names is refused).
 - **Updates of the server are checked before any of their code runs,** by the release that runs (see "Updating the server"). The updater is the one part with Docker itself rather than the docker-proxy, since it may replace the docker-proxy: it runs only on demand, only the installed release's code, and takes nothing but a version.
 
 What this doesn't protect against: a kernel exploit from inside a container (containers share the machine's kernel), a bug in Docker itself, and anyone who is root on the machine or holds `server.env`. [SECURITY.md](SECURITY.md) has the whole threat model, and how to report a vulnerability.
