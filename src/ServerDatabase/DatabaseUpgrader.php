@@ -223,9 +223,10 @@ final readonly class DatabaseUpgrader
             $log('Closing its databases to the sites until it\'s done');
             $this->fence($plan['databases']);
 
+            // An earlier upgrade's (undone since): what was written to it then may be there only.
             if (\in_array($to, $this->containers->majorsOnVolume($image, $volume), true)) {
-                $log(\sprintf('Removing PostgreSQL %d\'s data from an earlier attempt', $to));
-                $this->containers->removeMajor($image, $volume, $to);
+                $aside = $this->containers->setAside($image, $volume, $to, new \DateTimeImmutable());
+                $log(\sprintf('PostgreSQL %d\'s data from an earlier upgrade is kept as "%s" ("--clean" removes it)', $to, $aside));
             }
 
             $log(\sprintf('Starting PostgreSQL %d beside it', $to));
@@ -405,11 +406,11 @@ final readonly class DatabaseUpgrader
 
     /**
      * Removes the data of every major that doesn't run (the old one after an upgrade, the new one
-     * after an undo): an upgrade can't be undone after.
+     * after an undo), and what was kept aside when upgrading again: an upgrade can't be undone after.
      *
      * @param \Closure(string): void $say
      *
-     * @return list<int> The majors whose data was removed
+     * @return list<string> The data folders removed ("18", "19.before-20261030-210000")
      */
     public function clean(string $channel, string $requestedBy, \Closure $say, bool $dryRun = false): array
     {
@@ -423,16 +424,16 @@ final readonly class DatabaseUpgrader
         [$running] = $this->running();
         $image = $images->supports($running) ? $images->image($running) : $images->image($images->default);
         $volume = $this->containers->volume();
-        $others = array_values(array_filter($this->containers->majorsOnVolume($image, $volume), static fn (int $major): bool => $major !== $running));
+        $others = array_values(array_filter($this->containers->foldersOnVolume($image, $volume), static fn (string $folder): bool => $folder !== (string) $running));
 
         if ($dryRun || [] === $others) {
             return $others;
         }
 
         try {
-            foreach ($others as $major) {
-                $log(\sprintf('Removing PostgreSQL %d\'s data', $major));
-                $this->containers->removeMajor($image, $volume, $major);
+            foreach ($others as $folder) {
+                $log(\sprintf('Removing PostgreSQL\'s data folder %s', $folder));
+                $this->containers->removeFolder($image, $volume, $folder);
             }
         } catch (\Throwable $e) {
             $this->record('server.database-clean', [], $channel, $requestedBy, $lines, $e);

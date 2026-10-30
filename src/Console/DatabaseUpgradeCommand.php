@@ -115,7 +115,7 @@ final readonly class DatabaseUpgradeCommand
         $others = $this->upgrader->clean(Requester::CHANNEL, Requester::name(), static function (): void {}, dryRun: true);
 
         if ([] !== $others) {
-            $io->writeln(\sprintf('Data of PostgreSQL %s is still on the server, besides %d\'s: "--clean" removes it.', implode(', ', $others), $running));
+            $io->writeln(\sprintf('PostgreSQL data that doesn\'t run is still on the server (%s), besides %d\'s: "--clean" removes it.', implode(', ', $others), $running));
         }
 
         return Command::SUCCESS;
@@ -161,7 +161,7 @@ final readonly class DatabaseUpgradeCommand
         }
 
         $io->title(\sprintf('Undoing the upgrade from PostgreSQL %d to %d of %s', $upgrade->from, $upgrade->to, $upgrade->createdAt->format('Y-m-d H:i')));
-        $io->warning(\sprintf('PostgreSQL %d\'s data is used as the upgrade left it: what every site and the server wrote since (content, sign-ins, sites added or removed) is lost. It stays in PostgreSQL %d\'s data until "--clean".', $upgrade->from, $upgrade->to));
+        $io->warning(\sprintf('PostgreSQL %d\'s data is used as the upgrade left it: what every site and the server wrote since (content, sign-ins, sites added or removed) is lost. It stays in PostgreSQL %d\'s data, kept aside if you upgrade again, until "--clean".', $upgrade->from, $upgrade->to));
 
         if (!$yes && !$io->confirm('Undo it now? Sites using it are offline for a moment.', false)) {
             return Command::SUCCESS;

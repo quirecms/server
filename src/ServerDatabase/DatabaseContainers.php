@@ -24,6 +24,9 @@ final readonly class DatabaseContainers
     /** Where the volume is in the containers this starts: not where PostgreSQL's image looks for old data */
     private const string MOUNT = '/quire-upgrade';
 
+    /** A data folder on the volume: a major's, or one kept aside */
+    private const string FOLDER = '/^[1-9][0-9]{1,2}(?:\.before-[0-9]{8}-[0-9]{6})?\z/';
+
     private const string PROJECT = 'quire-server';
     private const string NETWORK = 'quire-data';
 
@@ -158,11 +161,51 @@ final readonly class DatabaseContainers
     }
 
     /**
+     * Every data folder on the volume: each major's ("18"), and those kept aside before upgrading
+     * again ("19.before-20261030-210000").
+     *
+     * @return list<string>
+     */
+    public function foldersOnVolume(string $image, string $volume): array
+    {
+        $folders = array_values(array_filter($this->lines($this->helper($image, $volume, 'ls', ['-1', self::MOUNT])->orFail('Listing PostgreSQL\'s data folders')), static fn (string $name): bool => 1 === preg_match(self::FOLDER, $name)));
+        sort($folders, \SORT_NATURAL);
+
+        return $folders;
+    }
+
+    /**
      * Deletes a major's data folder (never the one that runs: the caller checks).
      */
     public function removeMajor(string $image, string $volume, int $major): void
     {
-        $this->helper($image, $volume, 'rm', ['-rf', '--', self::MOUNT.'/'.$this->major($major)])->orFail(\sprintf('Removing PostgreSQL %d\'s data', $major));
+        $this->removeFolder($image, $volume, $this->major($major));
+    }
+
+    /**
+     * Deletes a data folder (a major's, or one kept aside).
+     */
+    public function removeFolder(string $image, string $volume, string $folder): void
+    {
+        if (1 !== preg_match(self::FOLDER, $folder)) {
+            throw new \InvalidArgumentException(\sprintf('"%s" isn\'t one of PostgreSQL\'s data folders.', $folder));
+        }
+
+        $this->helper($image, $volume, 'rm', ['-rf', '--', self::MOUNT.'/'.$folder])->orFail(\sprintf('Removing PostgreSQL\'s data folder %s', $folder));
+    }
+
+    /**
+     * Keeps a major's data folder aside under another name ("19.before-<time>"), never deleted
+     * unasked: what an earlier upgrade's sites wrote to it may be there only.
+     *
+     * @return string Its new name
+     */
+    public function setAside(string $image, string $volume, int $major, \DateTimeImmutable $at): string
+    {
+        $aside = $this->major($major).'.before-'.$at->format('Ymd-His');
+        $this->helper($image, $volume, 'mv', ['-T', '--', self::MOUNT.'/'.$this->major($major), self::MOUNT.'/'.$aside])->orFail(\sprintf('Keeping PostgreSQL %d\'s data aside', $major));
+
+        return $aside;
     }
 
     /**

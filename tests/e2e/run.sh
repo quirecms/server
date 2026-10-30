@@ -307,9 +307,9 @@ inside 'quire-server database:upgrade --undo --yes 2>&1' > "$logs"/undo.log || t
 sed 's/^/    /' "$logs"/undo.log
 check 'undoing it runs 18 again, with its data as the upgrade left it' "pg 'SHOW server_version' | grep -q '^18\\.' && title 'Jane before' && inside 'quire-server site:list' | grep -q 'jane .*running'"
 inside "quire-server database:upgrade --to=$major --yes 2>&1" > "$logs"/upgrade-again.log || true
-check 'upgrading again starts from a fresh copy' "grep -q 'from an earlier attempt' $logs/upgrade-again.log && pg 'SHOW server_version' | grep -q '^$major' && title 'Jane before'"
+check 'upgrading again starts from a fresh copy, the earlier one kept aside' "grep -q 'from an earlier upgrade is kept as' $logs/upgrade-again.log && pg 'SHOW server_version' | grep -q '^$major' && title 'Jane before' && inside 'docker run --rm -v quire-server_database_data:/v alpine ls /v' | grep -q \"^$major\\.before-\""
 inside 'quire-server database:upgrade --clean --yes 2>&1' | sed 's/^/    /'
-check "cleaning removes 18's data" "[ \"\$(inside 'docker run --rm -v quire-server_database_data:/v alpine ls /v')\" = $major ]"
+check "cleaning removes 18's data, and what was kept aside" "[ \"\$(inside 'docker run --rm -v quire-server_database_data:/v alpine ls /v')\" = $major ]"
 check 'after that, it can'\''t be undone' "inside 'quire-server database:upgrade --undo --yes 2>&1' | grep -q 'data isn.t there any more' && pg 'SHOW server_version' | grep -q '^$major'"
 fi
 

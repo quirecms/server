@@ -42,7 +42,7 @@ final class DatabaseUpgraderTest extends RegistryTestCase
     private ?int $postgres = 18;
     private bool $agent = true;
 
-    /** @var list<int> The majors with data on the volume */
+    /** @var list<int|string> The data folders on the volume: majors, and those kept aside */
     private array $volume = [18];
 
     /** @var array<string, bool> Sites' containers on PostgreSQL's network, and whether each runs */
@@ -325,10 +325,14 @@ final class DatabaseUpgraderTest extends RegistryTestCase
         self::assertNull($this->upgrader()->undoable());
         self::assertSame('server.database-undo', $this->operations->latest()[0]['action']);
 
-        // Upgrading again starts from a fresh copy.
+        // Upgrading again starts from a fresh copy; what was written to 19 before the undo is kept aside.
         $this->upgrader()->upgrade(19, 'cli', 'darko', $this->say(...));
-        self::assertContains('Removing PostgreSQL 19\'s data from an earlier attempt', $this->said);
         self::assertSame(19, $this->postgres);
+        $aside = $this->keptAside();
+        self::assertMatchesRegularExpression('/^19\.before-\d{8}-\d{6}\z/', $aside);
+        self::assertContains(\sprintf('PostgreSQL 19\'s data from an earlier upgrade is kept as "%s" ("--clean" removes it)', $aside), $this->said);
+        self::assertSame(['18', $aside], $this->upgrader()->clean('cli', 'darko', $this->say(...)), 'Removed only when asked.');
+        self::assertSame([19], $this->volume);
     }
 
     public function testAnUndoThatFailsGoesForwardAgain(): void
@@ -476,12 +480,23 @@ final class DatabaseUpgraderTest extends RegistryTestCase
     {
         $this->upgrader()->upgrade(19, 'cli', 'darko', $this->say(...));
 
-        self::assertSame([18], $this->upgrader()->clean('cli', 'darko', $this->say(...), dryRun: true));
+        self::assertSame(['18'], $this->upgrader()->clean('cli', 'darko', $this->say(...), dryRun: true));
         self::assertSame([18, 19], $this->volume);
-        self::assertSame([18], $this->upgrader()->clean('cli', 'darko', $this->say(...)));
+        self::assertSame(['18'], $this->upgrader()->clean('cli', 'darko', $this->say(...)));
         self::assertSame([19], $this->volume);
         self::assertSame([], $this->upgrader()->clean('cli', 'darko', $this->say(...)));
         self::assertSame(19, $this->postgres);
+    }
+
+    /**
+     * The one data folder kept aside on the volume.
+     */
+    private function keptAside(): string
+    {
+        $aside = array_values(array_filter($this->volume, \is_string(...)));
+        self::assertCount(1, $aside);
+
+        return $aside[0];
     }
 
     private function assertRunsAsBefore(): void
@@ -614,16 +629,22 @@ final class DatabaseUpgraderTest extends RegistryTestCase
         $program = $command[(int) array_search('--entrypoint', $command, true) + 1] ?? '';
 
         if ('rm' === $program) {
-            $major = (int) basename((string) end($command));
-            self::assertNotSame($this->postgres, $major, 'The data of the major that runs is never removed.');
+            $folder = basename((string) end($command));
+            self::assertNotSame((string) $this->postgres, $folder, 'The data of the major that runs is never removed.');
             self::assertNull($this->beside, 'Nothing uses it.');
-            $this->volume = array_values(array_diff($this->volume, [$major]));
+            $this->volume = array_values(array_filter($this->volume, static fn (int|string $kept): bool => (string) $kept !== $folder));
+        }
+
+        if ('mv' === $program) {
+            $from = basename($command[\count($command) - 2]);
+            self::assertNotSame((string) $this->postgres, $from, 'The data of the major that runs is never moved.');
+            $this->volume = [...array_values(array_filter($this->volume, static fn (int|string $kept): bool => (string) $kept !== $from)), basename((string) end($command))];
         }
 
         return match ($program) {
             'df' => ScriptedRunner::ok($command, \sprintf("Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/sda1 104857600 1048576 %d 2%% /quire-upgrade\n", intdiv($this->free, 1024))),
             'ls' => ScriptedRunner::ok($command, implode("\n", $this->volume)."\nlost+found\n"),
-            'rm' => ScriptedRunner::ok($command),
+            'rm', 'mv' => ScriptedRunner::ok($command),
             default => throw new \LogicException('Unexpected: '.implode(' ', $command)),
         };
     }

@@ -192,7 +192,7 @@ It runs in the updater, and:
 
 If anything fails, it **puts the server back by itself:** the old major starts on its data, the unfinished copy is removed, the sites start again. Each step is written down first (`/srv/quire/backups/database/`), so an upgrade cut short (the machine restarted) is finished with `quire-server database:upgrade --recover`: put back on the old major if it stopped while copying, or finished on the new one if it had switched already, since the sites may have written to it since. Nothing else runs until it is.
 
-The old major's data stays on the server. `quire-server database:upgrade --undo` goes back to it, within a week: what the sites and the server wrote since is lost (it stays in the new major's data). `quire-server database:upgrade --clean` removes the data of the majors that don't run, once you're sure; until then the server holds both. An update of the server made before an upgrade can't be undone after it.
+The old major's data stays on the server. `quire-server database:upgrade --undo` goes back to it, within a week: what the sites and the server wrote since is lost (it stays in the new major's data; upgrading again keeps that aside, as `<major>.before-<time>`). `quire-server database:upgrade --clean` removes the data of the majors that don't run, and what was kept aside, once you're sure; until then the server holds both. An update of the server made before an upgrade can't be undone after it.
 
 ## Backups
 
