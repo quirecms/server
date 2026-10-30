@@ -350,6 +350,12 @@ commit 'awk -f /tmp/squat.awk compose.prod.yaml > /tmp/c && cat /tmp/c > compose
 inside 'quire-server site:deploy blog 2>&1' | tee "$logs"/git-squat.log | sed 's/^/    /'
 check 'a commit naming another site'\''s image is refused, never built' "grep -q 'quire-sites/jane/php-prod' $logs/git-squat.log && grep -q 'as it was before' $logs/git-squat.log && ! inside 'docker image inspect quire-sites/jane/php-prod'"
 commit 'git revert --no-commit HEAD' 'Back'
+# A commit adding a service with Docker's defaults (NET_RAW) in the web container's network
+inside "printf '%s\n' '{print} /^services:\$/ && !done {print \"  sidecar:\"; print \"    image: alpine:3.22\"; print \"    network_mode: service:php\"; done = 1}' > /root/sidecar.awk && docker cp /root/sidecar.awk git-server:/tmp/sidecar.awk"
+commit 'awk -f /tmp/sidecar.awk compose.prod.yaml > /tmp/c && cat /tmp/c > compose.prod.yaml' 'Sidecar'
+inside 'quire-server site:deploy blog 2>&1' | tee "$logs"/git-sidecar.log | sed 's/^/    /'
+check 'a commit adding a service with Docker'\''s defaults is refused, never started' "tr -s ' \\n' ' ' < $logs/git-sidecar.log | grep -q 'cap_drop: \[ALL\]. is missing' && ! inside 'docker ps -a --format \"{{.Names}}\"' | grep -q '^blog-sidecar'"
+commit 'git revert --no-commit HEAD' 'Back again'
 inside "printf '\nQUIRE_SERVER_GIT_POLL_SECONDS=60\n' >> /srv/quire/server/server.env && quire-server up >/dev/null 2>&1 && quire-server site:poll blog on >/dev/null"
 commit 'echo three > public/hello.txt' 'Three'
 waited=0

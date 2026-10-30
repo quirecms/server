@@ -38,14 +38,20 @@ final readonly class ComposePolicy
         'pid', 'ports', 'post_start', 'pre_stop', 'runtime', 'security_opt', 'userns_mode', 'uts', 'volumes',
     ];
 
-    /** Service settings no site may use */
     /**
-     * Capabilities a site may add back after dropping them all: binding ports below 1024 inside its own
-     * network namespace (FrankenPHP's binary carries it as a file capability, and can't even start
-     * without it under "no-new-privileges"). It gives no power over the host.
+     * Capabilities a service may add back after dropping them all, each among Docker's defaults and with
+     * no power over the host: binding ports below 1024 inside its own network namespace (FrankenPHP's
+     * binary carries it as a file capability, and can't even start without it under
+     * "no-new-privileges"), and what a database's entrypoint needs to own its data and become its user
+     * (CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID). Never NET_RAW or NET_ADMIN (spoofing and
+     * reconfiguring the networks other sites are on), nor any SYS_ one.
      */
-    private const array ALLOWED_CAPABILITIES = ['NET_BIND_SERVICE'];
+    private const array ALLOWED_CAPABILITIES = ['NET_BIND_SERVICE', 'CHOWN', 'DAC_OVERRIDE', 'FOWNER', 'SETGID', 'SETUID'];
 
+    /** The most processes a container may run */
+    private const int MAX_PIDS = 4096;
+
+    /** Service settings no site may use */
     private const array FORBIDDEN_SERVICE_KEYS = [
         'cgroup_parent' => 'places the container in another control group',
         'container_name' => 'takes a fixed container name, which may belong to another project',
@@ -170,6 +176,8 @@ final readonly class ComposePolicy
             }
         }
 
+        array_push($violations, ...$this->hardening($service));
+
         $runtime = $this->string($service['runtime'] ?? '');
 
         if ('' !== $runtime && 'runc' !== $runtime) {
@@ -254,6 +262,52 @@ final readonly class ComposePolicy
         array_push($violations, ...$this->images($service, $context));
 
         array_push($violations, ...$this->attachments($name, $this->map($service['networks'] ?? []), $context));
+
+        return $violations;
+    }
+
+    /**
+     * What every service carries, whoever wrote it (the server's override gives it to the services it
+     * knows, a service a site adds says so itself): no capabilities but those added back, no gaining
+     * privileges, limits on memory and processes, and one container. Without it a service has Docker's
+     * defaults: NET_RAW, which spoofs other containers' addresses on the networks sites share, and no
+     * limit on what it takes from the machine.
+     *
+     * @param array<array-key, mixed> $service
+     *
+     * @return list<string>
+     */
+    private function hardening(array $service): array
+    {
+        $violations = [];
+        $dropped = array_map(fn (mixed $capability): string => strtoupper($this->string($capability)), $this->list($service['cap_drop'] ?? []));
+
+        if (!\in_array('ALL', $dropped, true)) {
+            $violations[] = '"cap_drop: [ALL]" is missing: every service drops Docker\'s default capabilities (NET_RAW among them).';
+        }
+
+        if ([] === array_filter($this->list($service['security_opt'] ?? []), fn (mixed $option): bool => 1 === preg_match('/^no-new-privileges(?:[:=]true)?\z/', $this->string($option)))) {
+            $violations[] = '"security_opt: [no-new-privileges:true]" is missing.';
+        }
+
+        $deploy = $this->map($service['deploy'] ?? []);
+        $limits = $this->map($this->map($deploy['resources'] ?? [])['limits'] ?? []);
+
+        if (null === ($service['mem_limit'] ?? $limits['memory'] ?? null)) {
+            $violations[] = '"mem_limit" is missing: every service has a memory limit.';
+        }
+
+        $pids = $service['pids_limit'] ?? $limits['pids'] ?? null;
+
+        if (!is_numeric($pids) || (int) $pids < 1 || (int) $pids > self::MAX_PIDS) {
+            $violations[] = \sprintf('"pids_limit" (1 to %d) is missing: every service has a limit on its processes.', self::MAX_PIDS);
+        }
+
+        foreach (['scale' => $service['scale'] ?? null, 'deploy.replicas' => $deploy['replicas'] ?? null] as $key => $count) {
+            if (is_numeric($count) && (int) $count > 1) {
+                $violations[] = \sprintf('"%s: %d": a site runs one container of each service.', $key, (int) $count);
+            }
+        }
 
         return $violations;
     }

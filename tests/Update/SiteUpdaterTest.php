@@ -566,8 +566,8 @@ final class SiteUpdaterTest extends RegistryTestCase
             'name' => 'jane',
             'networks' => ['default' => ['name' => 'jane_default'], 'quire-edge' => ['name' => 'quire-edge', 'external' => true], 'quire-data' => ['name' => 'quire-data', 'external' => true]],
             'services' => [
-                'php' => ['image' => 'quire-sites/jane/php-prod', 'build' => $build, 'networks' => ['default' => null, 'quire-edge' => ['aliases' => ['jane.example']], 'quire-data' => null]],
-                'worker' => ['image' => 'quire-sites/jane/php-prod', 'build' => $build, 'networks' => ['default' => null, 'quire-data' => null]],
+                'php' => ['image' => 'quire-sites/jane/php-prod', 'build' => $build, 'cap_drop' => ['ALL'], 'security_opt' => ['no-new-privileges:true'], 'mem_limit' => '536870912', 'pids_limit' => 256, 'networks' => ['default' => null, 'quire-edge' => ['aliases' => ['jane.example']], 'quire-data' => null]],
+                'worker' => ['image' => 'quire-sites/jane/php-prod', 'build' => $build, 'cap_drop' => ['ALL'], 'security_opt' => ['no-new-privileges:true'], 'mem_limit' => '536870912', 'pids_limit' => 256, 'networks' => ['default' => null, 'quire-data' => null]],
             ],
         ];
     }

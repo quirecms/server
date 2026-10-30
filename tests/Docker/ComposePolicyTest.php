@@ -74,6 +74,13 @@ final class ComposePolicyTest extends TestCase
         yield 'an image whose name a site prefix could share' => [['services' => ['php' => ['image' => 'jane-php-prod']]], 'a site\'s images are named "quire-sites/jane/<name>"'];
         yield 'another site\'s image, as a build tag' => [['services' => ['php' => ['build' => ['tags' => ['quire-sites/blog/php-prod:latest']]]]], 'its build is tagged "quire-sites/blog/php-prod:latest"'];
         yield 'another site\'s image, run' => [['services' => ['worker' => ['build' => null, 'image' => 'quire-sites/blog/php-prod']]], '"image: quire-sites/blog/php-prod" is another site\'s'];
+        yield 'a service with Docker\'s default capabilities (NET_RAW)' => [['services' => ['sidecar' => ['image' => 'alpine:3.22', 'network_mode' => 'service:php']]], 'Service "sidecar": "cap_drop: [ALL]" is missing'];
+        yield 'a service that may gain privileges' => [['services' => ['sidecar' => ['image' => 'alpine:3.22', 'cap_drop' => ['ALL'], 'mem_limit' => '64m', 'pids_limit' => 16]]], 'Service "sidecar": "security_opt: [no-new-privileges:true]" is missing'];
+        yield 'no memory limit' => [['services' => ['php' => ['mem_limit' => null]]], 'Service "php": "mem_limit" is missing'];
+        yield 'too many processes' => [['services' => ['php' => ['pids_limit' => 100000]]], 'Service "php": "pids_limit" (1 to 4096) is missing'];
+        yield 'many of a service' => [['services' => ['worker' => ['scale' => 50]]], '"scale: 50": a site runs one container of each service'];
+        yield 'many replicas' => [['services' => ['worker' => ['deploy' => ['replicas' => 20]]]], '"deploy.replicas: 20"'];
+        yield 'raw packets' => [['services' => ['php' => ['cap_add' => ['NET_RAW']]]], '"cap_add: NET_RAW"'];
         yield 'host IPC' => [['services' => ['php' => ['ipc' => 'host']]], '"ipc: host"'];
         yield 'host user namespace' => [['services' => ['php' => ['userns_mode' => 'host']]], '"userns_mode: host"'];
         yield 'host cgroup' => [['services' => ['php' => ['cgroup' => 'host']]], '"cgroup: host"'];
@@ -217,7 +224,7 @@ final class ComposePolicyTest extends TestCase
 
     public function testHarmlessValuesOfForbiddenSettingsPass(): void
     {
-        $config = array_replace_recursive($this->site(), ['services' => ['php' => ['privileged' => false, 'cap_add' => ['NET_BIND_SERVICE', 'cap_net_bind_service'], 'devices' => [], 'security_opt' => ['no-new-privileges:true'], 'cap_drop' => ['ALL'], 'oom_score_adj' => 100, 'logging' => ['driver' => 'json-file'], 'x-custom' => 'anything', 'build' => ['tags' => ['quire-sites/jane/php-prod:before-update']]], 'worker' => ['network_mode' => 'service:php']]]);
+        $config = array_replace_recursive($this->site(), ['services' => ['php' => ['privileged' => false, 'cap_add' => ['NET_BIND_SERVICE', 'cap_net_bind_service', 'CHOWN', 'SETUID'], 'scale' => 1, 'devices' => [], 'security_opt' => ['no-new-privileges:true'], 'cap_drop' => ['ALL'], 'oom_score_adj' => 100, 'logging' => ['driver' => 'json-file'], 'x-custom' => 'anything', 'build' => ['tags' => ['quire-sites/jane/php-prod:before-update']]], 'worker' => ['network_mode' => 'service:php']]]);
 
         self::assertSame([], $this->violations($config));
     }
@@ -280,6 +287,10 @@ final class ComposePolicyTest extends TestCase
                     'healthcheck' => ['test' => ['CMD', 'php', '-r', 'exit(0);']],
                     'networks' => $networks,
                     'restart' => 'unless-stopped',
+                    'security_opt' => ['no-new-privileges:true'],
+                    'cap_drop' => ['ALL'],
+                    'mem_limit' => '536870912',
+                    'pids_limit' => 256,
                     'volumes' => [['type' => 'volume', 'source' => 'storage_data', 'target' => '/app/storage', 'volume' => []]],
                 ],
             ],

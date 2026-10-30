@@ -95,7 +95,14 @@ final readonly class SiteFiles
             'mem_limit' => '512m',
             'pids_limit' => 256,
         ] + $hardening;
-        $services = ['php' => $php, 'worker' => $worker];
+        // The site's own PostgreSQL (an adopted site's): what its entrypoint needs to own its data and
+        // become its user, and nothing else.
+        $database = [
+            'cap_add' => ['CHOWN', 'DAC_OVERRIDE', 'FOWNER', 'SETGID', 'SETUID'],
+            'mem_limit' => '1g',
+            'pids_limit' => 512,
+        ] + $hardening;
+        $services = ['php' => $php, 'worker' => $worker, 'database' => $database];
 
         $networks = ['quire-edge' => ['external' => true]];
 
@@ -109,7 +116,7 @@ final readonly class SiteFiles
             $services['worker']['environment']['DATABASE_URL'] = $url;
             // The site's own PostgreSQL doesn't run: the server's has its database.
             $services['php']['depends_on'] = new TaggedValue('reset', null);
-            $services['database'] = ['profiles' => ['own-database']];
+            $services['database']['profiles'] = ['own-database'];
         }
 
         $yaml = "# How the site \"{$site->value}\" runs on this server. Written by the Quire Server agent and written\n# again when the site changes: don't edit it, it would be replaced.\n"

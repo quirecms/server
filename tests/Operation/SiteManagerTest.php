@@ -619,9 +619,9 @@ final class SiteManagerTest extends RegistryTestCase
                 'name' => $this->name->value,
                 'networks' => ['default' => ['name' => $this->name->value.'_default'], 'quire-edge' => ['name' => 'quire-edge', 'external' => true]],
                 'services' => [
-                    'php' => ['image' => 'quire-sites/'.$this->name->value.'/php-prod', 'build' => $build, 'networks' => ['default' => null, 'quire-edge' => ['aliases' => ['jane.example', 'www.jane.example']]], 'volumes' => [['type' => 'volume', 'source' => 'storage_data', 'target' => '/app/storage']]],
-                    'worker' => ['image' => 'quire-sites/'.$this->name->value.'/php-prod', 'build' => $build, 'networks' => ['default' => null]],
-                    'database' => ['image' => 'postgres:18-alpine', 'networks' => ['default' => null], 'volumes' => [['type' => 'volume', 'source' => 'database_data', 'target' => '/var/lib/postgresql']]],
+                    'php' => ['image' => 'quire-sites/'.$this->name->value.'/php-prod', 'build' => $build, 'cap_drop' => ['ALL'], 'security_opt' => ['no-new-privileges:true'], 'mem_limit' => '536870912', 'pids_limit' => 256, 'networks' => ['default' => null, 'quire-edge' => ['aliases' => ['jane.example', 'www.jane.example']]], 'volumes' => [['type' => 'volume', 'source' => 'storage_data', 'target' => '/app/storage']]],
+                    'worker' => ['image' => 'quire-sites/'.$this->name->value.'/php-prod', 'build' => $build, 'cap_drop' => ['ALL'], 'security_opt' => ['no-new-privileges:true'], 'mem_limit' => '536870912', 'pids_limit' => 256, 'networks' => ['default' => null]],
+                    'database' => ['image' => 'postgres:18-alpine', 'cap_drop' => ['ALL'], 'security_opt' => ['no-new-privileges:true'], 'mem_limit' => '536870912', 'pids_limit' => 256, 'networks' => ['default' => null], 'volumes' => [['type' => 'volume', 'source' => 'database_data', 'target' => '/var/lib/postgresql']]],
                 ],
                 'volumes' => ['storage_data' => ['name' => $this->name->value.'_storage_data'], 'database_data' => ['name' => $this->name->value.'_database_data']],
             ];
@@ -631,8 +631,8 @@ final class SiteManagerTest extends RegistryTestCase
             'name' => $this->name->value,
             'networks' => ['default' => ['name' => $this->name->value.'_default'], 'quire-edge' => ['name' => 'quire-edge', 'external' => true], 'quire-data' => ['name' => 'quire-data', 'external' => true]],
             'services' => [
-                'php' => ['image' => 'quire-sites/'.$this->name->value.'/php-prod', 'build' => $build, 'networks' => ['default' => null, 'quire-edge' => ['aliases' => ['jane.example', 'www.jane.example']], 'quire-data' => null], 'volumes' => [['type' => 'volume', 'source' => 'storage_data', 'target' => '/app/storage']]],
-                'worker' => ['image' => 'quire-sites/'.$this->name->value.'/php-prod', 'build' => $build, 'networks' => ['default' => null, 'quire-data' => null]],
+                'php' => ['image' => 'quire-sites/'.$this->name->value.'/php-prod', 'build' => $build, 'cap_drop' => ['ALL'], 'security_opt' => ['no-new-privileges:true'], 'mem_limit' => '536870912', 'pids_limit' => 256, 'networks' => ['default' => null, 'quire-edge' => ['aliases' => ['jane.example', 'www.jane.example']], 'quire-data' => null], 'volumes' => [['type' => 'volume', 'source' => 'storage_data', 'target' => '/app/storage']]],
+                'worker' => ['image' => 'quire-sites/'.$this->name->value.'/php-prod', 'build' => $build, 'cap_drop' => ['ALL'], 'security_opt' => ['no-new-privileges:true'], 'mem_limit' => '536870912', 'pids_limit' => 256, 'networks' => ['default' => null, 'quire-data' => null]],
             ],
             'volumes' => ['storage_data' => ['name' => $this->name->value.'_storage_data']],
         ];

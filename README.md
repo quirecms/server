@@ -238,7 +238,7 @@ The agent can act on Docker, and that's root on the machine, so the server is bu
 - **Sites are isolated from the server and from each other:**
   - no Docker access, and no route to the agent or the docker-proxy;
   - a PostgreSQL role that opens only the site's own database;
-  - no Linux capabilities, `no-new-privileges`, memory and process limits.
+  - every service of a site, whoever wrote it: no Linux capabilities but a few harmless ones added back, `no-new-privileges`, memory and process limits, one container each (a site's own extra service without them is refused).
 - **Composer runs in a container of its own** when the server audits or plans a site's update: the agent's image, as nobody, with no capabilities, on a network of its own that only reaches the internet, with only a copy of the site's composer.json and composer.lock. A composer.json that has it fetch other than over HTTPS (`secure-http: false`, `http://` repositories, request `options`) is refused.
 - **The front door serves only registered domains,** and gets certificates only for them. A request's Host header must also match the name its connection was encrypted for, so a forged header can't reach another container.
 - **Secrets:**
