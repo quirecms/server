@@ -306,10 +306,13 @@ final readonly class OffsiteBackups
 
         try {
             foreach ($manifest['sites'] as $entry) {
-                $name = new SiteName($entry['name']);
-                $say(\sprintf('"%s"', $name));
+                $say(\sprintf('"%s"', SiteName::printable($entry['name'])));
+                $installedKey = false;
+                $name = null;
 
+                // Each one on its own: one the server's list gets wrong (it's from a backup) fails alone.
                 try {
+                    $name = new SiteName($entry['name']);
                     $existing = $this->registry->get($name);
 
                     if ($existing instanceof Site && Site::REMOVED !== $existing->status) {
@@ -323,14 +326,18 @@ final readonly class OffsiteBackups
 
                     if (null !== $entry['git']) {
                         $repository = new Repository($entry['git']['url'], $entry['git']['branch']);
-                        $this->restoreKey($manifest['keys'], $name);
+                        $installedKey = $this->restoreKey($manifest['keys'], $name);
                     }
 
                     $this->restoreSite($name, $chosen, $name, array_map(static fn (string $domain): Domain => new Domain($domain), $entry['domains']), $repository, $entry['git']['poll'] ?? false, $server, $channel, $requestedBy, static fn (string $step) => $say('  '.$step));
                     $this->policies->set($name, $entry['updates']);
                     $outcomes[] = ['site' => $name->value, 'outcome' => 'restored', 'detail' => 'as of '.$chosen['time']];
                 } catch (\Throwable $e) {
-                    $outcomes[] = ['site' => $name->value, 'outcome' => 'failed', 'detail' => $e->getMessage()];
+                    if ($installedKey && $name instanceof SiteName) {
+                        $this->filesystem->remove($this->paths->root.'/server/keys/'.$name->value);
+                    }
+
+                    $outcomes[] = ['site' => SiteName::printable($entry['name']), 'outcome' => 'failed', 'detail' => $e->getMessage()];
                 }
             }
         } finally {
@@ -432,23 +439,9 @@ final readonly class OffsiteBackups
      * A Git mode site's deploy key, from its old server's backup, where this server keeps it (unless
      * it has one already).
      */
-    private function restoreKey(string $keys, SiteName $name): void
+    private function restoreKey(string $keys, SiteName $name): bool
     {
-        $from = $keys.'/'.$name->value;
-        $to = $this->paths->root.'/server/keys/'.$name->value;
-
-        if ('' === $keys || !is_dir($from) || file_exists($to)) {
-            return;
-        }
-
-        $this->filesystem->mirror($from, $to);
-        $this->filesystem->chmod($to, 0o700);
-
-        $files = glob($to.'/*');
-
-        foreach (false === $files ? [] : $files as $file) {
-            $this->filesystem->chmod($file, 0o600);
-        }
+        return RestoredKeys::install('' === $keys ? '' : $keys.'/'.$name->value, $this->paths->root.'/server/keys/'.$name->value);
     }
 
     /**
