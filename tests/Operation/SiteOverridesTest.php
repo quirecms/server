@@ -126,6 +126,6 @@ final class SiteOverridesTest extends RegistryTestCase
 
     private function subject(): SiteOverrides
     {
-        return new SiteOverrides($this->registry, new SiteFiles(), $this->paths, new Images($this->runner, 'tcp://docker-proxy:2375'), new SiteLock($this->connection), new Compose($this->runner, new ComposePolicy(), new ComposeFiles(), new RuntimeImages($this->runner, new RuntimeFloors($this->connection, $this->schema)), new RuntimeBuilds($this->connection, $this->schema), 'tcp://docker-proxy:2375'));
+        return new SiteOverrides($this->registry, new SiteFiles(), $this->paths, new Images($this->runner, 'tcp://docker-proxy:2375'), new SiteLock($this->connection, $this->schema), new Compose($this->runner, new ComposePolicy(), new ComposeFiles(), new RuntimeImages($this->runner, new RuntimeFloors($this->connection, $this->schema)), new RuntimeBuilds($this->connection, $this->schema), 'tcp://docker-proxy:2375'));
     }
 }

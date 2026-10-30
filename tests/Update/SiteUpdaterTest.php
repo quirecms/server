@@ -688,7 +688,7 @@ final class SiteUpdaterTest extends RegistryTestCase
         $sites = new SiteManager(
             $this->registry,
             $this->operations,
-            new SiteLock($this->connection),
+            new SiteLock($this->connection, $this->schema),
             new SkeletonInstaller($this->runner),
             new SiteDatabases($this->connection),
             new SiteFiles(),
@@ -702,7 +702,7 @@ final class SiteUpdaterTest extends RegistryTestCase
             '',
         );
 
-        return new SiteUpdater($this->registry, $this->updates, $this->repositories, $this->operations, new SiteLock($this->connection), $sites, $compose, new Images($this->runner, 'tcp://docker-proxy:2375'), $this->git, $this->paths);
+        return new SiteUpdater($this->registry, $this->updates, $this->repositories, $this->operations, new SiteLock($this->connection, $this->schema), $sites, $compose, new Images($this->runner, 'tcp://docker-proxy:2375'), $this->git, $this->paths);
     }
 
     /**

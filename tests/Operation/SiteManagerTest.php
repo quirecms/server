@@ -693,7 +693,7 @@ final class SiteManagerTest extends RegistryTestCase
         return new SiteManager(
             $this->registry,
             $this->operations,
-            new SiteLock($this->connection),
+            new SiteLock($this->connection, $this->schema),
             new SkeletonInstaller($runner),
             $this->databases,
             new \Quire\Server\Site\SiteFiles(),

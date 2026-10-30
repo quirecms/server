@@ -64,7 +64,7 @@ final class SiteRegistryTest extends RegistryTestCase
 
     public function testOneOperationAtATimePerSite(): void
     {
-        $lock = new SiteLock($this->connection);
+        $lock = new SiteLock($this->connection, $this->schema);
         $params = $this->connection->getParams();
         // A second connection: another process, as far as PostgreSQL knows.
         $other = \Doctrine\DBAL\DriverManager::getConnection([
@@ -78,11 +78,12 @@ final class SiteRegistryTest extends RegistryTestCase
         $jane = new SiteName('jane');
         $ran = [];
 
-        $lock->run($jane, static function () use ($other, $jane, &$ran): void {
+        $schema = $this->schema;
+        $lock->run($jane, static function () use ($other, $jane, $schema, &$ran): void {
             $ran[] = 'jane';
 
             try {
-                new SiteLock($other)->run($jane, static function () use (&$ran): void {
+                new SiteLock($other, $schema)->run($jane, static function () use (&$ran): void {
                     $ran[] = 'jane twice';
                 });
                 self::fail('Two operations ran on one site.');
@@ -90,12 +91,12 @@ final class SiteRegistryTest extends RegistryTestCase
                 self::assertStringContainsString('Something else is being done to the site "jane"', $e->getMessage());
             }
 
-            new SiteLock($other)->run(new SiteName('kim'), static function () use (&$ran): void {
+            new SiteLock($other, $schema)->run(new SiteName('kim'), static function () use (&$ran): void {
                 $ran[] = 'kim';
             });
         });
 
-        new SiteLock($other)->run($jane, static function () use (&$ran): void {
+        new SiteLock($other, $this->schema)->run($jane, static function () use (&$ran): void {
             $ran[] = 'jane again';
         });
 

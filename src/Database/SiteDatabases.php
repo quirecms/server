@@ -39,6 +39,11 @@ final readonly class SiteDatabases
      */
     public function create(SiteName $site): string
     {
+        return $this->serialized(fn (): string => $this->createNow($site));
+    }
+
+    private function createNow(SiteName $site): string
+    {
         $identifier = $site->databaseIdentifier();
         $quoted = $this->admin->quoteSingleIdentifier($identifier);
         $password = bin2hex(random_bytes(24));
@@ -74,11 +79,11 @@ final readonly class SiteDatabases
      */
     public function drop(SiteName $site): void
     {
-        $identifier = $site->databaseIdentifier();
-        $quoted = $this->admin->quoteSingleIdentifier($identifier);
-
-        $this->admin->executeStatement(\sprintf('DROP DATABASE IF EXISTS %s WITH (FORCE)', $quoted));
-        $this->admin->executeStatement(\sprintf('DROP ROLE IF EXISTS %s', $quoted));
+        $this->serialized(function () use ($site): void {
+            $quoted = $this->admin->quoteSingleIdentifier($site->databaseIdentifier());
+            $this->admin->executeStatement(\sprintf('DROP DATABASE IF EXISTS %s WITH (FORCE)', $quoted));
+            $this->admin->executeStatement(\sprintf('DROP ROLE IF EXISTS %s', $quoted));
+        });
     }
 
     public function exists(SiteName $site): bool
@@ -93,6 +98,11 @@ final readonly class SiteDatabases
      * the public schemas take no new objects from others.
      */
     public function harden(string $serverDatabase): void
+    {
+        $this->serialized(fn () => $this->hardenNow($serverDatabase));
+    }
+
+    private function hardenNow(string $serverDatabase): void
     {
         foreach (['postgres', 'template1', $serverDatabase] as $database) {
             $this->admin->executeStatement(\sprintf('REVOKE CONNECT, TEMPORARY ON DATABASE %s FROM PUBLIC', $this->admin->quoteSingleIdentifier($database)));
@@ -110,6 +120,28 @@ final readonly class SiteDatabases
             if (\is_string($role)) {
                 $this->limit($role);
             }
+        }
+    }
+
+    /**
+     * One change to the cluster's roles at a time, whoever makes it (the agent, the updater, the
+     * installer): PostgreSQL refuses two changes to one role's row at once ("tuple concurrently
+     * updated"), and hardening walks every site's role while a site may be added or removed.
+     *
+     * @template T
+     *
+     * @param \Closure(): T $change
+     *
+     * @return T
+     */
+    private function serialized(\Closure $change): mixed
+    {
+        $this->admin->fetchOne("SELECT pg_advisory_lock(hashtextextended('quire-server:roles', 0))");
+
+        try {
+            return $change();
+        } finally {
+            $this->admin->fetchOne("SELECT pg_advisory_unlock(hashtextextended('quire-server:roles', 0))");
         }
     }
 

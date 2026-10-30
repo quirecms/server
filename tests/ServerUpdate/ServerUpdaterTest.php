@@ -224,7 +224,7 @@ final class ServerUpdaterTest extends RegistryTestCase
     {
         $other = $this->otherConnection();
         // An operation on a site runs (it holds the server's lock, shared).
-        $other->fetchOne('SELECT pg_advisory_lock_shared(hashtextextended(?, 0))', [SiteLock::SERVER]);
+        $other->fetchOne('SELECT pg_advisory_lock_shared(hashtextextended(?, 0))', [$this->schema.':server']);
 
         try {
             $this->failsAndRuns('/An operation on a site runs/', self::OLD);
@@ -239,9 +239,9 @@ final class ServerUpdaterTest extends RegistryTestCase
         $other = $this->otherConnection();
 
         try {
-            self::assertTrue(new SiteLock($this->connection)->lockServer());
+            self::assertTrue(new SiteLock($this->connection, $this->schema)->lockServer());
             $this->expectExceptionMessageIsOrContains('The server is being updated');
-            new SiteLock($other)->run(new SiteName('jane'), static fn (): bool => true);
+            new SiteLock($other, $this->schema)->run(new SiteName('jane'), static fn (): bool => true);
         } finally {
             $other->close();
         }
@@ -265,7 +265,7 @@ final class ServerUpdaterTest extends RegistryTestCase
 
         try {
             $ran = false;
-            new SiteLock($other)->run(new SiteName('jane'), static function () use (&$ran): void {
+            new SiteLock($other, $this->schema)->run(new SiteName('jane'), static function () use (&$ran): void {
                 $ran = true;
             });
             self::assertTrue($ran, 'The server\'s lock is let go: sites can be worked on again.');
@@ -410,7 +410,7 @@ final class ServerUpdaterTest extends RegistryTestCase
             new Releases(new GitHubReleases($this->runner), $this->runner),
             new ServerFolder($this->runner, $this->root),
             new ServerStack($this->runner, 'unix:///var/run/docker.sock', 's3cret'),
-            new SiteLock($this->connection),
+            new SiteLock($this->connection, $this->schema),
             $this->connection,
             $this->operations,
             $this->root,
