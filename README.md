@@ -242,6 +242,7 @@ The agent can act on Docker, and that's root on the machine, so the server is bu
 - **The front door serves only registered domains,** and gets certificates only for them. A request's Host header must also match the name its connection was encrypted for, so a forged header can't reach another container.
 - **Secrets:**
   - files readable by root only, never in images or command lines;
+  - never in what the agent hands to the programs it runs: they get only the basics of its environment (PATH, HOME, the locale), so a site's Compose file can't read the server's settings with `${…}`, and each site runs with its own `APP_SECRET`;
   - database passwords sent to PostgreSQL only as SCRAM verifiers;
   - operation logs scrubbed of them.
 - **Nothing is deleted without a backup,** and every operation is recorded. **Backups off the server are encrypted on it** (restic) before they leave; their password and the bucket's keys are in `server.env` (root only), never in a command line or a log.

@@ -145,20 +145,9 @@ final class ServerUpdaterTest extends RegistryTestCase
 
     public function testUpdatingTheServer(): void
     {
-        // The updater's own settings (it runs the release before), which Compose would take over server.env's
-        $_ENV['QUIRE_SERVER_IMAGE'] = self::OLD;
-
-        try {
-            $this->update();
-        } finally {
-            unset($_ENV['QUIRE_SERVER_IMAGE']);
-        }
-
-        foreach ($this->runner->runs as $run) {
-            if ('compose' === ($run['command'][1] ?? null)) {
-                self::assertFalse($run['env']['QUIRE_SERVER_IMAGE'] ?? null, 'Only server.env names the image.');
-            }
-        }
+        // That only server.env names the image, and not the updater's own environment, is the runner's
+        // part: SymfonyProcessRunnerTest.
+        $this->update();
 
         self::assertSame(self::NEW, $this->agent);
         self::assertSame('release: 0.2.0', file_get_contents($this->server.'/compose.yaml'));

@@ -321,6 +321,13 @@ check 'no key in its folder or its image' "! inside 'grep -rl \"PRIVATE KEY\" /s
 commit 'mkdir -p public && echo two > public/hello.txt' 'Two'
 inside 'quire-server site:deploy blog 2>&1' | sed 's/^/    /'
 check 'a deploy runs the new commit' "[ \"\$(inside \"curl -sk $gresolve https://blog.test/hello.txt\")\" = two ]"
+# A commit whose Compose file asks for one of the server's settings (Compose fills in "${…}" from the
+# environment it runs in before the site's env file)
+inside "printf '%s\n' '{print} /^    environment:\$/ && !done {print \"      QUIRE_LEAK: \${QUIRE_SERVER_POSTGRES_ADMIN_URL:-none}\"; done = 1}' > /root/leak.awk && docker cp /root/leak.awk git-server:/tmp/leak.awk"
+commit 'awk -f /tmp/leak.awk compose.prod.yaml > /tmp/c && cat /tmp/c > compose.prod.yaml' 'Settings'
+inside 'quire-server site:deploy blog 2>&1' | sed 's/^/    /'
+check 'a site'\''s Compose file gets none of the server'\''s settings' "[ \"\$(inside 'docker exec blog-php-1 printenv QUIRE_LEAK')\" = none ]"
+check 'it runs with its own APP_SECRET, not the agent'\''s' "s=\$(inside 'docker exec blog-php-1 printenv APP_SECRET') && [ -n \"\$s\" ] && inside \"grep -qxF \\\"APP_SECRET='\$s'\\\" /srv/quire/sites/blog/prod.env\" && [ \"\$s\" != \"\$(inside 'docker exec quire-server-agent-1 printenv APP_SECRET')\" ]"
 inside "printf '\nQUIRE_SERVER_GIT_POLL_SECONDS=60\n' >> /srv/quire/server/server.env && quire-server up >/dev/null 2>&1 && quire-server site:poll blog on >/dev/null"
 commit 'echo three > public/hello.txt' 'Three'
 waited=0
