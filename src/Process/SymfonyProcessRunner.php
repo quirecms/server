@@ -20,6 +20,11 @@ final readonly class SymfonyProcessRunner implements ProcessRunner
         $stream = null;
 
         if (null !== $inputFile) {
+            // The agent's own files only: a link, e.g. in a backup from elsewhere, could point at any.
+            if (is_link($inputFile)) {
+                throw new \RuntimeException(\sprintf('"%s" is a link: not read.', $inputFile));
+            }
+
             $stream = @fopen($inputFile, 'r');
 
             if (false === $stream) {

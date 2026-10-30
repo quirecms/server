@@ -7,6 +7,7 @@ namespace Quire\Server\Docker;
 use Quire\Server\Process\ProcessResult;
 use Quire\Server\Process\ProcessRunner;
 use Quire\Server\Registry\RuntimeBuilds;
+use Symfony\Component\Filesystem\Filesystem;
 
 /**
  * Docker Compose for sites, through the docker-proxy. Building and starting always check the site's
@@ -123,11 +124,30 @@ final readonly class Compose
     }
 
     /**
-     * Copies a file out of one of the site's containers.
+     * Copies a file out of one of the site's containers: a plain file only. Docker copies a link as a
+     * link, and the site makes its own files: one pointing at "/srv/quire/sites/<other>/prod.env" would
+     * then be the agent's to read, as root, wherever this copy is used (a backup is streamed back into
+     * a site). So a link is followed inside the container, among its own files, and anything but a
+     * plain file is refused.
      */
     public function copyFrom(SiteProject $project, string $service, string $source, string $destination): void
     {
-        $this->compose($project, ['cp', $service.':'.$source, $destination], timeout: 3600)->orFail('Copying out of the site');
+        $filesystem = new Filesystem();
+        $folder = \dirname($destination).'/.copy-'.bin2hex(random_bytes(6));
+        $copy = $folder.'/'.basename($destination);
+        $filesystem->mkdir($folder, 0o700);
+
+        try {
+            $this->compose($project, ['cp', '--follow-link', $service.':'.$source, $copy], timeout: 3600)->orFail('Copying out of the site');
+
+            if (is_link($copy) || !is_file($copy)) {
+                throw new \RuntimeException(\sprintf('"%s" in the site isn\'t a plain file: not copied out of it.', $source));
+            }
+
+            $filesystem->rename($copy, $destination, true);
+        } finally {
+            $filesystem->remove($folder);
+        }
     }
 
     /**

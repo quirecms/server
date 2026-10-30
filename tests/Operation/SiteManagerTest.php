@@ -82,7 +82,7 @@ final class SiteManagerTest extends RegistryTestCase
                 default => self::ok($command, ''),
             },
             'docker compose cp' => static function (array $command): ProcessResult {
-                file_put_contents(self::argument($command, 10), 'backup');
+                file_put_contents(self::argument($command, 11), 'backup');
 
                 return self::ok($command, '');
             },
@@ -322,6 +322,32 @@ final class SiteManagerTest extends RegistryTestCase
         self::assertCount(2, $this->frontDoor->all(), 'Still open.');
         self::assertTrue($this->databases->exists($this->name));
         self::assertFileExists($this->paths->site($this->name).'/prod.env');
+    }
+
+    public function testABackupThatIsALinkIsntTaken(): void
+    {
+        $manager = $this->manager();
+        $manager->add($this->request(), 'cli', 'darko', static fn (): null => null);
+        // The site's container made its backup a link to another site's secrets, which Docker copies as one.
+        $secrets = $this->paths->site(new SiteName('other')).'/prod.env';
+        new Filesystem()->dumpFile($secrets, 'POSTGRES_PASSWORD=the other site\'s');
+        $this->script['docker compose cp'] = static function (array $command) use ($secrets): ProcessResult {
+            self::assertSame('--follow-link', $command[9], 'Followed in the container, among its own files.');
+            symlink($secrets, self::argument($command, 11));
+
+            return self::ok($command, '');
+        };
+
+        try {
+            $manager->remove($this->name, true, 'cli', 'darko', static fn (): null => null);
+            self::fail('It was removed with a link for a backup.');
+        } catch (\RuntimeException $e) {
+            self::assertStringContainsString('isn\'t a plain file', $e->getMessage());
+        }
+
+        $kept = glob($this->paths->backups($this->name).'/{,.}*', \GLOB_BRACE);
+        self::assertSame([], array_filter(false === $kept ? [] : $kept, static fn (string $file): bool => !\in_array(basename($file), ['.', '..'], true)), 'Nothing of it kept.');
+        self::assertSame(Site::RUNNING, $this->registry->get($this->name)?->status);
     }
 
     public function testAdoptingASiteThatRunsAlready(): void

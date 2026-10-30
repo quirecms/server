@@ -137,8 +137,8 @@ final class SiteUpdaterTest extends RegistryTestCase
             },
             'docker compose cp' => static function (array $command): ProcessResult {
                 // Out of the site: its backup. (Nothing is copied into it.)
-                self::assertStringStartsWith('php:', $command[9]);
-                file_put_contents($command[10], 'backup');
+                self::assertStringStartsWith('php:', $command[10]);
+                file_put_contents($command[11], 'backup');
 
                 return ScriptedRunner::ok($command);
             },
