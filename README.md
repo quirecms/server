@@ -167,7 +167,7 @@ A server installed from a checkout (`--source`) moves to releases the same way.
 
 ## Backups
 
-Every site is backed up on the server before anything risky (an update, a restore, removing it), in `/srv/quire/backups/<site>/`. **Backups off the server** are what survive losing the server itself: set them up once.
+Every site is backed up on the server before anything risky (an update, a restore, removing it), in `/srv/quire/backups/<site>/`, and kept for two weeks (each site's newest one, and the final one of a site that was removed, for good). **Backups off the server** are what survive losing the server itself: set them up once.
 
 ```bash
 quire-server backups:setup

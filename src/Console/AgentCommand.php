@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Quire\Server\Console;
 
+use Quire\Server\Backup\LocalBackups;
 use Quire\Server\Backup\OffsiteBackups;
 use Quire\Server\FrontDoor\DomainDirectory;
 use Quire\Server\Git\GitPoller;
@@ -41,6 +42,7 @@ final class AgentCommand
         private readonly AutomaticUpdates $updates,
         private readonly OffsiteBackups $backups,
         private readonly SiteUpdater $sites,
+        private readonly LocalBackups $local,
     ) {
     }
 
@@ -85,6 +87,7 @@ final class AgentCommand
             touch(self::HEARTBEAT);
             $this->poller->poll($this->alive(static fn (string $line) => $io->writeln('Git: '.$line)));
             $this->backUp($io);
+            $this->expire($io);
             $this->updates->run(false, 'agent', $this->alive(static fn (string $line) => $io->writeln('Updates: '.$line)));
             touch(self::HEARTBEAT);
 
@@ -94,6 +97,22 @@ final class AgentCommand
         } while (!$once && !$this->stopping);
 
         return Command::SUCCESS;
+    }
+
+    /**
+     * The backups on the server older than LocalBackups::KEEP_DAYS, once a day.
+     */
+    private function expire(SymfonyStyle $io): void
+    {
+        try {
+            if ($this->local->due()) {
+                foreach ($this->local->expire('agent', 'automatic') as $removed) {
+                    $io->writeln('Backups: removed '.$removed);
+                }
+            }
+        } catch (\Throwable $e) {
+            $io->writeln('Backups: removing old ones failed: '.$e->getMessage());
+        }
     }
 
     /**

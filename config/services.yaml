@@ -107,6 +107,10 @@ services:
             $hour: '%env(QUIRE_SERVER_BACKUP_HOUR)%'
             $keep: '%env(QUIRE_SERVER_BACKUP_KEEP)%'
 
+    Quire\Server\Backup\LocalBackups:
+        arguments:
+            $root: '%quire_server.root%/backups'
+
     Quire\Server\Backup\Restic:
         arguments:
             $cache: '%quire_server.root%/backups/.restic-cache'
