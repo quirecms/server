@@ -49,6 +49,10 @@ services:
         arguments:
             $runner: '@Quire\Server\Process\ContainerRunner'
 
+    Quire\Server\Backup\SiteDatabaseDumps:
+        arguments:
+            $dockerHost: '%env(DOCKER_HOST)%'
+
     Quire\Server\FrontDoor\DomainDirectory:
         arguments: ['%quire_server.root%/server/domains']
 

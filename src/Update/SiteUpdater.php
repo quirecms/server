@@ -197,7 +197,7 @@ final readonly class SiteUpdater
                 $operation->line('Backed up to '.$current);
 
                 $step('Restoring the backup');
-                $this->restore($project, $backup, $operation);
+                $this->restore($site, $project, $backup, $operation);
 
                 $step('Checking it');
                 $this->check($project, $site);
@@ -213,7 +213,7 @@ final readonly class SiteUpdater
                 $step('Putting it back as it was before the restore');
 
                 try {
-                    $this->restore($project, $current, $operation);
+                    $this->restore($site, $project, $current, $operation);
                     $this->check($project, $site);
                 } catch (\Throwable $failure) {
                     $this->registry->setStatus($name, Site::FAILED);
@@ -274,7 +274,7 @@ final readonly class SiteUpdater
 
                 if ($restore) {
                     $step(\sprintf('Restoring its backup from before the %s', $what));
-                    $this->restore($project, $update['backup'], $operation);
+                    $this->restore($site, $project, $update['backup'], $operation);
                 }
 
                 $step('Checking it');
@@ -289,7 +289,7 @@ final readonly class SiteUpdater
                     $this->compose->up($project, $operation->output(...));
 
                     if ($restore && null !== $current) {
-                        $this->restore($project, $current, $operation);
+                        $this->restore($site, $project, $current, $operation);
                     }
 
                     $this->check($project, $site);
@@ -482,7 +482,7 @@ final readonly class SiteUpdater
 
             if (null !== $backup && (null === $migrationsNow || $migrationsNow !== $migrationsBefore)) {
                 $operation->line('== Restoring its backup (the new version\'s migrations may have run)');
-                $this->restore($project, $backup, $operation);
+                $this->restore($site, $project, $backup, $operation);
             }
 
             $this->check($project, $site);
@@ -535,9 +535,10 @@ final readonly class SiteUpdater
      * The backup streamed into quire:restore: no copy of it lands in the site's container (which runs
      * as another user than the backup's owner, and keeps nothing it doesn't need).
      */
-    private function restore(SiteProject $project, string $backup, Operation $operation): void
+    private function restore(Site $site, SiteProject $project, string $backup, Operation $operation): void
     {
         $this->compose->exec($project, self::PHP, ['bin/console', 'quire:restore', '-', '--force', '--no-interaction'], $operation->output(...), 3600, $backup)->orFail('Restoring the backup');
+        $this->sites->restoreDatabase($site->name, $project, $backup, $operation->output(...));
     }
 
     /**

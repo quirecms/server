@@ -247,7 +247,9 @@ final readonly class OffsiteBackups
 
         try {
             $say(\sprintf('Getting its backup of %s from off the server', $chosen['time']));
-            $file = $this->restic->restoreFile($chosen['id'], $file, $into);
+            // With the rest of its database, when the backup has it (made by Quire Server 0.3.1 and later)
+            $this->restic->restorePaths($chosen['id'], [$file, ...$this->dumpOf($chosen['paths'], $file)], $into);
+            $file = is_file($into.$file) ? $into.$file : throw new BackupFailed('The snapshot doesn\'t have its backup file.');
             $this->updater->restoreBackup($name, $file, ['snapshot' => $chosen['id'], 'from' => 'off the server'], $channel, $requestedBy, $say);
         } finally {
             $this->filesystem->remove($into);
@@ -418,7 +420,7 @@ final readonly class OffsiteBackups
 
         try {
             $say(\sprintf('Getting the backup of "%s" of %s from off the server', $source, $chosen['time']));
-            $this->restic->restorePaths($chosen['id'], $repository instanceof Repository ? [$file] : [$file, $folder], $into);
+            $this->restic->restorePaths($chosen['id'], [$file, ...$this->dumpOf($chosen['paths'], $file), ...($repository instanceof Repository ? [] : [$folder])], $into);
             $from = ['snapshot' => $chosen['id'], 'from_site' => $source->value, 'from_server' => $server ?? $this->settings->host];
             $this->sites->restoreAsNew($name, $domains, $repository ?? $into.$folder, $into.$file, $from, $channel, $requestedBy, $say, $poll);
         } finally {
@@ -450,6 +452,18 @@ final readonly class OffsiteBackups
     }
 
     /**
+     * The database dump that goes with a snapshot's quire:backup file, if the snapshot has one.
+     *
+     * @param list<string> $paths
+     *
+     * @return list<string>
+     */
+    private function dumpOf(array $paths, string $file): array
+    {
+        return \in_array(SiteDatabaseDumps::of($file), $paths, true) ? [SiteDatabaseDumps::of($file)] : [];
+    }
+
+    /**
      * The quire:backup file among a snapshot's paths.
      *
      * @param list<string> $paths
@@ -477,17 +491,18 @@ final readonly class OffsiteBackups
     private function backUpSite(Site $site): string
     {
         $file = $this->sites->backup($site->name, $this->sites->projectOf($site), 'off-server');
+        $dump = SiteDatabaseDumps::of($file);
         $folder = $this->paths->site($site->name);
         $git = null !== $this->repositories->of($site->name);
 
         try {
             return $this->restic->backup(
-                $git ? [$file] : [$file, $folder],
+                $git ? [$file, $dump] : [$file, $dump, $folder],
                 [self::SITE_TAG, 'site:'.$site->name->value, ...($git ? [self::GIT_TAG] : [])],
                 array_map(static fn (string $built): string => $folder.'/'.$built, self::BUILT),
             );
         } finally {
-            $this->filesystem->remove($file);
+            $this->filesystem->remove([$file, $dump]);
         }
     }
 

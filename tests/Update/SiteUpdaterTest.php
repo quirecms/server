@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Quire\Server\Tests\Update;
 
+use Quire\Server\Backup\SiteDatabaseDumps;
 use Quire\Server\Database\SiteDatabases;
 use Quire\Server\Docker\Compose;
 use Quire\Server\Docker\ComposeFiles;
@@ -103,7 +104,7 @@ final class SiteUpdaterTest extends RegistryTestCase
         $filesystem->dumpFile($site.'/composer.json', '{"require": {"quire/core": "^0.1"}}');
         $filesystem->dumpFile($site.'/composer.lock', LockTest::lock(['quire/core' => 'v0.1.0'])->content);
         $filesystem->dumpFile($site.'/Dockerfile', 'FROM 0.1.0');
-        $filesystem->dumpFile($site.'/'.SiteFiles::ENV_FILE, "COMPOSE_PROJECT_NAME='jane'\n");
+        $filesystem->dumpFile($site.'/'.SiteFiles::ENV_FILE, "COMPOSE_PROJECT_NAME='jane'\nQUIRE_DATABASE_PASSWORD='the-site-password'\n");
 
         $this->runner = new ScriptedRunner([
             'docker compose config' => fn (array $command): ProcessResult => ScriptedRunner::ok($command, json_encode($this->config(), \JSON_THROW_ON_ERROR)),
@@ -149,6 +150,16 @@ final class SiteUpdaterTest extends RegistryTestCase
 
                 return ScriptedRunner::ok($command);
             },
+            // The server's PostgreSQL, where a site's database is dumped and restored (SiteDatabaseDumps)
+            'docker ps --quiet' => static fn (array $command): ProcessResult => ScriptedRunner::ok($command, "abcdef123456\n"),
+            'docker exec -e' => static fn (array $command): ProcessResult => ScriptedRunner::ok($command),
+            'docker cp --quiet' => static function (array $command): ProcessResult {
+                file_put_contents($command[4], 'the site\'s own tables');
+
+                return ScriptedRunner::ok($command);
+            },
+            'docker exec abcdef123456' => static fn (array $command): ProcessResult => ScriptedRunner::ok($command),
+            'docker exec --interactive' => static fn (array $command): ProcessResult => ScriptedRunner::ok($command),
             'git ls-remote' => fn (array $command): ProcessResult => ScriptedRunner::ok($command, $this->remote."\trefs/heads/main\n"),
             'git fetch' => static fn (array $command): ProcessResult => ScriptedRunner::ok($command),
             'git rev-parse' => fn (array $command): ProcessResult => ScriptedRunner::ok($command, (str_starts_with((string) end($command), 'HEAD') ? $this->checkedOut : $this->remote)."\n"),
@@ -339,6 +350,15 @@ final class SiteUpdaterTest extends RegistryTestCase
         self::assertSame(self::OLD, $this->running);
         self::assertCount(1, $this->restored);
         self::assertStringContainsString('/backups/jane/update-', $this->restored[0], 'The backup from before the update.');
+
+        // And the rest of its database, from the dump beside that backup, as its own role, after Quire's
+        $restores = array_values(array_filter($this->runner->runs, static fn (array $run): bool => 'docker exec --interactive' === ScriptedRunner::key($run['command'])));
+        self::assertCount(1, $restores);
+        self::assertSame(substr($this->restored[0], 0, -4).'.database.dump', $restores[0]['inputFile']);
+        self::assertContains('--username=site_jane', $restores[0]['command']);
+        self::assertSame('the-site-password', $restores[0]['env']['PGPASSWORD'] ?? null, 'In the environment, never an argument.');
+        $quire = array_key_last(array_filter($this->runner->runs, static fn (array $run): bool => \in_array('quire:restore', $run['command'], true)));
+        self::assertGreaterThan($quire, array_search('docker exec --interactive', $this->runner->keys(), true));
     }
 
     public function testAPlanIsAppliedOnlyToTheFilesItWasMadeFrom(): void
@@ -534,6 +554,7 @@ final class SiteUpdaterTest extends RegistryTestCase
             $this->git,
             $this->repositories,
             $this->keys,
+            new SiteDatabaseDumps($this->runner, $compose, 'tcp://docker-proxy:2375'),
             '',
         );
 

@@ -175,7 +175,7 @@ It asks for an S3-compatible bucket (DigitalOcean Spaces, Backblaze B2, Hetzner 
 
 Then, every night (from 02:00 UTC; `QUIRE_SERVER_BACKUP_HOUR` in `server.env`, or `off`):
 
-- **every running site** is backed up (`quire:backup`: its database and files) and **the server's own** (its registry, the front door's domains, Git mode sites' deploy keys);
+- **every running site** is backed up (`quire:backup`: Quire's data and files; and the rest of its database, e.g. an application's own tables, with `pg_dump` as the site's own role) and **the server's own** (its registry, the front door's domains, Git mode sites' deploy keys);
 - they're sent off the server with [restic](https://restic.net): **encrypted on the server** (AES-256) before they leave it, and stored once per unique piece, so a night adds only what changed;
 - **kept** 7 daily, 4 weekly and 6 monthly, for each site on its own (`QUIRE_SERVER_BACKUP_KEEP`); on Sundays the storage only forgotten backups used is freed, and 5% of the stored data is read back to check it;
 - a site that fails doesn't stop the others; `quire-server operations` shows each night's run.

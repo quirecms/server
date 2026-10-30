@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Quire\Server\Operation;
 
+use Quire\Server\Backup\SiteDatabaseDumps;
 use Quire\Server\Database\SiteDatabases;
 use Quire\Server\Docker\Compose;
 use Quire\Server\Docker\SiteProject;
@@ -45,6 +46,7 @@ final readonly class SiteManager
         private Git $git,
         private SiteGit $repositories,
         private DeployKeys $keys,
+        private SiteDatabaseDumps $dumps,
         private string $mailerDsn = '',
         private Filesystem $filesystem = new Filesystem(),
     ) {
@@ -244,6 +246,7 @@ final readonly class SiteManager
 
                 $step('Restoring its database and files from the backup');
                 $this->compose->exec($project, self::PHP, ['bin/console', 'quire:restore', '-', '--force', '--no-interaction'], $operation->output(...), 3600, $backup)->orFail('Restoring the backup');
+                $this->restoreDatabase($name, $project, $backup, $operation->output(...));
 
                 if ($code instanceof Repository) {
                     $this->repositories->deployed($name, $this->git->head($code, $name, $directory));
@@ -557,8 +560,9 @@ final readonly class SiteManager
     }
 
     /**
-     * A backup of the site with quire:backup (its database and files), to
-     * /srv/quire/backups/<site>/<kind>-<time>.tar, readable by root only.
+     * A backup of the site with quire:backup (Quire's data and files), to
+     * /srv/quire/backups/<site>/<kind>-<time>.tar, and the rest of its database beside it
+     * (SiteDatabaseDumps), readable by root only.
      */
     public function backup(SiteName $name, SiteProject $project, string $kind): string
     {
@@ -571,8 +575,24 @@ final readonly class SiteManager
         $this->compose->copyFrom($project, self::PHP, $inside, $file);
         $this->compose->exec($project, self::PHP, ['rm', '-f', $inside], timeout: 60);
         chmod($file, 0o600);
+        $this->dumps->dump($project, $this->registry->get($name)->databaseMode ?? Site::SHARED_DATABASE, SiteDatabaseDumps::of($file));
 
         return $file;
+    }
+
+    /**
+     * After quire:restore: the rest of the site's database, from the dump beside the backup (backups
+     * made before Quire Server 0.3.1 have none).
+     *
+     * @param (\Closure(string): void)|null $output
+     */
+    public function restoreDatabase(SiteName $name, SiteProject $project, string $backup, ?\Closure $output = null): void
+    {
+        $dump = SiteDatabaseDumps::of($backup);
+
+        if (is_file($dump)) {
+            $this->dumps->restore($project, $this->registry->get($name)->databaseMode ?? Site::SHARED_DATABASE, $dump, $output);
+        }
     }
 
     /**

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Quire\Server\Tests\Operation;
 
+use Quire\Server\Backup\SiteDatabaseDumps;
 use Quire\Server\Database\SiteDatabases;
 use Quire\Server\Docker\Compose;
 use Quire\Server\Docker\ComposeFiles;
@@ -88,6 +89,16 @@ final class SiteManagerTest extends RegistryTestCase
                 return self::ok($command, '');
             },
             'docker compose down' => static fn (array $command): ProcessResult => self::ok($command, "Removed\n"),
+            // The server's PostgreSQL, where a site's database is dumped and restored (SiteDatabaseDumps)
+            'docker ps --quiet' => static fn (array $command): ProcessResult => self::ok($command, "abcdef123456\n"),
+            'docker exec -e' => static fn (array $command): ProcessResult => self::ok($command, ''),
+            'docker cp --quiet' => static function (array $command): ProcessResult {
+                file_put_contents(self::argument($command, 4), 'the site\'s own tables');
+
+                return self::ok($command, '');
+            },
+            'docker exec abcdef123456' => static fn (array $command): ProcessResult => self::ok($command, ''),
+            'docker exec --interactive' => static fn (array $command): ProcessResult => self::ok($command, ''),
         ];
     }
 
@@ -298,6 +309,14 @@ final class SiteManagerTest extends RegistryTestCase
         self::assertSame('0600', substr(\sprintf('%o', fileperms($backup)), -4));
         $commands = $this->commands();
         self::assertSame(['exec', 'cp', 'exec', 'down'], array_map(static fn (array $command): string => $command[8] ?? '', $commands), 'Backed up before anything is stopped.');
+        // The rest of its database too, as its own role, beside its backup
+        $dump = array_first(array_filter($this->dockerCommands(), static fn (array $command): bool => \in_array('pg_dump', $command, true))) ?? [];
+        self::assertContains('--username='.$this->name->databaseIdentifier(), $dump, 'As the site\'s own role.');
+        self::assertContains('--exclude-schema=quire', $dump, 'quire:backup has Quire\'s own schema.');
+        self::assertSame([$this->name->databaseIdentifier()], \array_slice($dump, -1));
+        $kept = substr($backup, 0, -4).'.database.dump';
+        self::assertSame('the site\'s own tables', file_get_contents($kept));
+        self::assertSame('0600', substr(\sprintf('%o', fileperms($kept)), -4));
         self::assertContains('--volumes', $commands[3] ?? []);
         self::assertSame([], $this->frontDoor->all());
         self::assertFalse($this->databases->exists($this->name));
@@ -365,7 +384,7 @@ final class SiteManagerTest extends RegistryTestCase
         self::assertSame(['jane.example', 'www.jane.example'], array_map(static fn (Domain $domain): string => $domain->value, $site->domains), 'From its SERVER_NAME.');
         self::assertSame(['Recording the site', 'Backing it up, as it is', 'Changing its settings (a copy of them is kept)', 'Checking and building it (a few minutes; it keeps running meanwhile)', 'Moving it behind the front door (a few seconds offline)', 'Opening it to visitors'], $said);
         // Backed up before anything changes; built before it's stopped; the policy checked before both.
-        self::assertSame(['exec', 'cp', 'exec', 'config', 'build', 'config', 'up', 'cp'], array_map(static fn (array $command): string => $command[8] ?? '', $this->commands));
+        self::assertSame(['exec', 'cp', 'exec', 'exec', 'cp', 'exec', 'config', 'build', 'config', 'up', 'cp'], array_map(static fn (array $command): string => $command[8] ?? '', $this->commands));
         self::assertFileExists($this->paths->site($this->name).'/composer.lock', 'Its versions recorded.');
         $backups = glob($this->paths->backups($this->name).'/before-server-*.tar');
         self::assertCount(1, false === $backups ? [] : $backups, 'Backed up as it was.');
@@ -499,7 +518,15 @@ final class SiteManagerTest extends RegistryTestCase
      */
     private function commands(): array
     {
-        return $this->commands;
+        return array_values(array_filter($this->commands, static fn (array $command): bool => 'compose' === ($command[1] ?? null)));
+    }
+
+    /**
+     * @return list<list<string>> The Docker commands that aren't Compose's (the server's PostgreSQL)
+     */
+    private function dockerCommands(): array
+    {
+        return array_values(array_filter($this->commands, static fn (array $command): bool => 'docker' === $command[0] && 'compose' !== ($command[1] ?? null)));
     }
 
     private function assertNothingLeft(): void
@@ -538,12 +565,13 @@ final class SiteManagerTest extends RegistryTestCase
             new SkeletonInstaller($runner),
             $this->databases,
             new \Quire\Server\Site\SiteFiles(),
-            new Compose($runner, new ComposePolicy(), new ComposeFiles(), new RuntimeImages($runner), new RuntimeBuilds($this->connection, $this->schema), 'tcp://docker-proxy:2375'),
+            $compose = new Compose($runner, new ComposePolicy(), new ComposeFiles(), new RuntimeImages($runner), new RuntimeBuilds($this->connection, $this->schema), 'tcp://docker-proxy:2375'),
             $this->frontDoor,
             $this->paths,
             new Git($runner, $keys = new DeployKeys($runner, $this->paths)),
             new SiteGit($this->connection, $this->schema),
             $keys,
+            new SiteDatabaseDumps($runner, $compose, 'tcp://docker-proxy:2375'),
             'smtp://mailer:25',
         );
     }
@@ -558,16 +586,24 @@ final class SiteManagerTest extends RegistryTestCase
     {
         $this->commands[] = $command;
 
+        // Every Docker command goes through the proxy.
         if ('docker' === $command[0]) {
-            // Every Docker command goes through the proxy, with nothing inherited choosing its files.
             self::assertSame('tcp://docker-proxy:2375', $env['DOCKER_HOST'] ?? null);
+        }
+
+        // Compose's, with nothing inherited choosing its files.
+        if ('docker' === $command[0] && 'compose' === $command[1]) {
             self::assertFalse($env['COMPOSE_FILE'] ?? null);
             // Its own settings, or (putting an adopted site back) the copy of those it had before.
             self::assertContains($command[5], [$this->paths->site($this->name).'/prod.env', $this->paths->site($this->name).'/prod.env.before-server']);
             self::assertSame(['--project-directory', $this->paths->site($this->name), '--env-file', $command[5], '--project-name', $this->name->value], \array_slice($command, 2, 6));
         }
 
-        $key = 'docker' === $command[0] ? 'docker compose '.$command[8] : $command[0].' '.$command[1];
+        $key = match (true) {
+            'docker' === $command[0] && 'compose' === $command[1] => 'docker compose '.$command[8],
+            'docker' === $command[0] => 'docker '.$command[1].' '.$command[2],
+            default => $command[0].' '.$command[1],
+        };
 
         return ($this->script[$key] ?? throw new \LogicException('Unexpected command: '.implode(' ', $command)))($command);
     }

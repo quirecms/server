@@ -176,6 +176,9 @@ check 'its settings and password are root'\''s only' "[ \"\$(inside 'stat -c %a 
 password=$(inside "sed -n \"s/^QUIRE_SERVER_BACKUP_PASSWORD='\\(.*\\)'\$/\\1/p\" /srv/quire/server/server.env")
 check 'the agent has them' "inside 'quire-server backups jane 2>&1' | grep -q 'No backup of \"jane\" off the server yet'"
 
+# A table of the site's application, outside Quire's schema: its backups have it too
+orders() { inside "docker exec $1-php-1 bin/console dbal:run-sql 'SELECT count(*) FROM public.app_order'" 2>/dev/null | grep -oE '[0-9]+' | tail -1; }
+inside "docker exec jane-php-1 bin/console dbal:run-sql -q 'CREATE TABLE public.app_order (id int PRIMARY KEY)' && docker exec jane-php-1 bin/console dbal:run-sql -q 'INSERT INTO public.app_order VALUES (1), (2)'" >/dev/null
 inside 'quire-server backups:now 2>&1' | tee "$logs"/now.log | sed 's/^/    /'
 check 'every site and the server are backed up off the server' "grep -q 'Backed up off the server: jane, server' $logs/now.log"
 check 'each site'\''s backups are listed on their own' "[ \"\$(inside 'quire-server backups jane' | grep -cE '^ +[0-9a-f]{8} ')\" = 1 ] && [ \"\$(inside 'quire-server backups server' | grep -cE '^ +[0-9a-f]{8} ')\" = 1 ]"
@@ -183,11 +186,13 @@ check 'what is stored is encrypted (no site data in it as text)' "! inside 'dock
 check 'its secrets aren'\''t in its log' "! inside \"quire-server operations \$(inside 'quire-server operations' | grep backups.nightly | head -1 | awk '{print \$1}')\" | grep -q -e e2e-secret -e '$password'"
 
 inside "docker exec jane-php-1 bin/console quire:settings:set site.title 'Jane after'" >/dev/null
+inside "docker exec jane-php-1 bin/console dbal:run-sql -q 'INSERT INTO public.app_order VALUES (3)'" >/dev/null
 check 'the site changed since its backup' "inside \"curl -sk $resolve https://jane.test/\" | grep -q 'Jane after'"
 server_snapshot=$(inside 'quire-server backups server' | grep -oE '^ +[0-9a-f]{8} ' | tr -d ' ' | head -1)
 check 'another backup than the site'\''s own isn'\''t restored to it' "inside 'quire-server backups:restore jane --snapshot=$server_snapshot --yes 2>&1' | grep -q 'no such backup' && inside \"curl -sk $resolve https://jane.test/\" | grep -q 'Jane after'"
 inside 'quire-server backups:restore jane --yes 2>&1' | tee "$logs"/restore.log | sed 's/^/    /'
 check 'restoring it from off the server puts it back as it was' "grep -q 'is as it was on' $logs/restore.log && inside \"curl -sk $resolve https://jane.test/\" | grep -q 'Jane before'"
+check 'its application'\''s own tables too' "[ \"\$(orders jane)\" = 2 ]"
 check 'the restore is recorded, and it was backed up first' "inside 'quire-server operations' | grep -q 'site.restore.*succeeded' && inside 'ls /srv/quire/backups/jane/before-restore-*.tar'"
 check 'nothing of the restore is left on the server' "[ -z \"\$(inside 'ls -d /srv/quire/backups/jane/from-off-server-* /srv/quire/backups/jane/off-server-*.tar 2>/dev/null')\" ]"
 
@@ -204,6 +209,7 @@ echo '== A site from a backup, as a new site: a copy here, and moved from anothe
 inside 'quire-server backups:restore jane --as=jane-copy --domain=copy.test --yes 2>&1' | tee "$logs"/copy.log | sed 's/^/    /'
 check 'a copy of a site runs from its backup, with its data' "grep -q 'jane-copy\" runs, as \"jane\" was' $logs/copy.log && inside 'curl -sk --resolve copy.test:443:127.0.0.1 https://copy.test/' | grep -q 'Jane before'"
 check 'the copy has settings of its own (no secret of the site'\''s)' "[ \"\$(inside \"sed -n 's/^APP_SECRET=//p' /srv/quire/sites/jane/prod.env\")\" != \"\$(inside \"sed -n 's/^APP_SECRET=//p' /srv/quire/sites/jane-copy/prod.env\")\" ] && inside 'quire-server site:list' | grep -q 'jane-copy.*running'"
+check 'with its application'\''s own tables' "[ \"\$(orders jane-copy)\" = 2 ]"
 check 'the site itself is untouched' "inside \"curl -sk $resolve https://jane.test/\" | grep -q 'Jane before' && inside 'quire-server site:list' | grep -q 'jane .*running'"
 check 'a name taken isn'\''t restored over' "inside 'quire-server backups:restore jane --as=jane --domain=other.test --yes 2>&1' | grep -q 'exists already' && inside \"curl -sk $resolve https://jane.test/\" | grep -q 'Jane before'"
 # This machine as a second server, under another name in the same bucket: the first one's backups are another server's.
@@ -217,6 +223,7 @@ echo '== A whole server from its backups (as a server that replaces it)'
 inside 'quire-server site:remove jane --yes >/dev/null 2>&1'
 inside 'quire-server backups:restore-server --from-server=quire-server --yes 2>&1' | tee "$logs"/restore-server.log | sed 's/^/    /'
 check 'every site of the old server is restored, with its name and domains' "grep -Eq 'jane +restored' $logs/restore-server.log && inside \"curl -sk $resolve https://jane.test/\" | grep -q 'Jane before'"
+check 'with its application'\''s own tables' "[ \"\$(orders jane)\" = 2 ]"
 check 'with its update policy' "inside 'quire-server site:updates jane' | grep -q 'fix a known vulnerability'"
 check 'a server with no backups is refused' "inside 'quire-server backups:restore-server --from-server=no-such-server --yes 2>&1' | grep -q 'no backup of the server'"
 fi
