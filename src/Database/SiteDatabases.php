@@ -17,6 +17,16 @@ use Quire\Server\Site\SiteName;
  */
 final readonly class SiteDatabases
 {
+    /** Connections a site may hold at once: with the server's max_connections (200), a few sites at their limit leave room */
+    public const int CONNECTIONS = 32;
+
+    /** A site's defaults: a runaway query or a forgotten transaction ends by itself; its temporary files are capped */
+    public const array SETTINGS = [
+        'statement_timeout' => '15min',
+        'idle_in_transaction_session_timeout' => '10min',
+        'temp_file_limit' => '5GB',
+    ];
+
     public function __construct(
         private Connection $admin,
     ) {
@@ -39,12 +49,14 @@ final readonly class SiteDatabases
 
         // CREATE DATABASE can't run in a transaction.
         $this->admin->executeStatement(\sprintf(
-            'CREATE ROLE %s LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS CONNECTION LIMIT 64 PASSWORD %s',
+            'CREATE ROLE %s LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS CONNECTION LIMIT %d PASSWORD %s',
             $quoted,
+            self::CONNECTIONS,
             $this->admin->quote(self::scramVerifier($password)),
         ));
 
         try {
+            $this->limit($identifier);
             $this->admin->executeStatement(\sprintf("CREATE DATABASE %s OWNER %1\$s TEMPLATE template0 ENCODING 'UTF8'", $quoted));
             $this->admin->executeStatement(\sprintf('REVOKE ALL ON DATABASE %s FROM PUBLIC', $quoted));
             $this->admin->executeStatement(\sprintf('GRANT CONNECT, TEMPORARY ON DATABASE %1$s TO %1$s', $quoted));
@@ -87,6 +99,33 @@ final readonly class SiteDatabases
         }
 
         $this->admin->executeStatement('REVOKE CREATE ON SCHEMA public FROM PUBLIC');
+
+        // The server's own connections are kept for it (reserved_connections, compose.yaml), however
+        // many the sites take.
+        if (false !== $this->admin->fetchOne('SELECT 1 FROM pg_roles WHERE rolname = ?', [$serverDatabase])) {
+            $this->admin->executeStatement(\sprintf('GRANT pg_use_reserved_connections TO %s', $this->admin->quoteSingleIdentifier($serverDatabase)));
+        }
+
+        foreach ($this->admin->fetchFirstColumn("SELECT rolname FROM pg_roles WHERE rolname LIKE 'site\\_%' AND NOT rolsuper") as $role) {
+            if (\is_string($role)) {
+                $this->limit($role);
+            }
+        }
+    }
+
+    /**
+     * What one site may take of the PostgreSQL every site shares: connections, time and temporary
+     * files. The time limits are defaults (a site's sessions can set others, e.g. for a long
+     * migration); the connections and temporary files are limits it can't lift.
+     */
+    private function limit(string $role): void
+    {
+        $quoted = $this->admin->quoteSingleIdentifier($role);
+        $this->admin->executeStatement(\sprintf('ALTER ROLE %s CONNECTION LIMIT %d', $quoted, self::CONNECTIONS));
+
+        foreach (self::SETTINGS as $setting => $value) {
+            $this->admin->executeStatement(\sprintf('ALTER ROLE %s SET %s = %s', $quoted, $setting, $this->admin->quote($value)));
+        }
     }
 
     /**

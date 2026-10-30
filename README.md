@@ -238,7 +238,7 @@ The agent can act on Docker, and that's root on the machine, so the server is bu
   Docker's own authorization plugins have been bypassed (CVE-2024-41110, CVE-2026-34040), so this check is the boundary.
 - **Sites are isolated from the server and from each other:**
   - no Docker access, and no route to the agent or the docker-proxy;
-  - a PostgreSQL role that opens only the site's own database;
+  - a PostgreSQL role that opens only the site's own database, with a share of the server's PostgreSQL it can't exceed (32 connections, 5 GB of temporary files; queries and idle transactions end after 15 and 10 minutes unless the site asks otherwise), and connections kept for the server itself;
   - every service of a site, whoever wrote it: no Linux capabilities but a few harmless ones added back, `no-new-privileges`, memory and process limits, one container each (a site's own extra service without them is refused).
 - **Composer runs in a container of its own** when the server audits or plans a site's update: the agent's image, as nobody, with no capabilities, on a network of its own that only reaches the internet, with only a copy of the site's composer.json and composer.lock. A composer.json that has it fetch other than over HTTPS (`secure-http: false`, `http://` repositories, request `options`) is refused.
 - **The front door serves only registered domains,** and gets certificates only for them. A request's Host header must also match the name its connection was encrypted for, so a forged header can't reach another container. It reaches each site by a name only Docker's network knows (`<domain>.quire.internal`), never the public one: a site that's down gives "Back in a moment", not a loop back to the server.
