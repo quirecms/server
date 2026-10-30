@@ -59,6 +59,10 @@ final class DatabaseUpgraderTest extends RegistryTestCase
 
     private bool $copied = false;
     private bool $copyDiffers = false;
+    private bool $rolesDiffer = false;
+
+    /** Whether the upgrade's record was on disk when the agent was first stopped */
+    private ?bool $recordedBeforeStopping = null;
     private bool $newMajorFails = false;
     private bool $oldMajorFails = false;
     private string $stillConnected = '';
@@ -82,6 +86,7 @@ final class DatabaseUpgraderTest extends RegistryTestCase
         $this->runner = new ScriptedRunner([
             'docker pull --quiet' => static fn (array $command): ProcessResult => ScriptedRunner::ok($command),
             'docker compose stop' => function (array $command): ProcessResult {
+                $this->recordedBeforeStopping ??= [] !== glob($this->root.'/backups/database/*/upgrade.json');
                 $this->agent = false;
 
                 if (\in_array('database', $command, true)) {
@@ -117,7 +122,7 @@ final class DatabaseUpgraderTest extends RegistryTestCase
             'docker ps --filter' => fn (array $command): ProcessResult => ScriptedRunner::ok($command, implode('', array_map(
                 static fn (string $id): string => $id.' jane-'.(self::JANE_PHP === $id ? 'php' : 'worker')."-1 jane\n",
                 array_keys(array_filter($this->sites)),
-            )).($this->agent ? "cccccccccccc quire-server-agent-1 quire-server\n" : '')),
+            )).($this->agent ? "cccccccccccc quire-server-agent-1 quire-server\n" : '').(null !== $this->beside ? 'eeeeeeeeeeee '.DatabaseContainers::BESIDE." \n" : '')),
             'docker inspect --format' => fn (array $command): ProcessResult => match (end($command)) {
                 'dddddddddddd' => ScriptedRunner::ok($command, "volume quire-server_database_data\n"),
                 DatabaseContainers::BESIDE => null === $this->beside ? ScriptedRunner::failed($command, 'No such object') : ScriptedRunner::ok($command, "true\n"),
@@ -236,6 +241,51 @@ final class DatabaseUpgraderTest extends RegistryTestCase
         self::assertTrue($error->restored);
         $this->assertRunsAsBefore();
         self::assertNotContains('docker compose stop', \array_slice($this->runner->keys(), (int) array_search('docker exec --interactive', $this->runner->keys(), true)), 'The old major was never stopped.');
+    }
+
+    public function testACopyWhoseRolesDifferIsRolledBack(): void
+    {
+        // Every database the same; a role's password (or rights) not
+        $this->rolesDiffer = true;
+        $error = $this->fails('/The copy differs from the original: .*site_jane.*\(the server runs as it was\)/s');
+
+        self::assertTrue($error->restored);
+        $this->assertRunsAsBefore();
+    }
+
+    public function testTheCopyStartsOnlyWithTheRoomItNeeds(): void
+    {
+        // 70 MB of databases: 125%, and 1 GB more
+        $needed = (int) (73400320 * 1.25) + (1 << 30);
+        $this->free = $needed - 1;
+
+        try {
+            $this->upgrader()->upgrade(19, 'cli', 'darko', $this->say(...));
+            self::fail('It upgraded without room for the copy.');
+        } catch (\DomainException $e) {
+            self::assertStringContainsString('The copy needs about', $e->getMessage());
+        }
+
+        self::assertNotContains('docker compose stop', $this->runner->keys(), 'Nothing stopped.');
+        $this->free = $needed;
+        $this->upgrader()->upgrade(19, 'cli', 'darko', $this->say(...));
+        self::assertSame(19, $this->postgres, 'Just enough is enough.');
+    }
+
+    public function testItsRecordIsWrittenBeforeAnythingStops(): void
+    {
+        $this->upgrader()->upgrade(19, 'cli', 'darko', $this->say(...));
+
+        self::assertTrue($this->recordedBeforeStopping, 'A crash once the agent stops is found and put back by the next run.');
+    }
+
+    public function testWhatItStopsIsWhatCanReachPostgresButTheServersOwn(): void
+    {
+        $this->upgrader()->upgrade(19, 'cli', 'darko', $this->say(...));
+
+        $listing = $this->lastRun('docker ps --filter');
+        self::assertSame('network=quire-data', $listing[3], 'Everything on PostgreSQL\'s network, whoever started it.');
+        self::assertSame([self::JANE_PHP, self::JANE_WORKER], $this->upgrader()->latest()?->stopped, 'Not the agent (stopped on its own), nor the new major beside.');
     }
 
     public function testANewMajorThatDoesNotStartIsRolledBack(): void
@@ -613,7 +663,7 @@ final class DatabaseUpgraderTest extends RegistryTestCase
         $old = \in_array('--host=quire-database', $command, true);
 
         return match (true) {
-            DatabaseCheck::CLUSTER === $this->sql($command) => "role postgres t 7e79\nrole site_jane f 9b22\n",
+            DatabaseCheck::CLUSTER === $this->sql($command) => "role postgres t 7e79\nrole site_jane f ".(!$old && $this->rolesDiffer ? '0000' : '9b22')."\n",
             \in_array('--dbname=quire_server', $command, true) => "relation server.site r rows 1\n",
             default => \sprintf("relation quire.content r rows %d\nrelation quire.user r rows 3\n", !$old && $this->copyDiffers ? 4999 : 5000),
         };
