@@ -23,6 +23,22 @@ if [ "$(id -u)" -ne 0 ]; then
 	exit 1
 fi
 
+# up and down recreate or stop the agent, which ends what it runs (a deploy in the middle of its swap
+# included): they wait for nothing to run, unless --force is given.
+force=0
+for argument in "$@"; do
+	if [ "$argument" = --force ]; then force=1; fi
+done
+quiet() {
+	if [ "$force" = 1 ]; then return 0; fi
+	if ! running=$(compose exec -T agent bin/console server:busy 2>/dev/null); then
+		if [ -n "$running" ]; then
+			echo "An operation runs ($running): it would be cut short. Try again when it's finished (\"quire-server operations\"), or add --force." >&2
+			exit 1
+		fi
+	fi
+}
+
 # Whether the front door publishes ports 80 and 443
 front_ports() {
 	compose port front 80 >/dev/null 2>&1 && compose port front 443 >/dev/null 2>&1
@@ -34,6 +50,8 @@ cd "$root/server"
 case "${1:-help}" in
 	up)
 		shift
+		quiet
+		for argument do shift; [ "$argument" = --force ] || set -- "$@" "$argument"; done
 		compose up --detach --wait "$@"
 		# The front door has no health check: after a port was taken, it can run without its ports.
 		if ! front_ports; then
@@ -56,6 +74,8 @@ case "${1:-help}" in
 					;;
 			esac
 		done
+		quiet
+		for argument do shift; [ "$argument" = --force ] || set -- "$@" "$argument"; done
 		compose down "$@"
 		;;
 	logs) shift; compose logs "$@" ;;

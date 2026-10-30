@@ -101,7 +101,8 @@ quire-server backups:restore-server --from-server=old   # every site of another 
 quire-server backups:check [--read=5]   # check the stored backups
 quire-server operations [--site=jane]  # what was done, by whom, and how it ended
 quire-server operations <id>           # an operation's log
-quire-server up | down | ps | logs     # the server itself ("down -v" is refused: it would delete every site's database)
+quire-server up | down | ps | logs     # the server itself ("down -v" is refused: it would delete every site's database;
+                                       # up and down wait for no operation to run, or --force)
 ```
 
 - **Site names** are 2 to 30 lowercase letters, digits and single dashes (`jane`, `club-news`). They name the site's folder, its containers (`jane-php-1`) and its database (`site_jane`). Its domains are separate, and the first one is its main address.
