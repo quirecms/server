@@ -13,6 +13,7 @@ use Quire\Server\FrontDoor\DomainDirectory;
 use Quire\Server\Git\DeployKeys;
 use Quire\Server\Git\Git;
 use Quire\Server\Git\Repository;
+use Quire\Server\Process\Durable;
 use Quire\Server\Registry\SiteGit;
 use Quire\Server\Registry\SiteLock;
 use Quire\Server\Registry\SiteRegistry;
@@ -614,6 +615,7 @@ final readonly class SiteManager
         }
 
         chmod($file, 0o600);
+        Durable::sync($file);
         $this->dumps->dump($project, $this->registry->get($name)->databaseMode ?? Site::SHARED_DATABASE, SiteDatabaseDumps::of($file));
 
         return $file;

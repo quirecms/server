@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Quire\Server\Site;
 
 use Quire\Server\Docker\PolicyContext;
+use Quire\Server\Process\Durable;
 use Symfony\Component\Yaml\Tag\TaggedValue;
 use Symfony\Component\Yaml\Yaml;
 
@@ -170,6 +171,7 @@ final readonly class SiteFiles
             }
 
             chmod($temporary, $mode);
+            Durable::sync($temporary);
 
             if (!rename($temporary, $path)) {
                 throw new \RuntimeException(\sprintf('Couldn\'t write "%s".', $path));

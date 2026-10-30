@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Quire\Server\ServerUpdate;
 
+use Quire\Server\Process\Durable;
 use Quire\Server\Process\ProcessRunner;
 use Quire\Server\Site\EnvFile;
 use Symfony\Component\Filesystem\Filesystem;
@@ -48,6 +49,7 @@ final readonly class ServerFolder
     {
         $this->runner->run(['tar', '-cf', $file, '-C', $this->path, ...$this->releaseEntries(), 'server.env'], timeout: 300)->orFail('Backing up the server\'s files');
         chmod($file, 0o600);
+        Durable::sync($file);
     }
 
     /**
@@ -93,6 +95,7 @@ final readonly class ServerFolder
         }
 
         chmod($temporary, 0o600);
+        Durable::sync($temporary);
         rename($temporary, $path);
     }
 

@@ -6,6 +6,7 @@ namespace Quire\Server\Backup;
 
 use Quire\Server\Docker\Compose;
 use Quire\Server\Docker\SiteProject;
+use Quire\Server\Process\Durable;
 use Quire\Server\Process\ProcessResult;
 use Quire\Server\Process\ProcessRunner;
 use Quire\Server\Site\EnvFile;
@@ -61,6 +62,7 @@ final readonly class SiteDatabaseDumps
                 $this->docker(['exec', '-e', 'PGPASSWORD', $container, 'pg_dump', '--host=127.0.0.1', '--username='.$role, ...$options, $role], $password, 3600)->orFail('Dumping the site\'s database');
                 // Whole or not at all: a full disk leaves no truncated dump under its name.
                 $this->docker(['cp', '--quiet', $container.':'.$inside, $file.'.partial'], null, 3600)->orFail('Copying the site\'s database dump');
+                Durable::sync($file.'.partial');
                 rename($file.'.partial', $file);
             } finally {
                 $this->docker(['exec', $container, 'rm', '-f', $inside], null, 60);
