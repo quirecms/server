@@ -385,9 +385,33 @@ final class DatabaseUpgraderTest extends RegistryTestCase
         self::assertSame('server.database-recover', $this->operations->latest()[0]['action']);
     }
 
-    public function testAnUpgradeCutShortAfterTheSwitchIsPutBack(): void
+    public function testAnUpgradeCutShortAfterTheSwitchIsFinished(): void
     {
-        // server.env names 19, PostgreSQL stopped
+        // server.env names 19, and after the machine restarted the sites ran on it (and wrote to it); the
+        // agent didn't start
+        $this->agent = false;
+        $this->postgres = 19;
+        $this->sites = [self::JANE_PHP => true, self::JANE_WORKER => true];
+        $this->volume = [18, 19];
+        new Filesystem()->dumpFile($this->server.'/server.env', "# Mine\n".self::SECRET."\nCOMPOSE_FILE=compose.yaml:database/postgres-19.yaml\n");
+        $upgrade = new DatabaseUpgrade(DatabaseUpgrade::directory($this->root).'/20261029-180000-000000', 18, 19, DatabaseUpgrade::SWITCHED, [self::JANE_PHP, self::JANE_WORKER], new \DateTimeImmutable());
+        $upgrade->save();
+
+        $this->upgrader()->recover($upgrade, 'cli', 'darko', $this->say(...));
+
+        self::assertSame(19, $this->postgres, 'Forward, on the major the sites wrote to.');
+        self::assertSame([18, 19], $this->volume, 'Nothing removed: 19 holds their writes, 18 is kept for an undo.');
+        self::assertStringContainsString('database/postgres-19.yaml', (string) file_get_contents($this->server.'/server.env'));
+        self::assertSame([self::JANE_PHP => true, self::JANE_WORKER => true], $this->sites);
+        self::assertTrue($this->agent);
+        self::assertSame(DatabaseUpgrade::DONE, $this->upgrader()->latest()?->state);
+        self::assertSame('server.database-recover', $this->operations->latest()[0]['action']);
+        self::assertNotNull($this->upgrader()->undoable(), 'It can still be undone.');
+    }
+
+    public function testAnUpgradeCutShortAtTheSwitchIsFinished(): void
+    {
+        // Cut while switching: server.env names 19, PostgreSQL stopped, sites and agent too
         $this->agent = false;
         $this->postgres = null;
         $this->sites = [self::JANE_PHP => false, self::JANE_WORKER => false];
@@ -398,7 +422,10 @@ final class DatabaseUpgraderTest extends RegistryTestCase
 
         $this->upgrader()->recover($upgrade, 'cli', 'darko', $this->say(...));
 
-        $this->assertRunsAsBefore();
+        self::assertSame(19, $this->postgres);
+        self::assertSame([18, 19], $this->volume);
+        self::assertSame([self::JANE_PHP => true, self::JANE_WORKER => true], $this->sites);
+        self::assertSame(DatabaseUpgrade::DONE, $this->upgrader()->latest()?->state);
     }
 
     public function testAnUndoCutShortIsFinished(): void

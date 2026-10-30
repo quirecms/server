@@ -286,6 +286,14 @@ check 'its record is root'\''s only' "[ \"\$(inside 'stat -c %a /srv/quire/backu
 check 'its secrets never reached its log' "! grep -q \"\$(inside 'sed -n s/^QUIRE_SERVER_POSTGRES_PASSWORD=//p /srv/quire/server/server.env' | tr -d \"'\")\" $logs/upgrade.log"
 inside 'quire-server down >/dev/null 2>&1 && quire-server up >/dev/null 2>&1'
 check "the server starts on $major again" "pg 'SHOW server_version' | grep -q '^$major' && title 'Jane after'"
+# As if the machine had stopped right after the switch: its record says "switched", the agent didn't
+# start, the site ran (it starts by itself) and wrote to the new major
+inside "sed -i 's/\"state\": \"done\"/\"state\": \"switched\"/' /srv/quire/backups/database/*/upgrade.json && docker stop quire-server-agent-1 >/dev/null"
+inside "docker exec jane-php-1 bin/console quire:settings:set site.title 'Jane meanwhile'" >/dev/null
+inside 'quire-server database:upgrade --recover 2>&1' > "$logs"/recover.log || true
+sed 's/^/    /' "$logs"/recover.log
+check "an upgrade cut short after the switch is finished on $major, with what the site wrote since" "grep -q 'The upgrade is finished' $logs/recover.log && pg 'SHOW server_version' | grep -q '^$major' && title 'Jane meanwhile' && inside 'quire-server ps --format \"{{.Service}} {{.Health}}\"' | grep -q 'agent healthy' && [ \"\$(inside 'docker run --rm -v quire-server_database_data:/v alpine ls /v' | tr '\\n' ' ')\" = \"18 $major \" ]"
+inside "docker exec jane-php-1 bin/console quire:settings:set site.title 'Jane after'" >/dev/null
 
 inside 'quire-server database:upgrade --undo --yes 2>&1' > "$logs"/undo.log || true
 sed 's/^/    /' "$logs"/undo.log

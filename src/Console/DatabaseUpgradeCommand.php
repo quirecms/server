@@ -28,7 +28,7 @@ use Symfony\Component\Console\Style\SymfonyStyle;
           <info>quire-server database:upgrade --to=19</info>     to that major
           <info>quire-server database:upgrade --undo</info>      back to the old major (what changed since is lost)
           <info>quire-server database:upgrade --clean</info>     remove the data of majors that don't run
-          <info>quire-server database:upgrade --recover</info>   put the server back after an upgrade that was cut short
+          <info>quire-server database:upgrade --recover</info>   finish an upgrade that was cut short
         HELP,
 )]
 final readonly class DatabaseUpgradeCommand
@@ -213,9 +213,11 @@ final readonly class DatabaseUpgradeCommand
             return Command::FAILURE;
         }
 
-        $io->success(DatabaseUpgrade::UNDOING === $latest->state
-            ? \sprintf('The undo is finished: PostgreSQL %d runs, as before the upgrade.', $latest->from)
-            : \sprintf('The server runs as before the upgrade, on PostgreSQL %d. Upgrade again when you\'re ready.', $latest->from));
+        $io->success(match ($latest->state) {
+            DatabaseUpgrade::UNDOING => \sprintf('The undo is finished: PostgreSQL %d runs, as before the upgrade.', $latest->from),
+            DatabaseUpgrade::SWITCHED => \sprintf('The upgrade is finished: PostgreSQL %d runs. "--undo" goes back to %d within a week.', $latest->to, $latest->from),
+            default => \sprintf('The server runs as before the upgrade, on PostgreSQL %d. Upgrade again when you\'re ready.', $latest->from),
+        });
 
         return Command::SUCCESS;
     }

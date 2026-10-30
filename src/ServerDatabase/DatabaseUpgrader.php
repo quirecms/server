@@ -337,7 +337,10 @@ final readonly class DatabaseUpgrader
     }
 
     /**
-     * Puts the server back as it was before an upgrade (or undo) that was cut short.
+     * Finishes an upgrade (or undo) that was cut short: back to the old major while the copy was made,
+     * forward on the new one once it was switched to. From the switch on, the sites may have run on the
+     * new major (they start by themselves when the machine does) and written to it: going back would
+     * lose that, and the old major's data has none of it.
      *
      * @param \Closure(string): void $say
      *
@@ -351,6 +354,33 @@ final readonly class DatabaseUpgrader
             $say($line);
         };
         $images = $this->images();
+
+        if (DatabaseUpgrade::SWITCHED === $upgrade->state) {
+            $log(\sprintf('Upgrading PostgreSQL %d to %d was cut short after the switch: finishing it on PostgreSQL %2$d, which the sites may have written to since', $upgrade->from, $upgrade->to));
+
+            try {
+                $this->containers->removeBeside();
+
+                if ($this->runningMajor() !== $upgrade->to || $this->folder->env()->get('COMPOSE_FILE') !== $images->composeFile($this->folder->env()->get('COMPOSE_FILE') ?? 'compose.yaml', $upgrade->to)) {
+                    $this->switchTo($upgrade->to, $images);
+                }
+
+                $this->restart($upgrade, $log);
+            } catch (\Throwable $e) {
+                $log('Finishing it failed: '.$e->getMessage());
+                $failure = new DatabaseUpgradeFailed(\sprintf('Finishing the upgrade on PostgreSQL %d failed: %s', $upgrade->to, $e->getMessage()), restored: false, previous: $e);
+                $this->record('server.database-recover', ['from' => (string) $upgrade->from, 'to' => (string) $upgrade->to], $channel, $requestedBy, $lines, $failure);
+
+                throw $failure;
+            }
+
+            $upgrade->with(DatabaseUpgrade::DONE);
+            $log(\sprintf('It runs on PostgreSQL %d', $upgrade->to));
+            $this->record('server.database-recover', ['from' => (string) $upgrade->from, 'to' => (string) $upgrade->to], $channel, $requestedBy, $lines, null);
+
+            return;
+        }
+
         $undoing = DatabaseUpgrade::UNDOING === $upgrade->state;
         $log(\sprintf('%s PostgreSQL %d to %d was cut short (%s): finishing it as %s', $undoing ? 'Undoing the upgrade from' : 'Upgrading', $upgrade->from, $upgrade->to, $upgrade->state, $undoing ? 'undone' : 'not done'));
         $failure = $this->rollBack($upgrade, $images, $undoing ? DatabaseUpgrade::UNDONE : DatabaseUpgrade::FAILED, $log, null);
