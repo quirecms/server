@@ -21,6 +21,14 @@ final readonly class SiteFiles
     /** The server's PostgreSQL, on the quire-data network */
     public const string DATABASE_HOST = 'quire-database';
 
+    /**
+     * How the front door names a site's domain on quire-edge: "<domain>.quire.internal". The ".internal"
+     * domain is never public (ICANN keeps it for private use): while the site is down, its name doesn't
+     * resolve anywhere else, and visitors get the "Back in a moment" page. A site's public domain would
+     * be asked of public DNS then, which names this server: the front door again, in a loop.
+     */
+    public const string EDGE_SUFFIX = '.quire.internal';
+
     /** The skeleton's production setup, then the server's */
     private const string COMPOSE_FILE = 'compose.yaml:compose.prod.yaml:compose.server.yaml';
 
@@ -81,7 +89,7 @@ final readonly class SiteFiles
                 'SYMFONY_TRUSTED_PROXIES' => 'private_ranges',
             ],
             'labels' => ['com.quirecms.site' => 'true', 'com.quirecms.server.site' => $site->value],
-            'networks' => ['default' => null, 'quire-edge' => ['aliases' => $hosts]],
+            'networks' => ['default' => null, 'quire-edge' => ['aliases' => array_map(static fn (string $host): string => $host.self::EDGE_SUFFIX, $hosts)]],
             'mem_limit' => '1g',
             'pids_limit' => 512,
             // FrankenPHP's binary needs this one to start (a file capability, for port 80).

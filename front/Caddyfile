@@ -49,7 +49,8 @@ https:// {
 		header ?Strict-Transport-Security "max-age=31536000"
 		header ?X-Content-Type-Options "nosniff"
 		header -Server
-		reverse_proxy {host}:80 {
+		# By its name on quire-edge only, which no public DNS answers (see SiteFiles::EDGE_SUFFIX)
+		reverse_proxy {host}.quire.internal:80 {
 			# A site that's down or restarting: tell visitors, don't hang.
 			lb_try_duration 10s
 		}

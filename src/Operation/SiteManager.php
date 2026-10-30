@@ -6,7 +6,6 @@ namespace Quire\Server\Operation;
 
 use Quire\Server\Database\SiteDatabases;
 use Quire\Server\Docker\Compose;
-use Quire\Server\Docker\PolicyContext;
 use Quire\Server\Docker\SiteProject;
 use Quire\Server\Docker\SkeletonInstaller;
 use Quire\Server\FrontDoor\DomainDirectory;
@@ -511,12 +510,7 @@ final readonly class SiteManager
      */
     public function project(SiteName $name, array $domains, string $project, string $databaseMode): SiteProject
     {
-        $directory = $this->paths->site($name);
-
-        return new SiteProject($directory, $directory.'/'.SiteFiles::ENV_FILE, new PolicyContext($project, $directory, [
-            'quire-edge' => [self::PHP => array_map(static fn (Domain $domain): string => $domain->value, $domains)],
-            'quire-data' => Site::SHARED_DATABASE === $databaseMode ? [self::PHP => [], 'worker' => []] : [],
-        ]));
+        return SiteProject::of($this->paths, $name, $domains, $project, $databaseMode);
     }
 
     public function projectOf(Site $site): SiteProject

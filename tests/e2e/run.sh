@@ -226,7 +226,8 @@ if want sites; then
 inside "printf 'QUIRE_SERVER_UPDATE_HOUR=off\\n' >> /srv/quire/server/server.env && quire-server up >/dev/null 2>&1"
 check 'automatic updates can be off for the whole server' "inside 'quire-server logs agent' | grep -q 'Automatic updates: off on this server'"
 echo '== Adding a site (a few minutes: it is built)'
-inside 'quire-server site:add jane --domain=jane.test --domain=www.jane.test --admin-email=jane@example.com --title="Jane" 2>&1' | tee "$logs"/add.log | sed 's/^/    /'
+# Its third domain is one public DNS knows: it names 127.0.0.1, the front door itself (as a real domain names the server)
+inside 'quire-server site:add jane --domain=jane.test --domain=www.jane.test --domain=jane.127.0.0.1.sslip.io --admin-email=jane@example.com --title="Jane" 2>&1' | tee "$logs"/add.log | sed 's/^/    /'
 check 'the site runs' "inside 'quire-server site:list' | grep -q running"
 check 'a password was shown once (no email server)' "grep -q 'signs in with the password' $logs/add.log"
 
@@ -257,6 +258,7 @@ check 'its log has the steps, and no secret' "inside 'quire-server operations $o
 echo '== Updating the site'
 check 'its versions are recorded in its folder' "inside 'test -f /srv/quire/sites/jane/composer.lock'"
 check 'the front door says "back in a moment" while a site is down' "inside 'docker stop jane-php-1 >/dev/null' && inside \"curl -sk $resolve -D- https://jane.test/\" | grep -q '^HTTP/2 503' && inside \"curl -sk $resolve https://jane.test/\" | grep -q 'Back in a moment'; inside 'docker start jane-php-1 >/dev/null; sleep 15'"
+check 'with a domain public DNS knows too, not a loop to the front door itself' "inside 'docker stop jane-php-1 >/dev/null' && [ \"\$(inside \"curl -sk --resolve jane.127.0.0.1.sslip.io:443:127.0.0.1 -o /dev/null -w '%{http_code}' https://jane.127.0.0.1.sslip.io/\")\" = 503 ]; inside 'docker start jane-php-1 >/dev/null; sleep 15'"
 # An older Symfony YAML with a known vulnerability, as if the site had been made a while ago: built and
 # running. (Composer refuses such versions: --no-blocking, only here, to make the site an old one.)
 inside 'docker exec quire-server-agent-1 composer update symfony/yaml --with=symfony/yaml:8.1.0 --with-all-dependencies --no-blocking --no-install --no-scripts --no-plugins --ignore-platform-req=ext-* --no-interaction -q --working-dir=/srv/quire/sites/jane' 2>&1 | sed 's/^/    /'

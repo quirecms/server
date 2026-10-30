@@ -4,9 +4,13 @@ declare(strict_types=1);
 
 namespace Quire\Server\Tests\Operation;
 
+use Quire\Server\Docker\Compose;
+use Quire\Server\Docker\ComposePolicy;
 use Quire\Server\Docker\Images;
+use Quire\Server\Docker\RuntimeImages;
 use Quire\Server\Operation\SiteOverrides;
 use Quire\Server\Process\ProcessResult;
+use Quire\Server\Registry\RuntimeBuilds;
 use Quire\Server\Registry\SiteLock;
 use Quire\Server\Registry\SiteRegistry;
 use Quire\Server\Site\Domain;
@@ -34,6 +38,8 @@ final class SiteOverridesTest extends RegistryTestCase
     /** @var array<string, string> Image name => ID */
     private array $tags = [];
 
+    private bool $refused = false;
+
     #[\Override]
     protected function setUp(): void
     {
@@ -49,6 +55,9 @@ final class SiteOverridesTest extends RegistryTestCase
 
                 return ScriptedRunner::ok($command);
             },
+            // What the policy reads: the project, nothing it refuses (or, for a test, something it does)
+            'docker compose config' => fn (array $command): ProcessResult => ScriptedRunner::ok($command, (string) json_encode(['name' => $command[7], 'services' => $this->refused ? ['php' => ['privileged' => true]] : []])),
+            'docker compose up' => static fn (array $command): ProcessResult => ScriptedRunner::ok($command),
         ]);
     }
 
@@ -75,6 +84,24 @@ final class SiteOverridesTest extends RegistryTestCase
         ksort($this->tags);
         self::assertSame(['quire-sites/demo_x/php-prod' => self::RUNNING, 'quire-sites/jane/php-prod' => self::RUNNING], $this->tags, 'The image each runs, named anew: its next update can be undone.');
         self::assertFileDoesNotExist($this->paths->site(new SiteName('gone')).'/'.SiteFiles::OVERRIDE);
+        self::assertCount(2, array_keys($this->runner->keys(), 'docker compose up', true), 'Each started again with it, once.');
+        self::assertStringContainsString('jane.example.quire.internal', $jane, 'Named on quire-edge by a name no public DNS answers.');
+
+        $this->runner->runs = [];
+        self::assertSame([], $this->subject()->refresh());
+        self::assertNotContains('docker compose up', $this->runner->keys(), 'Nothing changes twice.');
+    }
+
+    public function testASiteThatCantStartWithItKeepsTheOneItRuns(): void
+    {
+        $this->site('jane', 'jane', Site::SHARED_DATABASE);
+        $this->refused = true;
+
+        $failed = $this->subject()->refresh();
+
+        self::assertStringContainsString('privileged', $failed['jane'] ?? '');
+        self::assertSame("services:\n  php:\n    cap_drop: [ALL]\n", file_get_contents($this->paths->site(new SiteName('jane')).'/'.SiteFiles::OVERRIDE), 'As it was, matching its containers.');
+        self::assertNotContains('docker compose up', $this->runner->keys());
     }
 
     public function testANameItHasAlreadyIsKept(): void
@@ -96,6 +123,6 @@ final class SiteOverridesTest extends RegistryTestCase
 
     private function subject(): SiteOverrides
     {
-        return new SiteOverrides($this->registry, new SiteFiles(), $this->paths, new Images($this->runner, 'tcp://docker-proxy:2375'), new SiteLock($this->connection));
+        return new SiteOverrides($this->registry, new SiteFiles(), $this->paths, new Images($this->runner, 'tcp://docker-proxy:2375'), new SiteLock($this->connection), new Compose($this->runner, new ComposePolicy(), new RuntimeImages($this->runner), new RuntimeBuilds($this->connection, $this->schema), 'tcp://docker-proxy:2375'));
     }
 }
