@@ -648,34 +648,50 @@ final readonly class SiteUpdater
 
     /**
      * The site answers: its health check, its home page and its sign-in page, from inside its container
-     * (as the front door asks: for its main domain, over HTTPS), for up to a minute.
+     * (as the front door asks: for its main domain, over HTTPS).
      */
     private function check(SiteProject $project, Site $site): void
     {
+        $this->compose->exec($project, self::PHP, ['php', '-r', self::checkScript($site->domains[0]->value)], timeout: 180)
+            ->orFail('Checking the site (health, home page, sign-in page)');
+    }
+
+    /**
+     * The check, run in the site's container: each page must answer rightly once, asked again every
+     * few seconds for up to two minutes. A site that has just started answers a busy moment with a 503
+     * now and then; a release isn't rolled back for that, only for a page that never answers.
+     *
+     * @internal Public for its test, which runs it against a real server
+     */
+    public static function checkScript(string $host, string $base = 'http://127.0.0.1:80', int $seconds = 120, int $pause = 3): string
+    {
         $code = <<<'PHP'
             $host = %s;
-            $deadline = time() + 60;
+            $base = %s;
+            $deadline = time() + %d;
+            $waiting = ['/_quire/health' => true, '/' => false, '/login' => false];
             do {
                 $failed = [];
-                foreach (['/_quire/health' => true, '/' => false, '/login' => false] as $path => $exactlyOk) {
+                foreach ($waiting as $path => $exactlyOk) {
                     $context = stream_context_create(['http' => ['header' => "Host: $host\r\nX-Forwarded-Proto: https\r\n", 'ignore_errors' => true, 'follow_location' => 0, 'timeout' => 20]]);
-                    @file_get_contents('http://127.0.0.1:80'.$path, false, $context);
+                    @file_get_contents($base.$path, false, $context);
                     $status = preg_match('#^HTTP/\S+ (\d{3})#', (http_get_last_response_headers() ?? [''])[0] ?? '', $m) ? (int) $m[1] : 0;
                     if ($exactlyOk ? 200 !== $status : (0 === $status || $status >= 500)) {
                         $failed[] = "$path: ".($status ?: 'no answer');
+                    } else {
+                        unset($waiting[$path]);
                     }
                 }
-                if ([] === $failed) {
+                if ([] === $waiting) {
                     exit(0);
                 }
-                sleep(5);
+                sleep(%d);
             } while (time() < $deadline);
             fwrite(STDERR, implode(', ', $failed)."\n");
             exit(1);
             PHP;
 
-        $this->compose->exec($project, self::PHP, ['php', '-r', \sprintf($code, var_export($site->domains[0]->value, true))], timeout: 120)
-            ->orFail('Checking the site (health, home page, sign-in page)');
+        return \sprintf($code, var_export($host, true), var_export($base, true), $seconds, $pause);
     }
 
     /**
