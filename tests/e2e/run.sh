@@ -50,7 +50,12 @@ upgrading() { [ "${E2E_ONLY:-}" = database ]; }
 cache=''
 if [ "${E2E_CACHE:-}" = 1 ]; then cache='-v quire-server-e2e-cache:/var/lib/docker'; fi
 # shellcheck disable=SC2086 # $cache is empty or two words
-docker run -d --privileged --name "$dind" $cache -e DOCKER_TLS_CERTDIR= docker:29.9.2-dind >/dev/null
+# Docker Hub refuses anonymous pulls now and then (CI's runners are anonymous): the machine's image, and
+# what Docker pulls inside it from Docker Hub, come through Google's mirror of it (Docker falls back to
+# Docker Hub itself). Pinned by digest: the same image from either.
+docker run -d --privileged --name "$dind" $cache -e DOCKER_TLS_CERTDIR= \
+	mirror.gcr.io/library/docker:29.9.2-dind@sha256:9e79b879b177fbd72c34376a3dd3d91747da5db49e1f560f76aea59561471977 \
+	--registry-mirror=https://mirror.gcr.io >/dev/null
 until inside 'docker info' >/dev/null 2>&1; do sleep 1; done
 # With the cache, what an earlier run left but its images and build cache
 # (Its containers restart with the cached Docker: removed, and the folders their mounts left behind.)
