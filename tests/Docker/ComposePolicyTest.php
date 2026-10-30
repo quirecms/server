@@ -73,6 +73,17 @@ final class ComposePolicyTest extends TestCase
         yield '… in a network' => [['networks' => ['default' => ['some_future_key' => true]]], 'Network "default": "some_future_key" isn\'t a setting'];
         yield '… in a network\'s IPAM' => [['networks' => ['default' => ['ipam' => ['some_future_key' => true]]]], '"ipam.some_future_key" isn\'t a setting'];
         yield '… in a top-level secret' => [['secrets' => ['key' => ['file' => '/x', 'some_future_key' => true]]], 'Secret "key": "some_future_key" isn\'t a setting'];
+        // Rules no test held before (each could be deleted with every test still passing)
+        yield 'another network, external, named by its key' => [['networks' => ['blog_default' => ['name' => 'blog_default', 'external' => true]]], 'the external network "blog_default" isn\'t one the server shares'];
+        yield 'a security option that only ends like no-new-privileges' => [['services' => ['php' => ['security_opt' => ['no-new-privileges:true', 'seccomp=/etc/no-new-privileges']]]], '"security_opt: seccomp=/etc/no-new-privileges": only "no-new-privileges" is allowed'];
+        yield 'a security option, as one string' => [['services' => ['php' => ['security_opt' => 'seccomp=unconfined']]], '"security_opt: seccomp=unconfined"'];
+        yield 'a capability, as one string' => [['services' => ['php' => ['cap_add' => 'SYS_ADMIN']]], '"cap_add: SYS_ADMIN"'];
+        yield 'oom_kill_disable' => [['services' => ['php' => ['oom_kill_disable' => true]]], '"oom_kill_disable" lets the container take the host\'s memory'];
+        yield 'oom_score_adj below 0' => [['services' => ['php' => ['oom_score_adj' => -1]]], '"oom_score_adj" below 0'];
+        yield 'another isolation' => [['services' => ['php' => ['isolation' => 'hyperv']]], '"isolation": only the default is allowed'];
+        yield 'another isolation, for the build' => [['services' => ['php' => ['build' => ['isolation' => 'hyperv']]]], 'its build asks for another isolation'];
+        yield 'a host device\'s I/O' => [['services' => ['php' => ['blkio_config' => ['device_read_bps' => [['path' => '/dev/sda', 'rate' => '1mb']]]]]], '"blkio_config" names host devices'];
+        yield 'a network\'s driver options' => [['networks' => ['default' => ['driver_opts' => ['com.docker.network.bridge.name' => 'docker0']]]], 'Network "default": "driver_opts" aren\'t allowed'];
         yield 'an absolute Dockerfile' => [['services' => ['php' => ['build' => ['dockerfile' => '/srv/quire/sites/blog/Dockerfile']]]], 'its Dockerfile is outside the site\'s folder'];
         yield 'an IPAM plugin' => [['networks' => ['default' => ['ipam' => ['driver' => 'evil-plugin']]]], 'the IPAM driver "evil-plugin" isn\'t allowed'];
         yield 'oom_kill_disable, as a string' => [['services' => ['php' => ['oom_kill_disable' => 'true']]], '"oom_kill_disable" lets the container take the host\'s memory'];
@@ -244,7 +255,7 @@ final class ComposePolicyTest extends TestCase
 
     public function testHarmlessValuesOfForbiddenSettingsPass(): void
     {
-        $config = array_replace_recursive($this->site(), ['services' => ['php' => ['privileged' => false, 'gpus' => 'false', 'oom_kill_disable' => 'false', 'deploy' => ['resources' => ['limits' => ['cpus' => '1.5', 'memory' => '1g', 'pids' => 512]], 'restart_policy' => ['condition' => 'on-failure']], 'cap_add' => ['NET_BIND_SERVICE', 'cap_net_bind_service', 'CHOWN', 'SETUID'], 'scale' => 1, 'devices' => [], 'security_opt' => ['no-new-privileges:true'], 'cap_drop' => ['ALL'], 'oom_score_adj' => 100, 'logging' => ['driver' => 'json-file'], 'x-custom' => 'anything', 'build' => ['tags' => ['quire-sites/jane/php-prod:before-update']]], 'worker' => ['network_mode' => 'service:php']]]);
+        $config = array_replace_recursive($this->site(), ['services' => ['php' => ['privileged' => false, 'gpus' => 'false', 'blkio_config' => ['weight' => 300], 'post_start' => [['command' => ['id'], 'privileged' => false]], 'isolation' => 'default', 'oom_kill_disable' => 'false', 'deploy' => ['resources' => ['limits' => ['cpus' => '1.5', 'memory' => '1g', 'pids' => 512]], 'restart_policy' => ['condition' => 'on-failure']], 'cap_add' => ['NET_BIND_SERVICE', 'cap_net_bind_service', 'CHOWN', 'SETUID'], 'scale' => 1, 'devices' => [], 'security_opt' => ['no-new-privileges:true'], 'cap_drop' => ['ALL'], 'oom_score_adj' => 0, 'logging' => ['driver' => 'json-file'], 'x-custom' => 'anything', 'build' => ['tags' => ['quire-sites/jane/php-prod:before-update']]], 'worker' => ['network_mode' => 'service:php']]]);
 
         self::assertSame([], $this->violations($config));
     }

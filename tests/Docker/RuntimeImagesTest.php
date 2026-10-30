@@ -121,6 +121,22 @@ final class RuntimeImagesTest extends RegistryTestCase
         self::assertSame(['RUNTIME' => 'ghcr.io/quirecms/runtime:8.5@'.self::RUNTIME], $this->pinned());
     }
 
+    public function testAnImageByDigestAloneIsCheckedToo(): void
+    {
+        $this->signed['ghcr.io/quirecms/runtime@'.self::RUNTIME] = self::RUNTIME;
+        $this->dockerfile('ARG RUNTIME=ghcr.io/quirecms/runtime@'.self::RUNTIME."\nFROM \${RUNTIME}\n");
+
+        self::assertSame(['RUNTIME' => 'ghcr.io/quirecms/runtime@'.self::RUNTIME], $this->pinned());
+        self::assertSame(['cosign verify', 'docker buildx imagetools'], $this->runner->keys(), 'Its signature checked, never skipped.');
+    }
+
+    public function testAnAnswerWithoutADigestIsRefused(): void
+    {
+        $this->runner->script['cosign verify'] = static fn (): ProcessResult => new ProcessResult([], 0, (string) json_encode([['critical' => ['image' => ['docker-manifest-digest' => 'sha256:not-a-digest']]]]), '');
+        $this->expectExceptionMessageIsOrContains('didn\'t say which image it checked');
+        $this->pinned();
+    }
+
     public function testAnAnswerAboutSeveralImagesIsRefused(): void
     {
         // cosign's answer names two images

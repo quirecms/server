@@ -66,6 +66,8 @@ final class QuireFeedTest extends TestCase
         $cosign = array_merge(...array_map(static fn (array $run): array => $run['command'], array_filter($this->runner->runs, static fn (array $run): bool => 'cosign' === $run['command'][0])));
         self::assertContains('https://github.com/quirecms/framework/.github/workflows/release.yaml@refs/tags/v0.2.0', $cosign);
         self::assertContains('https://token.actions.githubusercontent.com', $cosign);
+        self::assertContains('https://github.com/quirecms/framework/releases/download/v0.2.0/feed.json.sigstore.json', array_map(static fn (array $run): string => (string) end($run['command']), $this->runner->runs), 'Its signature\'s bundle is downloaded with it.');
+        self::assertContains('--bundle', $cosign);
     }
 
     public function testAFeedNotSignedByTheFrameworksWorkflowIsRefused(): void

@@ -46,6 +46,15 @@ final class FeedTest extends TestCase
         yield 'releases not a list' => [(string) json_encode(['schema' => 1, 'releases' => ['a' => self::release('0.1.0')]])];
         yield 'a version that isn\'t one' => [(string) json_encode(['schema' => 1, 'releases' => [self::release('0.1.0;rm')]])];
         yield 'a contract that isn\'t a number' => [(string) json_encode(['schema' => 1, 'releases' => [['requires' => ['php' => '>=8.5', 'postgresql' => 18, 'server_contract' => '1']] + self::release('0.1.0')]])];
+        yield 'a release that isn\'t an object' => [(string) json_encode(['schema' => 1, 'releases' => ['0.1.0']])];
+        yield 'a release without a date' => [(string) json_encode(['schema' => 1, 'releases' => [array_diff_key(self::release('0.1.0'), ['date' => true])]])];
+        yield 'advisories that aren\'t a list' => [(string) json_encode(['schema' => 1, 'releases' => [['security' => 'none'] + self::release('0.1.0')]])];
+        yield 'requirements that aren\'t an object' => [(string) json_encode(['schema' => 1, 'releases' => [['requires' => '>=8.5'] + self::release('0.1.0')]])];
+        yield 'a PHP requirement that isn\'t a string' => [(string) json_encode(['schema' => 1, 'releases' => [['requires' => ['php' => 85, 'postgresql' => 18, 'server_contract' => 1]] + self::release('0.1.0')]])];
+        yield 'a PostgreSQL that isn\'t a number' => [(string) json_encode(['schema' => 1, 'releases' => [['requires' => ['php' => '>=8.5', 'postgresql' => '18', 'server_contract' => 1]] + self::release('0.1.0')]])];
+        yield 'an advisory whose ID isn\'t a string' => [(string) json_encode(['schema' => 1, 'releases' => [['security' => [['id' => 1234, 'severity' => 'low', 'package' => 'quire/core', 'summary' => 'x']]] + self::release('0.1.0')]])];
+        yield 'an advisory without a severity' => [(string) json_encode(['schema' => 1, 'releases' => [['security' => [['id' => 'CVE-2026-1234', 'package' => 'quire/core', 'summary' => 'x']]] + self::release('0.1.0')]])];
+        yield 'an advisory without a package' => [(string) json_encode(['schema' => 1, 'releases' => [['security' => [['id' => 'CVE-2026-1234', 'severity' => 'low', 'summary' => 'x']]] + self::release('0.1.0')]])];
         yield 'an advisory without a summary' => [(string) json_encode(['schema' => 1, 'releases' => [['security' => [['id' => 'CVE-2026-1234', 'severity' => 'low', 'package' => 'quire/core']]] + self::release('0.1.0')]])];
     }
 
