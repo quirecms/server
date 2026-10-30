@@ -19,6 +19,7 @@ final readonly class Compose
     public function __construct(
         private ProcessRunner $runner,
         private ComposePolicy $policy,
+        private ComposeFiles $files,
         private RuntimeImages $runtime,
         private RuntimeBuilds $builds,
         private string $dockerHost,
@@ -52,7 +53,9 @@ final readonly class Compose
      */
     public function check(SiteProject $project): void
     {
-        $violations = $this->policy->violations($this->config($project), $project->policy);
+        // Before Compose reads anything: it would read the files they name.
+        $violations = $this->files->violations($project);
+        $violations = [] !== $violations ? $violations : $this->policy->violations($this->config($project), $project->policy);
 
         if ([] !== $violations) {
             throw new PolicyViolation($project->name(), $violations);

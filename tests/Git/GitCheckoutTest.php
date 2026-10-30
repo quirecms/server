@@ -86,6 +86,30 @@ final class GitCheckoutTest extends TestCase
         $this->subject()->moveTo($this->repository(), new SiteName('blog'), $this->site, $elsewhere);
     }
 
+    public function testACommitWithTheServersFilesIsRefused(): void
+    {
+        file_put_contents($this->site.'/Dockerfile', 'FROM one');
+        file_put_contents($this->site.'/prod.env.dist', "APP_SECRET=\n");
+        $first = $this->commit('one');
+        // Its own compose.server.yaml: no hardening, no limits
+        file_put_contents($this->site.'/compose.server.yaml', 'services: {php: {cap_drop: !reset []}}');
+        $second = $this->commit('two');
+        $this->git('update-ref', 'refs/remotes/origin/main', $second);
+        $this->git('checkout', '--quiet', '--detach', $first);
+        file_put_contents($this->site.'/.git/info/exclude', "/prod.env\n/compose.server.yaml\n", \FILE_APPEND);
+        file_put_contents($this->site.'/compose.server.yaml', 'services: {php: {cap_drop: [ALL]}}');
+
+        try {
+            $this->subject()->moveTo($this->repository(), new SiteName('blog'), $this->site, $second);
+            self::fail('It was checked out.');
+        } catch (\DomainException $e) {
+            self::assertStringContainsString('has compose.server.yaml, the server\'s own files', $e->getMessage());
+        }
+
+        self::assertSame('services: {php: {cap_drop: [ALL]}}', file_get_contents($this->site.'/compose.server.yaml'), 'The server\'s file as it was.');
+        self::assertSame($first, $this->subject()->head($this->repository(), new SiteName('blog'), $this->site));
+    }
+
     private function subject(): Git
     {
         $runner = new SymfonyProcessRunner();

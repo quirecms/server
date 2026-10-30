@@ -334,6 +334,15 @@ commit 'awk -f /tmp/leak.awk compose.prod.yaml > /tmp/c && cat /tmp/c > compose.
 inside 'quire-server site:deploy blog 2>&1' | sed 's/^/    /'
 check 'a site'\''s Compose file gets none of the server'\''s settings' "[ \"\$(inside 'docker exec blog-php-1 printenv QUIRE_LEAK')\" = none ]"
 check 'it runs with its own APP_SECRET, not the agent'\''s' "s=\$(inside 'docker exec blog-php-1 printenv APP_SECRET') && [ -n \"\$s\" ] && inside \"grep -qxF \\\"APP_SECRET='\$s'\\\" /srv/quire/sites/blog/prod.env\" && [ \"\$s\" != \"\$(inside 'docker exec quire-server-agent-1 printenv APP_SECRET')\" ]"
+# Commits reading files outside the site (another site's prod.env could be named), then its own server files
+commit 'printf "include:\n  - path: compose.yaml\n    env_file: ../../server/server.env\n" >> compose.prod.yaml' 'Include'
+inside 'quire-server site:deploy blog 2>&1' | tee "$logs"/git-include.log | sed 's/^/    /'
+check 'a commit including other files is refused, never read' "grep -q '\"include\" reads other files' $logs/git-include.log && grep -q 'as it was before' $logs/git-include.log"
+commit 'git revert --no-commit HEAD' 'Back'
+commit 'printf "services: {}\n" > compose.server.yaml' 'Its own server file'
+inside 'quire-server site:deploy blog 2>&1' | tee "$logs"/git-tracked.log | sed 's/^/    /'
+check 'a commit with the server'\''s own files is refused, they stay' "grep -q 'the server.s own files' $logs/git-tracked.log && inside 'grep -q cap_drop /srv/quire/sites/blog/compose.server.yaml'"
+commit 'git revert --no-commit HEAD' 'Back again'
 inside "printf '\nQUIRE_SERVER_GIT_POLL_SECONDS=60\n' >> /srv/quire/server/server.env && quire-server up >/dev/null 2>&1 && quire-server site:poll blog on >/dev/null"
 commit 'echo three > public/hello.txt' 'Three'
 waited=0

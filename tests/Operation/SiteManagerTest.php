@@ -6,6 +6,7 @@ namespace Quire\Server\Tests\Operation;
 
 use Quire\Server\Database\SiteDatabases;
 use Quire\Server\Docker\Compose;
+use Quire\Server\Docker\ComposeFiles;
 use Quire\Server\Docker\ComposePolicy;
 use Quire\Server\Docker\PolicyViolation;
 use Quire\Server\Docker\RuntimeImages;
@@ -215,7 +216,8 @@ final class SiteManagerTest extends RegistryTestCase
 
             return self::ok($command, '');
         };
-        $this->script['git -C'] = static fn (array $command): ProcessResult => self::ok($command, $commit."\n");
+        // The commit (and none of the server's files in it)
+        $this->script['git -C'] = static fn (array $command): ProcessResult => self::ok($command, \in_array('ls-tree', self::strings($command), true) ? '' : $commit."\n");
 
         $site = $this->manager()->restoreAsNew($this->name, $this->request()->domains, new Repository('https://example.com/jane.git', 'main'), $backup, [], 'cli', 'darko', static fn (): null => null, poll: true);
 
@@ -536,7 +538,7 @@ final class SiteManagerTest extends RegistryTestCase
             new SkeletonInstaller($runner),
             $this->databases,
             new \Quire\Server\Site\SiteFiles(),
-            new Compose($runner, new ComposePolicy(), new RuntimeImages($runner), new RuntimeBuilds($this->connection, $this->schema), 'tcp://docker-proxy:2375'),
+            new Compose($runner, new ComposePolicy(), new ComposeFiles(), new RuntimeImages($runner), new RuntimeBuilds($this->connection, $this->schema), 'tcp://docker-proxy:2375'),
             $this->frontDoor,
             $this->paths,
             new Git($runner, $keys = new DeployKeys($runner, $this->paths)),

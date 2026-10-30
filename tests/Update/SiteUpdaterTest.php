@@ -6,6 +6,7 @@ namespace Quire\Server\Tests\Update;
 
 use Quire\Server\Database\SiteDatabases;
 use Quire\Server\Docker\Compose;
+use Quire\Server\Docker\ComposeFiles;
 use Quire\Server\Docker\ComposePolicy;
 use Quire\Server\Docker\Images;
 use Quire\Server\Docker\RuntimeImages;
@@ -160,6 +161,7 @@ final class SiteUpdaterTest extends RegistryTestCase
                 return ScriptedRunner::ok($command);
             },
             'git clean' => static fn (array $command): ProcessResult => ScriptedRunner::ok($command),
+            'git ls-tree' => static fn (array $command): ProcessResult => ScriptedRunner::ok($command),
         ]);
         $this->keys = new DeployKeys($this->runner, $this->paths);
         $this->git = new Git($this->runner, $this->keys);
@@ -518,7 +520,7 @@ final class SiteUpdaterTest extends RegistryTestCase
 
     private function updater(): SiteUpdater
     {
-        $compose = new Compose($this->runner, new ComposePolicy(), new RuntimeImages($this->runner), new RuntimeBuilds($this->connection, $this->schema), 'tcp://docker-proxy:2375');
+        $compose = new Compose($this->runner, new ComposePolicy(), new ComposeFiles(), new RuntimeImages($this->runner), new RuntimeBuilds($this->connection, $this->schema), 'tcp://docker-proxy:2375');
         $sites = new SiteManager(
             $this->registry,
             $this->operations,

@@ -46,6 +46,15 @@ final readonly class Git
         ], $output)->orFail('Getting the site\'s repository (git clone)');
 
         chmod($directory, 0o750);
+
+        try {
+            $this->checkServerFiles($repository, $site, $directory, 'HEAD');
+        } catch (\DomainException $e) {
+            new \Symfony\Component\Filesystem\Filesystem()->remove($directory);
+
+            throw $e;
+        }
+
         // The server's files in the folder: never seen by Git, never removed by a deploy.
         file_put_contents($directory.'/.git/info/exclude', "\n# Quire Server's files\n".implode("\n", self::SERVER_FILES)."\n", \FILE_APPEND);
     }
@@ -102,8 +111,23 @@ final readonly class Git
         // Only commits of the branch: not anything else the folder's Git could name.
         $this->git($repository, $site, $directory, ['merge-base', '--is-ancestor', $commit, 'refs/remotes/origin/'.$repository->branch])
             ->orFail(\sprintf('Finding commit %s on the branch "%s"', substr($commit, 0, 12), $repository->branch));
+        $this->checkServerFiles($repository, $site, $directory, $commit);
         $this->git($repository, $site, $directory, ['reset', '--hard', '--quiet', $commit], $output)->orFail('Checking out the commit');
         $this->git($repository, $site, $directory, ['clean', '-ffdq'], $output)->orFail('Removing files the commit doesn\'t have');
+    }
+
+    /**
+     * A commit with the server's own files (prod.env, compose.server.yaml) would replace them in the
+     * folder: the site's settings, and how the server hardens and limits it.
+     */
+    private function checkServerFiles(Repository $repository, SiteName $site, string $directory, string $commit): void
+    {
+        $listed = $this->git($repository, $site, $directory, ['ls-tree', '--name-only', $commit, '--', SiteFiles::ENV_FILE, SiteFiles::OVERRIDE])->orFail('Reading the commit\'s files')->output;
+        $tracked = array_values(array_filter(explode("\n", trim($listed)), static fn (string $file): bool => '' !== $file));
+
+        if ([] !== $tracked) {
+            throw new \DomainException(\sprintf('%s has %s, the server\'s own files in a site\'s folder: remove %s from the repository.', Repository::isCommit($commit) ? 'Commit '.substr($commit, 0, 12) : 'The branch\'s newest commit', implode(', ', $tracked), 1 === \count($tracked) ? 'it' : 'them'));
+        }
     }
 
     public function head(Repository $repository, SiteName $site, string $directory): string
