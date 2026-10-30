@@ -570,6 +570,20 @@ final class SiteUpdaterTest extends RegistryTestCase
         self::assertSame([], $this->operations->latest(), 'Nothing to record.');
     }
 
+    public function testAFolderADeployLeftAtItsCommitIsntTakenForWhatRuns(): void
+    {
+        // A deploy of COMMIT_2 the agent's restart cut short: its folder there, COMMIT_1 still runs.
+        $this->followRepository();
+        $this->repositories->deployed($this->name, self::COMMIT_1);
+        $this->checkedOut = self::COMMIT_2;
+
+        self::assertSame(self::COMMIT_2, $this->updater()->deploy($this->name, null, 'cli', 'darko', static fn (): null => null), 'Built and checked, not "runs that commit already".');
+        self::assertContains('docker compose build', $this->runner->keys());
+        self::assertSame(self::NEW, $this->running);
+        $update = $this->updates->undoable($this->name);
+        self::assertSame(self::COMMIT_1, $update['commit_before'] ?? null, 'Undone, it goes back to what ran.');
+    }
+
     public function testOnlyCommitsOfTheBranchAreDeployed(): void
     {
         $this->followRepository();

@@ -111,7 +111,13 @@ case "${1:-help}" in
 		# A terminal when there is one (questions, colours).
 		tty=-T
 		if [ -t 0 ] && [ -t 1 ]; then tty=; fi
-		exec docker compose --project-directory "$root/server" --env-file "$root/server/server.env" \
-			exec $tty -e "QUIRE_SERVER_REQUESTED_BY=${SUDO_USER:-$(id -un)}" agent bin/console "server:$command" "$@"
+		status=0
+		docker compose --project-directory "$root/server" --env-file "$root/server/server.env" \
+			exec $tty -e "QUIRE_SERVER_REQUESTED_BY=${SUDO_USER:-$(id -un)}" agent bin/console "server:$command" "$@" || status=$?
+		# Killed with the agent (a restart, "up", the machine's stop): it says nothing of it itself.
+		if [ "$status" -eq 137 ] || [ "$status" -eq 143 ]; then
+			echo "The agent stopped while it ran this: it puts back what was left half done when it starts again. \"quire-server operations\" shows what happened; then run it again." >&2
+		fi
+		exit "$status"
 		;;
 esac

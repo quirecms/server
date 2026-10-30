@@ -106,10 +106,12 @@ final readonly class SiteUpdater
             $git = $this->repositories->of($name) ?? throw new \DomainException(\sprintf('"%s" doesn\'t follow a Git repository: update it with "site:update".', $name));
             $repository = $git['repository'];
             $directory = $this->paths->site($name);
-            $before = $this->git->head($repository, $name, $directory);
+            $head = $this->git->head($repository, $name, $directory);
+            // What runs is what was last deployed: a folder a deploy cut short left at its commit doesn't.
+            $before = $git['deployed'] ?? $head;
             $target = $commit ?? $this->git->remoteHead($repository, $name);
 
-            if ($target === $before) {
+            if ($target === $before && $head === $before) {
                 $this->repositories->deployed($name, $target);
 
                 return null;

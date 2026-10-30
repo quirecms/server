@@ -16,6 +16,9 @@ use Quire\Server\Site\SiteName;
  */
 final readonly class OperationLog
 {
+    /** Why an operation the agent's stop cut short failed, and where to look */
+    public const string INTERRUPTED = 'Interrupted: the agent stopped while it ran. What it left half done was put back when the agent started again ("quire-server logs agent" says how).';
+
     public function __construct(
         private Connection $connection,
         private string $schema = Schema::NAME,
@@ -107,7 +110,7 @@ final readonly class OperationLog
      */
     public function abandonRunning(): int
     {
-        return (int) $this->connection->executeStatement(\sprintf("UPDATE %s.operation SET status = 'failed', error = 'Interrupted: the agent stopped while it ran.', finished_at = now() WHERE status = 'running'", $this->schema()));
+        return (int) $this->connection->executeStatement(\sprintf("UPDATE %s.operation SET status = 'failed', error = ?, finished_at = now() WHERE status = 'running'", $this->schema()), [self::INTERRUPTED]);
     }
 
     private function append(string $id, int $seq, string $line): void

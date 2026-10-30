@@ -68,6 +68,6 @@ final class OperationLogTest extends RegistryTestCase
         $log->start('site.add', new SiteName('jane'), [], 'cli', 'root');
 
         self::assertSame(1, $log->abandonRunning());
-        self::assertSame(['failed', 'Interrupted: the agent stopped while it ran.'], [$log->latest()[0]['status'], $log->latest()[0]['error']]);
+        self::assertSame(['failed', OperationLog::INTERRUPTED], [$log->latest()[0]['status'], $log->latest()[0]['error']]);
     }
 }
