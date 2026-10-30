@@ -404,6 +404,17 @@ fi
 if [ "${KEEP:-}" = 1 ]; then echo "$failures check(s) failed so far; the site is kept."; exit 0; fi
 
 if want sites; then
+echo '== A release a crash cut short, put back at the agent'\''s start'
+# As a power cut in the middle of a rebuild leaves it: its intent, naming the image it ran before (the
+# one kept to undo its update, which differs from the one it runs now)
+before=$(inside "docker image inspect quire-sites/jane/php-prod:before-update jane-php-prod:before-update --format '{{.Id}}' 2>/dev/null" | head -1)
+image=$(inside "docker inspect jane-php-1 --format '{{.Config.Image}}'")
+inside "printf '{\"operation\": \"x\", \"what\": \"rebuild\", \"image\": \"%s\", \"image_before\": \"%s\", \"backup\": null, \"put_back\": []}\n' '$image' '$before' > /srv/quire/backups/jane/release.json && chmod 600 /srv/quire/backups/jane/release.json"
+inside 'docker restart quire-server-agent-1 >/dev/null'
+waited=0
+until inside 'quire-server operations --site=jane' | grep site.recover | grep -qv running || [ $waited -ge 300 ]; do sleep 10; waited=$((waited + 10)); done
+check 'the agent puts the site back as it was before, by itself' "inside 'quire-server operations --site=jane' | grep -q 'site.recover.*succeeded' && [ \"\$(inside \"docker inspect jane-php-1 --format '{{.Image}}'\")\" = \"$before\" ] && ! inside 'test -e /srv/quire/backups/jane/release.json' && [ \"\$(inside \"curl -sk $resolve -o /dev/null -w '%{http_code}' https://jane.test/\")\" = 200 ]"
+
 echo '== Removing the site'
 inside 'quire-server site:remove jane --yes 2>&1' | sed 's/^/    /'
 check 'its final backup is kept' "inside 'ls /srv/quire/backups/jane/final-*.tar'"

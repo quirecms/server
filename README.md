@@ -126,6 +126,7 @@ Then the update:
 4. **Starts the new version.** The site is offline for a few seconds; the front door shows visitors a "Back in a moment" page (503, `Retry-After`), so search engines come back.
 5. **Checks it:** its health check, home page and sign-in page.
 6. **Rolls back by itself if anything fails:** the files and image it had, and its backup restored if the new version's migrations ran (or that can't be known, for sites older than Quire 0.1.1). If even that fails, the site is marked failed, and the operation's log says where its backup is.
+7. **If the machine stops in the middle** (a crash, a power cut), the agent puts the site back by itself when it starts again, as a failed update is rolled back: the files and image it had, and its backup when one was taken (`quire-server operations` shows it as `site.recover`). The same goes for deploys and rebuilds.
 
 `quire-server site:undo jane` undoes the last update within a week. If that update ran no migrations, only the code goes back. Otherwise its backup from before the update is restored too, and changes made since are lost; you're asked first.
 

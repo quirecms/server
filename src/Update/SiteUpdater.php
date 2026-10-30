@@ -33,6 +33,12 @@ final readonly class SiteUpdater
 {
     private const string PHP = 'php';
 
+    /**
+     * What a release that touched its site leaves until it's over (in the site's backups folder): how
+     * to put the site back, for the agent's next start when a crash or a power cut stopped it.
+     */
+    private const string INTENT = 'release.json';
+
     public function __construct(
         private SiteRegistry $registry,
         private SiteUpdates $updates,
@@ -124,6 +130,7 @@ final readonly class SiteUpdater
                         $this->git->checkout($repository, $name, $directory, $target, $operation->output(...));
                     },
                     fn () => $this->git->moveTo($repository, $name, $directory, $before),
+                    ['commit' => $before, 'commit_after' => $target],
                 );
             } catch (UpdateFailed $e) {
                 // Not tried again by the agent: a new commit is.
@@ -170,6 +177,87 @@ final readonly class SiteUpdater
             $this->release($site, $operation, $this->stepper($operation, $say), 'rebuild', static function (): void {}, static function (): void {});
             $operation->succeed();
         });
+    }
+
+    /**
+     * At the agent's start: every site whose release a crash or a power cut stopped after it was touched
+     * (its intent is still there) is put back as it was before it, as a failed release is rolled back:
+     * its files, the image it ran, its backup when one was taken (its new version's migrations may have
+     * run), and checked. A deploy's commit isn't deployed again by itself. One that can't be put back is
+     * marked failed.
+     *
+     * @param \Closure(string): void $say
+     *
+     * @return array<string, string> Site => what happened
+     */
+    public function recoverInterrupted(\Closure $say): array
+    {
+        $outcomes = [];
+
+        foreach ($this->registry->all() as $site) {
+            $file = $this->paths->backups($site->name).'/'.self::INTENT;
+
+            if (Site::RUNNING !== $site->status || !is_file($file)) {
+                continue;
+            }
+
+            try {
+                $this->lock->run($site->name, function () use ($site, $file, $say): void {
+                    $intent = json_decode((string) file_get_contents($file), true);
+
+                    if (!\is_array($intent) || !\is_string($intent['image'] ?? null) || !\is_string($intent['image_before'] ?? null) || !\is_array($intent['put_back'] ?? null)) {
+                        throw new \RuntimeException(\sprintf('%s can\'t be read: put the site back by hand.', $file));
+                    }
+
+                    $what = \is_string($intent['what'] ?? null) ? $intent['what'] : 'release';
+                    $operation = $this->operations->start('site.recover', $site->name, ['interrupted' => \is_string($intent['operation'] ?? null) ? $intent['operation'] : '', 'what' => $what], 'agent', 'agent');
+                    $step = $this->stepper($operation, $say);
+                    $project = $this->sites->projectOf($site);
+                    $directory = $this->paths->site($site->name);
+                    $putBack = $intent['put_back'];
+
+                    try {
+                        $step(\sprintf('Putting "%s" back as it was before its %s, which was cut short', $site->name, $what));
+
+                        if (\is_string($putBack['commit'] ?? null)) {
+                            $git = $this->repositories->of($site->name) ?? throw new \DomainException('The site doesn\'t follow a Git repository any more.');
+                            $this->git->moveTo($git['repository'], $site->name, $directory, $putBack['commit']);
+                        } elseif (\is_string($putBack['files'] ?? null) && \is_array($putBack['paths'] ?? null)) {
+                            SkeletonFiles::restore($directory, array_values(array_filter($putBack['paths'], \is_string(...))), $putBack['files']);
+                        }
+
+                        $this->images->tag($intent['image_before'], $intent['image']);
+                        $this->compose->up($project, $operation->output(...));
+
+                        if (\is_string($intent['backup'] ?? null)) {
+                            $step('Restoring its backup (the new version\'s migrations may have run)');
+                            $this->restore($project, $intent['backup'], $operation);
+                        }
+
+                        $step('Checking it');
+                        $this->check($project, $site);
+                    } catch (\Throwable $e) {
+                        $this->registry->setStatus($site->name, Site::FAILED);
+                        $operation->fail(\sprintf('Putting it back failed: %s. Its release record: %s.', $e->getMessage(), $file));
+
+                        throw $e;
+                    }
+
+                    if (\is_string($putBack['commit'] ?? null) && \is_string($putBack['commit_after'] ?? null)) {
+                        $this->repositories->deployed($site->name, $putBack['commit']);
+                        $this->repositories->failed($site->name, $putBack['commit_after']);
+                    }
+
+                    $this->filesystem->remove($file);
+                    $operation->succeed();
+                });
+                $outcomes[$site->name->value] = 'put back as it was before';
+            } catch (\Throwable $e) {
+                $outcomes[$site->name->value] = $e->getMessage();
+            }
+        }
+
+        return $outcomes;
     }
 
     /**
@@ -371,6 +459,7 @@ final readonly class SiteUpdater
                 }
             },
             static fn () => SkeletonFiles::restore($directory, $paths, $saved),
+            ['files' => $saved, 'paths' => $paths],
         );
 
         $this->updates->record([
@@ -394,17 +483,19 @@ final readonly class SiteUpdater
      * Builds, backs up, swaps and checks a new version of the site, whose files $change puts in place
      * (and $revert puts back as they were): rolled back by itself if anything fails after the swap.
      *
-     * @param \Closure(string): void $step
-     * @param \Closure(): void       $change
-     * @param \Closure(): void       $revert
+     * @param \Closure(string): void                                                              $step
+     * @param \Closure(): void                                                                    $change
+     * @param \Closure(): void                                                                    $revert
+     * @param array{commit?: string, commit_after?: string, files?: string, paths?: list<string>} $putBack How its files are put back after a crash: the commit before, or the saved copies
      *
      * @return array{image_before: string, image_after: string, backup: string, migrations_ran: ?bool}
      */
-    private function release(Site $site, Operation $operation, \Closure $step, string $what, \Closure $change, \Closure $revert): array
+    private function release(Site $site, Operation $operation, \Closure $step, string $what, \Closure $change, \Closure $revert, array $putBack = []): array
     {
         $project = $this->sites->projectOf($site);
         $image = $this->compose->image($project, self::PHP);
-        $before = $this->images->id($image);
+        // The image it runs: its tag may name another (a build a crash cut short, never run).
+        $before = $this->images->ofContainer($project->name().'-'.self::PHP.'-1') ?? $this->images->id($image);
         $changed = false;
 
         try {
@@ -438,23 +529,31 @@ final readonly class SiteUpdater
         $backup = null;
         $migrationsBefore = null;
         $migrationsAfter = null;
+        $intent = ['operation' => $operation->id, 'what' => $what, 'image' => $image, 'image_before' => $before, 'backup' => null, 'put_back' => $putBack];
+        $this->writeIntent($site->name, $intent);
 
         try {
-            $step('Backing it up');
-            $backup = $this->sites->backup($site->name, $project, $what);
-            $operation->line('Backed up to '.$backup);
-            $migrationsBefore = $this->executedMigrations($project);
+            try {
+                $step('Backing it up');
+                $backup = $this->sites->backup($site->name, $project, $what);
+                $operation->line('Backed up to '.$backup);
+                $this->writeIntent($site->name, ['backup' => $backup] + $intent);
+                $migrationsBefore = $this->executedMigrations($project);
 
-            $step('Starting the new version (a few seconds offline)');
-            $this->compose->up($project, $operation->output(...));
+                $step('Starting the new version (a few seconds offline)');
+                $this->compose->up($project, $operation->output(...));
 
-            $step('Checking it');
-            $this->check($project, $site);
-            $migrationsAfter = $this->executedMigrations($project);
-        } catch (\Throwable $e) {
-            $operation->line('!! '.$e->getMessage());
-            $step('Rolling it back');
-            $this->rollBack($project, $site, $what, $image, $before, $revert, $backup, $migrationsBefore, $operation, $e);
+                $step('Checking it');
+                $this->check($project, $site);
+                $migrationsAfter = $this->executedMigrations($project);
+            } catch (\Throwable $e) {
+                $operation->line('!! '.$e->getMessage());
+                $step('Rolling it back');
+                $this->rollBack($project, $site, $what, $image, $before, $revert, $backup, $migrationsBefore, $operation, $e);
+            }
+        } finally {
+            // Over: rolled back, or not even that (the site is marked failed, with what to do).
+            $this->filesystem->remove($this->paths->backups($site->name).'/'.self::INTENT);
         }
 
         return [
@@ -588,6 +687,34 @@ final readonly class SiteUpdater
         } catch (\Throwable) {
             return null;
         }
+    }
+
+    /**
+     * Written whole and to disk before the site is touched: what a power cut leaves is this or nothing.
+     *
+     * @param array<string, mixed> $intent
+     */
+    private function writeIntent(SiteName $name, array $intent): void
+    {
+        $file = $this->paths->backups($name).'/'.self::INTENT;
+        $this->filesystem->mkdir(\dirname($file), 0o700);
+        $temporary = $file.'.new';
+        $handle = fopen($temporary, 'w');
+
+        if (false === $handle) {
+            throw new \RuntimeException(\sprintf('%s can\'t be written.', $temporary));
+        }
+
+        try {
+            fwrite($handle, json_encode($intent, \JSON_PRETTY_PRINT | \JSON_UNESCAPED_SLASHES | \JSON_THROW_ON_ERROR)."\n");
+            fflush($handle);
+            fsync($handle);
+        } finally {
+            fclose($handle);
+        }
+
+        chmod($temporary, 0o600);
+        rename($temporary, $file);
     }
 
     private function running(SiteName $name): Site

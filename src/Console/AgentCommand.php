@@ -10,6 +10,7 @@ use Quire\Server\Git\GitPoller;
 use Quire\Server\Operation\OperationLog;
 use Quire\Server\Registry\SiteRegistry;
 use Quire\Server\Update\AutomaticUpdates;
+use Quire\Server\Update\SiteUpdater;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Attribute\Option;
 use Symfony\Component\Console\Command\Command;
@@ -39,6 +40,7 @@ final class AgentCommand
         private readonly GitPoller $poller,
         private readonly AutomaticUpdates $updates,
         private readonly OffsiteBackups $backups,
+        private readonly SiteUpdater $sites,
     ) {
     }
 
@@ -62,6 +64,11 @@ final class AgentCommand
 
         if ($abandoned > 0) {
             $io->warning(\sprintf('%d operation(s) were interrupted and are marked failed.', $abandoned));
+        }
+
+        // Sites a crash or a power cut stopped in the middle of a release: as they were before it.
+        foreach ($this->sites->recoverInterrupted(static fn (string $line) => $io->writeln('Recovery: '.$line)) as $site => $outcome) {
+            $io->writeln(\sprintf('Recovery: "%s": %s', $site, $outcome));
         }
 
         do {

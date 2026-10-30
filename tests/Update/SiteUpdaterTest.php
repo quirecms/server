@@ -72,6 +72,9 @@ final class SiteUpdaterTest extends RegistryTestCase
     /** The image the site's containers run */
     private string $running = self::OLD;
 
+    /** What the release's intent says while it starts the new version ('' to read it) */
+    private ?string $intentDuringUp = null;
+
     /** @var array<string, int> Migrations the database has run, by the image that ran them */
     private array $migrations = [self::OLD => 19, self::NEW => 19];
     private int $executed = 19;
@@ -117,7 +120,12 @@ final class SiteUpdaterTest extends RegistryTestCase
 
                 return ScriptedRunner::ok($command);
             },
+            'docker container inspect' => fn (array $command): ProcessResult => ScriptedRunner::ok($command, $this->running."\n"),
             'docker compose up' => function (array $command): ProcessResult {
+                if (null !== $this->intentDuringUp && is_file($this->intentFile())) {
+                    $this->intentDuringUp = (string) file_get_contents($this->intentFile());
+                }
+
                 if (null !== $this->ups && $this->ups-- <= 0) {
                     return ScriptedRunner::failed($command, "container jane-php-1 is unhealthy\n");
                 }
@@ -313,6 +321,78 @@ final class SiteUpdaterTest extends RegistryTestCase
 
         self::assertSame(Site::FAILED, $this->registry->get($this->name)?->status);
         self::assertStringContainsString('Its backup: '.$this->paths->backups($this->name).'/update-', (string) $this->operations->latest()[0]['error'], 'Where its backup is, for a person.');
+    }
+
+    public function testWhileItRunsAReleaseSaysHowToPutItsSiteBack(): void
+    {
+        $this->intentDuringUp = '';
+        $this->updater()->update($this->plan(), false, 'cli', 'darko', static fn (): null => null);
+
+        self::assertNotSame('', $this->intentDuringUp, 'Written before the swap.');
+        /** @var array{image_before: string, backup: string, put_back: array{paths: list<string>}} $intent */
+        $intent = json_decode($this->intentDuringUp, true, 512, \JSON_THROW_ON_ERROR);
+        self::assertSame(self::OLD, $intent['image_before']);
+        self::assertStringContainsString('/backups/jane/update-', $intent['backup']);
+        self::assertSame(['composer.json', 'composer.lock'], \array_slice($intent['put_back']['paths'], 0, 2));
+        self::assertFileDoesNotExist($this->intentFile(), 'Over: gone.');
+    }
+
+    public function testItGoesBackToTheImageItRanNotToWhatItsTagNames(): void
+    {
+        // A power cut after a build: the tag names that build (never run, maybe broken), the site the old one
+        $this->tags['jane-php-prod'] = 'sha256:9999999999999999999999999999999999999999999999999999999999999999';
+        // The new version doesn't answer: it's rolled back
+        $this->healthy = [self::OLD];
+
+        try {
+            $this->updater()->update($this->plan(), false, 'cli', 'darko', static fn (): null => null);
+            self::fail('It wasn\'t rolled back.');
+        } catch (UpdateFailed) {
+        }
+
+        self::assertSame(self::OLD, $this->running, 'Back on the image it ran.');
+    }
+
+    public function testAReleaseACrashCutShortIsPutBackAtTheAgentsStart(): void
+    {
+        // As a power cut leaves it: the new version runs, its files changed, its intent there
+        $saved = $this->paths->backups($this->name).'/update-x/files';
+        $site = $this->paths->site($this->name);
+        new Filesystem()->dumpFile($saved.'/composer.lock', 'the old lock');
+        new Filesystem()->dumpFile($saved.'/composer.json', 'the old json');
+        file_put_contents($site.'/composer.lock', 'the new lock');
+        $this->tags['jane-php-prod'] = self::NEW;
+        $this->running = self::NEW;
+        $backup = $this->paths->backups($this->name).'/update-x.tar';
+        file_put_contents($backup, 'backup');
+        file_put_contents($this->intentFile(), (string) json_encode(['operation' => 'o', 'what' => 'update', 'image' => 'jane-php-prod', 'image_before' => self::OLD, 'backup' => $backup, 'put_back' => ['files' => $saved, 'paths' => ['composer.json', 'composer.lock']]]));
+
+        $outcomes = $this->updater()->recoverInterrupted(static fn (): null => null);
+
+        self::assertSame(['jane' => 'put back as it was before'], $outcomes);
+        self::assertSame(self::OLD, $this->running);
+        self::assertSame('the old lock', file_get_contents($site.'/composer.lock'));
+        self::assertSame([$backup], $this->restored, 'Its backup: the new version\'s migrations may have run.');
+        self::assertFileDoesNotExist($this->intentFile());
+        self::assertSame('site.recover', $this->operations->latest()[0]['action']);
+        self::assertSame([], $this->updater()->recoverInterrupted(static fn (): null => null), 'Nothing twice.');
+    }
+
+    public function testASiteThatCantBePutBackIsMarkedFailed(): void
+    {
+        new Filesystem()->dumpFile($this->intentFile(), (string) json_encode(['operation' => 'o', 'what' => 'rebuild', 'image' => 'jane-php-prod', 'image_before' => self::OLD, 'backup' => null, 'put_back' => []]));
+        $this->healthy = [];
+
+        $outcomes = $this->updater()->recoverInterrupted(static fn (): null => null);
+
+        self::assertNotSame('put back as it was before', $outcomes['jane'] ?? 'put back as it was before');
+        self::assertSame(Site::FAILED, $this->registry->get($this->name)?->status);
+        self::assertFileExists($this->intentFile(), 'Kept, for whoever puts it back by hand.');
+    }
+
+    private function intentFile(): string
+    {
+        return $this->paths->backups($this->name).'/release.json';
     }
 
     public function testUndoingAnUpdateThatRanNoMigrations(): void
