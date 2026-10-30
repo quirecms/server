@@ -8,9 +8,10 @@ use Quire\Server\Process\ProcessResult;
 use Quire\Server\Process\ProcessRunner;
 
 /**
- * Composer, in the agent, on a copy of a site's composer.json and composer.lock: it only resolves
- * versions and reads advisories. Nothing is installed and no package's code runs here (no scripts,
- * no plugins): the site's image installs them, in Docker, where they can't touch the server.
+ * Composer, on a copy of a site's composer.json and composer.lock: it only resolves versions and reads
+ * advisories. Nothing is installed and no package's code runs here (no scripts, no plugins): the site's
+ * image installs them, in Docker, where they can't touch the server. It runs in a container of its own
+ * (ContainerRunner), since composer.json names the addresses Composer fetches from.
  */
 final readonly class Composer
 {
@@ -98,6 +99,7 @@ final readonly class Composer
      */
     private function composer(string $directory, array $arguments, float $timeout, ?\Closure $output = null): ProcessResult
     {
+        $this->checkSources($directory);
         $home = sys_get_temp_dir().'/composer-'.bin2hex(random_bytes(6));
 
         try {
@@ -122,6 +124,49 @@ final readonly class Composer
             );
         } finally {
             new \Symfony\Component\Filesystem\Filesystem()->remove($home);
+        }
+    }
+
+    /**
+     * Composer fetches only over HTTPS, as it does by default, and sends nothing of a site's own (no
+     * request options: headers, methods, bodies). Its container has no way to the server's networks
+     * anyway; this says so plainly, before anything runs.
+     */
+    private function checkSources(string $directory): void
+    {
+        try {
+            $json = json_decode((string) @file_get_contents($directory.'/composer.json'), true, 512, \JSON_THROW_ON_ERROR);
+        } catch (\JsonException) {
+            return; // Composer says what's wrong with it.
+        }
+
+        $config = \is_array($json) && \is_array($json['config'] ?? null) ? $json['config'] : [];
+        $refused = [];
+
+        if (false === ($config['secure-http'] ?? true)) {
+            $refused[] = '"secure-http": false';
+        }
+
+        if (true === ($config['disable-tls'] ?? false)) {
+            $refused[] = '"disable-tls": true';
+        }
+
+        $repositories = \is_array($json) && \is_array($json['repositories'] ?? null) ? $json['repositories'] : [];
+        $walk = static function (array $value) use (&$walk, &$refused): void {
+            foreach ($value as $key => $item) {
+                if ('options' === $key) {
+                    $refused[] = 'a repository\'s "options"';
+                } elseif ('url' === $key && \is_string($item) && 1 === preg_match('#^http://#i', $item)) {
+                    $refused[] = \sprintf('"%s" (plain HTTP)', $item);
+                } elseif (\is_array($item)) {
+                    $walk($item);
+                }
+            }
+        };
+        $walk($repositories);
+
+        if ([] !== $refused) {
+            throw new \DomainException(\sprintf('The site\'s composer.json has Composer fetch other than over HTTPS: %s. The server runs Composer over HTTPS only; change the site\'s composer.json.', implode(', ', array_unique($refused))));
         }
     }
 }

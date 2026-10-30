@@ -1,5 +1,6 @@
 parameters:
     quire_server.root: '%env(QUIRE_SERVER_ROOT)%'
+    quire_server.agent_image: quire-server-agent
 
 services:
     _defaults:
@@ -35,6 +36,18 @@ services:
     Quire\Server\Docker\Images:
         arguments:
             $dockerHost: '%env(DOCKER_HOST)%'
+
+    Quire\Server\Process\ContainerRunner:
+        arguments:
+            $runner: '@Quire\Server\Process\SymfonyProcessRunner'
+            $dockerHost: '%env(DOCKER_HOST)%'
+            # The agent's own image: a release's, by digest, or the one built from a checkout
+            $image: '%env(default:quire_server.agent_image:QUIRE_SERVER_IMAGE)%'
+            $work: '%quire_server.root%/server/work'
+
+    Quire\Server\Update\Composer:
+        arguments:
+            $runner: '@Quire\Server\Process\ContainerRunner'
 
     Quire\Server\FrontDoor\DomainDirectory:
         arguments: ['%quire_server.root%/server/domains']

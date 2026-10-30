@@ -299,6 +299,12 @@ check 'it is recorded as made by itself' "inside 'quire-server operations' | gre
 check 'it answers after its automatic update' "[ \"\$(inside \"curl -sk $resolve -o /dev/null -w '%{http_code}' https://jane.test/\")\" = 200 ]"
 inside 'quire-server site:update --all --automatic 2>&1' > "$logs"/automatic-again.log
 check 'the next run finds nothing to fix' "grep -Eq 'jane +up to date +no known vulnerability' $logs/automatic-again.log"
+check 'Composer ran in a container of its own, gone after' "[ -z \"\$(inside 'docker ps -aq --filter label=com.quirecms.server.sandbox')\" ] && inside 'docker network inspect quire-sandbox'"
+check 'that container reaches neither the docker-proxy nor the database' "! inside 'docker run --rm --network quire-sandbox alpine:3.22 sh -c \"wget -qT5 -O- http://docker-proxy:2375/_ping || nc -zw5 quire-database 5432\"'"
+# A composer.json in the site's folder that has Composer post to the docker-proxy
+inside 'cp /srv/quire/sites/jane/composer.json /root/jane-composer.json && sed -i "s#^    \"type\": \"project\",#    \"type\": \"project\", \"repositories\": [{\"type\": \"composer\", \"url\": \"http://docker-proxy:2375\", \"options\": {\"http\": {\"method\": \"POST\"}}}], \"config\": {\"secure-http\": false},#" /srv/quire/sites/jane/composer.json'
+check 'a composer.json fetching other than over HTTPS is refused' "inside 'quire-server site:audit jane 2>&1' | tr -s ' \\n' ' ' | grep -q 'over HTTPS only' && inside 'quire-server site:update jane --dry-run 2>&1' | tr -s ' \\n' ' ' | grep -q 'over HTTPS only'"
+inside 'cp /root/jane-composer.json /srv/quire/sites/jane/composer.json'
 fi
 
 if want git; then
