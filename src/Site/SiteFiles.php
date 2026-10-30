@@ -45,9 +45,10 @@ final readonly class SiteFiles
                 throw new \InvalidArgumentException(\sprintf('"%s" isn\'t a variable name.', $name));
             }
 
-            // Single quotes: taken as they are by Compose. So no quote and no line break in a value.
-            if (1 === preg_match('/[\'\x00-\x1f\x7f]/', $value)) {
-                throw new \InvalidArgumentException(\sprintf('The value of %s can\'t contain quotes or control characters.', $name));
+            // Single quotes: taken as they are by Compose. So no quote and no line break in a value, and
+            // none ending in "\" (Compose reads "\'" as an escaped quote).
+            if (1 === preg_match('/[\'\x00-\x1f\x7f]/', $value) || str_ends_with($value, '\\')) {
+                throw new \InvalidArgumentException(\sprintf('The value of %s can\'t contain quotes or control characters, or end with "\\".', $name));
             }
 
             $lines[] = \sprintf("%s='%s'", $name, $value);

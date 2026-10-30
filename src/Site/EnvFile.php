@@ -72,9 +72,10 @@ final readonly class EnvFile
                 throw new \InvalidArgumentException(\sprintf('"%s" isn\'t a variable name.', $name));
             }
 
-            // Single quotes are taken as they are: so no quote and no line break in a value.
-            if (1 === preg_match('/[\'\x00-\x1f\x7f]/', $value)) {
-                throw new \InvalidArgumentException(\sprintf('The value of %s can\'t contain quotes or control characters.', $name));
+            // Single quotes are taken as they are: so no quote and no line break in a value. And none
+            // ending in "\": Compose reads "\'" as an escaped quote, and the file no further.
+            if (1 === preg_match('/[\'\x00-\x1f\x7f]/', $value) || str_ends_with($value, '\\')) {
+                throw new \InvalidArgumentException(\sprintf('The value of %s can\'t contain quotes or control characters, or end with "\\".', $name));
             }
 
             $line = \sprintf("%s='%s'", $name, $value);
