@@ -231,7 +231,7 @@ final readonly class SiteUpdater
 
                         if (\is_string($intent['backup'] ?? null)) {
                             $step('Restoring its backup (the new version\'s migrations may have run)');
-                            $this->restore($project, $intent['backup'], $operation);
+                            $this->restore($site, $project, $intent['backup'], $operation);
                         }
 
                         $step('Checking it');

@@ -340,7 +340,7 @@ final class SiteUpdaterTest extends RegistryTestCase
     public function testItGoesBackToTheImageItRanNotToWhatItsTagNames(): void
     {
         // A power cut after a build: the tag names that build (never run, maybe broken), the site the old one
-        $this->tags['jane-php-prod'] = 'sha256:9999999999999999999999999999999999999999999999999999999999999999';
+        $this->tags['quire-sites/jane/php-prod'] = 'sha256:9999999999999999999999999999999999999999999999999999999999999999';
         // The new version doesn't answer: it's rolled back
         $this->healthy = [self::OLD];
 
@@ -361,11 +361,11 @@ final class SiteUpdaterTest extends RegistryTestCase
         new Filesystem()->dumpFile($saved.'/composer.lock', 'the old lock');
         new Filesystem()->dumpFile($saved.'/composer.json', 'the old json');
         file_put_contents($site.'/composer.lock', 'the new lock');
-        $this->tags['jane-php-prod'] = self::NEW;
+        $this->tags['quire-sites/jane/php-prod'] = self::NEW;
         $this->running = self::NEW;
         $backup = $this->paths->backups($this->name).'/update-x.tar';
         file_put_contents($backup, 'backup');
-        file_put_contents($this->intentFile(), (string) json_encode(['operation' => 'o', 'what' => 'update', 'image' => 'jane-php-prod', 'image_before' => self::OLD, 'backup' => $backup, 'put_back' => ['files' => $saved, 'paths' => ['composer.json', 'composer.lock']]]));
+        file_put_contents($this->intentFile(), (string) json_encode(['operation' => 'o', 'what' => 'update', 'image' => 'quire-sites/jane/php-prod', 'image_before' => self::OLD, 'backup' => $backup, 'put_back' => ['files' => $saved, 'paths' => ['composer.json', 'composer.lock']]]));
 
         $outcomes = $this->updater()->recoverInterrupted(static fn (): null => null);
 
@@ -380,7 +380,7 @@ final class SiteUpdaterTest extends RegistryTestCase
 
     public function testASiteThatCantBePutBackIsMarkedFailed(): void
     {
-        new Filesystem()->dumpFile($this->intentFile(), (string) json_encode(['operation' => 'o', 'what' => 'rebuild', 'image' => 'jane-php-prod', 'image_before' => self::OLD, 'backup' => null, 'put_back' => []]));
+        new Filesystem()->dumpFile($this->intentFile(), (string) json_encode(['operation' => 'o', 'what' => 'rebuild', 'image' => 'quire-sites/jane/php-prod', 'image_before' => self::OLD, 'backup' => null, 'put_back' => []]));
         $this->healthy = [];
 
         $outcomes = $this->updater()->recoverInterrupted(static fn (): null => null);

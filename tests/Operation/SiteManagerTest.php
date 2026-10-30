@@ -369,6 +369,8 @@ final class SiteManagerTest extends RegistryTestCase
         $kept = glob($this->paths->backups($this->name).'/{,.}*', \GLOB_BRACE);
         self::assertSame([], array_filter(false === $kept ? [] : $kept, static fn (string $file): bool => !\in_array(basename($file), ['.', '..'], true)), 'Nothing of it kept.');
         self::assertSame(Site::RUNNING, $this->registry->get($this->name)?->status);
+    }
+
     public function testABackupCutShortLeavesNothingThatStopsTheNext(): void
     {
         $manager = $this->manager();

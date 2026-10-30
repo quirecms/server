@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Quire\Server\Tests\Operation;
 
 use Quire\Server\Docker\Compose;
+use Quire\Server\Docker\ComposeFiles;
 use Quire\Server\Docker\ComposePolicy;
 use Quire\Server\Docker\Images;
 use Quire\Server\Docker\RuntimeImages;
@@ -119,10 +120,11 @@ final class SiteOverridesTest extends RegistryTestCase
         $this->registry->add(new SiteName($name), [new Domain($name.'.example')], $mode, $project);
         $this->registry->setStatus(new SiteName($name), Site::RUNNING);
         new Filesystem()->dumpFile($this->paths->site(new SiteName($name)).'/'.SiteFiles::OVERRIDE, "services:\n  php:\n    cap_drop: [ALL]\n");
+        new Filesystem()->dumpFile($this->paths->site(new SiteName($name)).'/'.SiteFiles::ENV_FILE, "COMPOSE_FILE='compose.yaml:compose.server.yaml'\nCOMPOSE_PROJECT_NAME='".$project."'\n");
     }
 
     private function subject(): SiteOverrides
     {
-        return new SiteOverrides($this->registry, new SiteFiles(), $this->paths, new Images($this->runner, 'tcp://docker-proxy:2375'), new SiteLock($this->connection), new Compose($this->runner, new ComposePolicy(), new RuntimeImages($this->runner), new RuntimeBuilds($this->connection, $this->schema), 'tcp://docker-proxy:2375'));
+        return new SiteOverrides($this->registry, new SiteFiles(), $this->paths, new Images($this->runner, 'tcp://docker-proxy:2375'), new SiteLock($this->connection), new Compose($this->runner, new ComposePolicy(), new ComposeFiles(), new RuntimeImages($this->runner), new RuntimeBuilds($this->connection, $this->schema), 'tcp://docker-proxy:2375'));
     }
 }
