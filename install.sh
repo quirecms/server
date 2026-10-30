@@ -45,10 +45,14 @@ warn() { printf '\033[33mWarning:\033[0m %s\n' "$*" >&2; }
 die() { printf '\033[31mError:\033[0m %s\n' "$*" >&2; exit 1; }
 
 # A yes/no question on the terminal (also when this script comes through a pipe); "yes" with --yes.
-# Without --yes and without a terminal, the answer is no: nothing is done unasked.
+# Without --yes and without a terminal, the answer is no: nothing is done unasked, and it says so.
 ask() {
 	if [ "$yes" = 1 ]; then return 0; fi
-	if ! { : </dev/tty; } 2>/dev/null; then return 1; fi
+	# In a subshell: a redirection that fails on ":" (a special built-in) ends the whole script.
+	if ! (: </dev/tty) 2>/dev/null; then
+		warn "$1 There's no terminal to answer on: the answer is no (--yes answers yes)."
+		return 1
+	fi
 	printf '%s [y/N] ' "$1" >/dev/tty
 	read -r answer </dev/tty || return 1
 	case "$answer" in [yY] | [yY][eE][sS]) return 0 ;; *) return 1 ;; esac
