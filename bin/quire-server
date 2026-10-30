@@ -23,12 +23,41 @@ if [ "$(id -u)" -ne 0 ]; then
 	exit 1
 fi
 
+# Whether the front door publishes ports 80 and 443
+front_ports() {
+	compose port front 80 >/dev/null 2>&1 && compose port front 443 >/dev/null 2>&1
+}
+
 # Compose reads COMPOSE_FILE (server.env) relative to where it runs.
 cd "$root/server"
 
 case "${1:-help}" in
-	up) shift; compose up --detach --wait "$@" ;;
-	down) shift; compose down "$@" ;;
+	up)
+		shift
+		compose up --detach --wait "$@"
+		# The front door has no health check: after a port was taken, it can run without its ports.
+		if ! front_ports; then
+			echo 'The front door runs without its ports: starting it again.' >&2
+			compose up --detach --wait --force-recreate front
+			if ! front_ports; then
+				echo 'The front door can'\''t publish ports 80 and 443: another program uses them ("ss -ltnp" shows which). Every site is offline until it can.' >&2
+				exit 1
+			fi
+		fi
+		;;
+	down)
+		shift
+		# Its volumes are the server's PostgreSQL (every site's database) and the front door's certificates.
+		for argument in "$@"; do
+			case "$argument" in
+				-v | --volumes | --volumes=* | --rmi | --rmi=* | -[a-z]*v*)
+					echo "quire-server down keeps the server's data: \"$argument\" would delete every site's database and the server's registry (or its images). It isn't passed on." >&2
+					exit 1
+					;;
+			esac
+		done
+		compose down "$@"
+		;;
 	logs) shift; compose logs "$@" ;;
 	ps) shift; compose ps "$@" ;;
 	help|-h|--help) compose exec -T agent bin/console list server ;;

@@ -101,7 +101,7 @@ quire-server backups:restore-server --from-server=old   # every site of another 
 quire-server backups:check [--read=5]   # check the stored backups
 quire-server operations [--site=jane]  # what was done, by whom, and how it ended
 quire-server operations <id>           # an operation's log
-quire-server up | down | ps | logs     # the server itself
+quire-server up | down | ps | logs     # the server itself ("down -v" is refused: it would delete every site's database)
 ```
 
 - **Site names** are 2 to 30 lowercase letters, digits and single dashes (`jane`, `club-news`). They name the site's folder, its containers (`jane-php-1`) and its database (`site_jane`). Its domains are separate, and the first one is its main address.
@@ -171,7 +171,7 @@ Every site is backed up on the server before anything risky (an update, a restor
 quire-server backups:setup
 ```
 
-It asks for an S3-compatible bucket (DigitalOcean Spaces, Backblaze B2, Hetzner Object Storage, AWS S3…) and a key for it, checks they work, creates the backup repository there, and **shows its password once: keep it, with the bucket's key, somewhere other than this server** (a password manager). Without them the backups can't be read, and if the server is lost, they're the way back.
+It asks for an S3-compatible bucket (DigitalOcean Spaces, Backblaze B2, Hetzner Object Storage, AWS S3…) and a key for it, checks they work, creates the backup repository there, and **shows its password once: keep it, with the bucket's key, somewhere other than this server** (a password manager). Without them the backups can't be read, and if the server is lost, they're the way back. Run again on a server whose backups are set up, it asks before replacing them, and keeps the settings it replaces (the old password among them) in `server.env.before-<time>`.
 
 Then, every night (from 02:00 UTC; `QUIRE_SERVER_BACKUP_HOUR` in `server.env`, or `off`):
 

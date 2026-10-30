@@ -225,6 +225,13 @@ if want sites; then
 # The agent's nightly updates off on this machine: only the checks below update the site.
 inside "printf 'QUIRE_SERVER_UPDATE_HOUR=off\\n' >> /srv/quire/server/server.env && quire-server up >/dev/null 2>&1"
 check 'automatic updates can be off for the whole server' "inside 'quire-server logs agent' | grep -q 'Automatic updates: off on this server'"
+check '"down -v" is refused: the server'\''s data stays' "inside 'quire-server down -v 2>&1' | grep -q 'keeps the server.s data' && inside 'quire-server ps --format \"{{.Service}} {{.Health}}\"' | grep -q 'database healthy'"
+# Another program took ports 80 and 443 while the front door was gone, then let them go
+inside 'docker rm -f quire-server-front-1 >/dev/null && docker run -d --name other-web -p 80:80 -p 443:443 alpine:3.22 sleep 1d >/dev/null'
+inside 'quire-server up >/dev/null 2>&1' || true
+inside 'docker rm -f other-web >/dev/null'
+inside 'quire-server up 2>&1' > "$logs"/up-after-ports.log || true
+check 'after a port conflict, "up" gets the front door its ports back' "grep -q 'starting it again' $logs/up-after-ports.log && inside 'docker port quire-server-front-1 443'"
 echo '== Adding a site (a few minutes: it is built)'
 # Its third domain is one public DNS knows: it names 127.0.0.1, the front door itself (as a real domain names the server)
 inside 'quire-server site:add jane --domain=jane.test --domain=www.jane.test --domain=jane.127.0.0.1.sslip.io --admin-email=jane@example.com --title="Jane" 2>&1' | tee "$logs"/add.log | sed 's/^/    /'
