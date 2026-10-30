@@ -6,6 +6,7 @@ namespace Quire\Server\Tests\Release;
 
 use PHPUnit\Framework\TestCase;
 use Quire\Server\Process\ProcessResult;
+use Quire\Server\Release\FeedNotTrusted;
 use Quire\Server\Release\GitHubReleases;
 use Quire\Server\Release\QuireFeed;
 use Quire\Server\Release\ReleaseVerificationFailed;
@@ -22,6 +23,7 @@ final class QuireFeedTest extends TestCase
     /** @var array<string, string> */
     private array $served = [];
     private bool $signed = true;
+    private bool $sigstoreDown = false;
     private int $now = 1000;
     private ScriptedRunner $runner;
 
@@ -36,7 +38,7 @@ final class QuireFeedTest extends TestCase
                 }
 
                 $url = (string) end($command);
-                self::assertStringStartsWith('https://github.com/quirecms/framework/releases/download/v0.2.0/', $url);
+                self::assertStringStartsWith('https://github.com/quirecms/framework/releases/download/', $url);
                 $file = basename($url);
 
                 if (!isset($this->served[$file])) {
@@ -48,7 +50,11 @@ final class QuireFeedTest extends TestCase
 
                 return ScriptedRunner::ok($command);
             },
-            'cosign verify-blob' => fn (array $command): ProcessResult => $this->signed ? ScriptedRunner::ok($command) : ScriptedRunner::failed($command, 'Error: none of the expected identities matched'),
+            'cosign verify-blob' => fn (array $command): ProcessResult => match (true) {
+                $this->sigstoreDown => ScriptedRunner::failed($command, "Error: fetching trusted root: Get \"https://tuf-repo-cdn.sigstore.dev/\": dial tcp: lookup tuf-repo-cdn.sigstore.dev: no such host\n"),
+                $this->signed => ScriptedRunner::ok($command),
+                default => ScriptedRunner::failed($command, 'Error: none of the expected identities matched'),
+            },
         ]);
     }
 
@@ -65,8 +71,31 @@ final class QuireFeedTest extends TestCase
     public function testAFeedNotSignedByTheFrameworksWorkflowIsRefused(): void
     {
         $this->signed = false;
+        $this->expectException(FeedNotTrusted::class);
+        $this->expectExceptionMessageIsOrContains('didn\'t check out (it must be signed by https://github.com/quirecms/framework/.github/workflows/release.yaml@refs/tags/v0.2.0): it may have been tampered with');
+        $this->feed()->read();
+    }
+
+    public function testSigstoreNotAnsweringIsNoAlarm(): void
+    {
+        $this->sigstoreDown = true;
+
+        try {
+            $this->feed()->read();
+            self::fail('It was read.');
+        } catch (FeedNotTrusted) {
+            self::fail('Reported as a feed that doesn\'t check out.');
+        } catch (ReleaseVerificationFailed $e) {
+            self::assertStringContainsString('couldn\'t be checked: Sigstore didn\'t answer', $e->getMessage());
+        }
+    }
+
+    public function testALatestReleaseWithoutAFeedIsNoQuietNull(): void
+    {
+        // Every release has a feed since 0.1.2: one that can't be got isn't "no feed"
+        $this->served = [];
         $this->expectException(ReleaseVerificationFailed::class);
-        $this->expectExceptionMessageIsOrContains('didn\'t check out');
+        $this->expectExceptionMessageIsOrContains('Quire 0.2.0\'s release feed couldn\'t be got');
         $this->feed()->read();
     }
 
@@ -81,6 +110,7 @@ final class QuireFeedTest extends TestCase
 
     public function testReleasesBeforeTheFeedHaveNone(): void
     {
+        $this->latest = 'https://github.com/quirecms/framework/releases/tag/v0.1.1';
         $this->served = [];
         self::assertNull($this->feed()->read());
         self::assertNotContains('cosign', array_map(static fn (array $run): string => $run['command'][0], $this->runner->runs));

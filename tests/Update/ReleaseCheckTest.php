@@ -21,6 +21,8 @@ use Quire\Server\Update\UpdatePlan;
  */
 final class ReleaseCheckTest extends RegistryTestCase
 {
+    private bool $tampered = false;
+
     /** @var list<array<string, mixed>> */
     private array $releases = [];
     private bool $reachable = true;
@@ -74,6 +76,15 @@ final class ReleaseCheckTest extends RegistryTestCase
         self::assertStringContainsString('isn\'t in Quire\'s release feed', $check['notes'][0] ?? '');
     }
 
+    public function testAFeedThatDoesntCheckOutStopsTheUpdate(): void
+    {
+        $this->tampered = true;
+        $check = $this->check('v0.1.1', 'v0.1.2');
+
+        self::assertFalse($check['vouched']);
+        self::assertStringContainsString('may have been tampered with', $check['blocked'][0] ?? '', 'Not a note an update goes ahead after: it stops.');
+    }
+
     public function testAFeedThatCannotBeReadVouchesForNothing(): void
     {
         $this->reachable = false;
@@ -105,7 +116,7 @@ final class ReleaseCheckTest extends RegistryTestCase
 
                 return ScriptedRunner::ok($command);
             },
-            'cosign verify-blob' => static fn (array $command): ProcessResult => ScriptedRunner::ok($command),
+            'cosign verify-blob' => fn (array $command): ProcessResult => $this->tampered ? ScriptedRunner::failed($command, 'Error: none of the expected identities matched') : ScriptedRunner::ok($command),
         ]);
         $plan = new UpdatePlan(new SiteName('jane'), sys_get_temp_dir(), LockTest::lock(['quire/core' => $from]), LockTest::lock(['quire/core' => $to]), '{}', [['package' => 'quire/core', 'from' => $from, 'to' => $to]], [], null, true, [], [], '');
         $site = new Site(new SiteName('jane'), Site::RUNNING, $databaseMode, 'jane', [new Domain('jane.example')], new \DateTimeImmutable());

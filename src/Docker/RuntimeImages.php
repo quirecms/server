@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Quire\Server\Docker;
 
 use Quire\Server\Process\ProcessRunner;
+use Quire\Server\Process\Unreachable;
 
 /**
  * Quire's runtime images (ghcr.io/quirecms/runtime), which sites from Quire's skeleton build on: their
@@ -18,9 +19,6 @@ use Quire\Server\Process\ProcessRunner;
  */
 final class RuntimeImages
 {
-    /** What cosign says when the registry or Sigstore can't be reached, rather than about a signature */
-    private const string UNREACHABLE = '/dial tcp|no such host|connection refused|i\/o timeout|TLS handshake timeout|deadline exceeded|network is unreachable|temporary failure in name resolution|Service Unavailable|Bad Gateway|Gateway Timeout|Too Many Requests/i';
-
     /** How long a checked digest is taken as the runtime's newest (a night checks many sites) */
     private const int FRESH_FOR = 600;
 
@@ -115,10 +113,10 @@ final class RuntimeImages
         );
 
         if (!$result->successful()) {
-            $said = $this->lastLine($result->errorOutput);
+            $said = Unreachable::lastLine($result->errorOutput);
 
             // Not a verdict on the image: nothing answered. As careful (nothing is built), but no alarm.
-            if (1 === preg_match(self::UNREACHABLE, $result->errorOutput)) {
+            if (Unreachable::said($result->errorOutput)) {
                 throw new \RuntimeException(\sprintf('Quire\'s runtime %s couldn\'t be checked: the registry or Sigstore didn\'t answer (%s). Nothing was built; try again later.', $image, $said));
             }
 
@@ -151,12 +149,5 @@ final class RuntimeImages
         }
 
         return $digest;
-    }
-
-    private function lastLine(string $output): string
-    {
-        $lines = array_values(array_filter(array_map(trim(...), explode("\n", $output)), static fn (string $line): bool => '' !== $line));
-
-        return mb_substr($lines[\count($lines) - 1] ?? 'no output', 0, 300);
     }
 }
