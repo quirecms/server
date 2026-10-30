@@ -344,7 +344,7 @@ final class DatabaseUpgraderTest extends RegistryTestCase
         /** @var array{driver: 'pdo_pgsql'} $params The same database, through a connection of its own */
         $params = $this->connection->getParams();
         $other = DriverManager::getConnection($params);
-        $other->fetchOne('SELECT pg_advisory_lock_shared(hashtextextended(?, 0))', [SiteLock::SERVER]);
+        $other->fetchOne('SELECT pg_advisory_lock_shared(hashtextextended(?, 0))', [$this->schema.':server']);
 
         try {
             $this->upgrader()->upgrade(19, 'cli', 'darko', $this->say(...));
@@ -581,7 +581,7 @@ final class DatabaseUpgraderTest extends RegistryTestCase
             new ServerFolder($runner, $this->root),
             new ServerStack($runner, 'unix:///var/run/docker.sock', 's3cret'),
             new DatabaseContainers($runner, 'unix:///var/run/docker.sock', 's3cret', static function (): void {}),
-            new SiteLock($this->connection),
+            new SiteLock($this->connection, $this->schema),
             $this->connection,
             $this->operations,
             $backups ?? new BackupSettings('', '', '', '', 'us-east-1', 'quire-server', '2', '7 daily'),
