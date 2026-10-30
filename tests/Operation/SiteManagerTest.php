@@ -22,6 +22,7 @@ use Quire\Server\Operation\SiteRequest;
 use Quire\Server\Process\ProcessResult;
 use Quire\Server\Process\ProcessRunner;
 use Quire\Server\Registry\RuntimeBuilds;
+use Quire\Server\Registry\RuntimeFloors;
 use Quire\Server\Registry\SiteGit;
 use Quire\Server\Registry\SiteLock;
 use Quire\Server\Registry\SiteRegistry;
@@ -657,7 +658,7 @@ final class SiteManagerTest extends RegistryTestCase
             new SkeletonInstaller($runner),
             $this->databases,
             new \Quire\Server\Site\SiteFiles(),
-            $compose = new Compose($runner, new ComposePolicy(), new ComposeFiles(), new RuntimeImages($runner), new RuntimeBuilds($this->connection, $this->schema), 'tcp://docker-proxy:2375'),
+            $compose = new Compose($runner, new ComposePolicy(), new ComposeFiles(), new RuntimeImages($runner, new RuntimeFloors($this->connection, $this->schema)), new RuntimeBuilds($this->connection, $this->schema), 'tcp://docker-proxy:2375'),
             $this->frontDoor,
             $this->paths,
             new Git($runner, $keys = new DeployKeys($runner, $this->paths)),

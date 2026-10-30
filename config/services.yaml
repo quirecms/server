@@ -33,6 +33,10 @@ services:
         arguments:
             $dockerHost: '%env(DOCKER_HOST)%'
 
+    Quire\Server\Docker\RuntimeImages:
+        arguments:
+            $dockerHost: '%env(DOCKER_HOST)%'
+
     Quire\Server\Docker\Images:
         arguments:
             $dockerHost: '%env(DOCKER_HOST)%'

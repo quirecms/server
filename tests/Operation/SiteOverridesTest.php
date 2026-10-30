@@ -12,6 +12,7 @@ use Quire\Server\Docker\RuntimeImages;
 use Quire\Server\Operation\SiteOverrides;
 use Quire\Server\Process\ProcessResult;
 use Quire\Server\Registry\RuntimeBuilds;
+use Quire\Server\Registry\RuntimeFloors;
 use Quire\Server\Registry\SiteLock;
 use Quire\Server\Registry\SiteRegistry;
 use Quire\Server\Site\Domain;
@@ -125,6 +126,6 @@ final class SiteOverridesTest extends RegistryTestCase
 
     private function subject(): SiteOverrides
     {
-        return new SiteOverrides($this->registry, new SiteFiles(), $this->paths, new Images($this->runner, 'tcp://docker-proxy:2375'), new SiteLock($this->connection), new Compose($this->runner, new ComposePolicy(), new ComposeFiles(), new RuntimeImages($this->runner), new RuntimeBuilds($this->connection, $this->schema), 'tcp://docker-proxy:2375'));
+        return new SiteOverrides($this->registry, new SiteFiles(), $this->paths, new Images($this->runner, 'tcp://docker-proxy:2375'), new SiteLock($this->connection), new Compose($this->runner, new ComposePolicy(), new ComposeFiles(), new RuntimeImages($this->runner, new RuntimeFloors($this->connection, $this->schema)), new RuntimeBuilds($this->connection, $this->schema), 'tcp://docker-proxy:2375'));
     }
 }

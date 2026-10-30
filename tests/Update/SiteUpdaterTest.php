@@ -21,6 +21,7 @@ use Quire\Server\Operation\OperationLog;
 use Quire\Server\Operation\SiteManager;
 use Quire\Server\Process\ProcessResult;
 use Quire\Server\Registry\RuntimeBuilds;
+use Quire\Server\Registry\RuntimeFloors;
 use Quire\Server\Registry\SiteGit;
 use Quire\Server\Registry\SiteLock;
 use Quire\Server\Registry\SiteRegistry;
@@ -672,7 +673,7 @@ final class SiteUpdaterTest extends RegistryTestCase
 
     private function updater(): SiteUpdater
     {
-        $compose = new Compose($this->runner, new ComposePolicy(), new ComposeFiles(), new RuntimeImages($this->runner), new RuntimeBuilds($this->connection, $this->schema), 'tcp://docker-proxy:2375');
+        $compose = new Compose($this->runner, new ComposePolicy(), new ComposeFiles(), new RuntimeImages($this->runner, new RuntimeFloors($this->connection, $this->schema)), new RuntimeBuilds($this->connection, $this->schema), 'tcp://docker-proxy:2375');
         $sites = new SiteManager(
             $this->registry,
             $this->operations,

@@ -164,4 +164,26 @@ final class Schema
                 SQL,
         ];
     }
+
+    /**
+     * The newest build of each of Quire's runtime images this server built on: one older than it (a
+     * tag moved back) isn't built on.
+     *
+     * @return list<string>
+     */
+    public static function version6(string $schema = self::NAME): array
+    {
+        $s = '"'.str_replace('"', '""', $schema).'"';
+
+        return [
+            <<<SQL
+                CREATE TABLE {$s}.runtime_floor (
+                    image text PRIMARY KEY,
+                    digest text NOT NULL,
+                    created timestamptz NOT NULL,
+                    seen_at timestamptz NOT NULL DEFAULT now()
+                )
+                SQL,
+        ];
+    }
 }
