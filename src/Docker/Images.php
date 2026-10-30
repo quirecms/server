@@ -13,7 +13,8 @@ use Quire\Server\Process\ProcessRunner;
 final readonly class Images
 {
     /** A local image name with an optional tag, e.g. "jane-php-prod" or "jane-php-prod:previous" */
-    private const string NAME = '/^[a-z0-9]+(?:[._-][a-z0-9]+)*(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?\z/';
+    /** A local name, its path's parts as Docker's (e.g. "quire-sites/jane/php-prod"), and a tag */
+    private const string NAME = '#^[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*(?:/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*)*(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?\z#';
     private const string ID = '/^sha256:[0-9a-f]{64}\z/';
 
     public function __construct(
@@ -28,6 +29,17 @@ final readonly class Images
     public function id(string $name): ?string
     {
         $result = $this->docker(['image', 'inspect', '--format', '{{.Id}}', $this->name($name)]);
+        $id = trim($result->output);
+
+        return $result->successful() && 1 === preg_match(self::ID, $id) ? $id : null;
+    }
+
+    /**
+     * The ID of the image a container runs, or null when there's no such container.
+     */
+    public function ofContainer(string $container): ?string
+    {
+        $result = $this->docker(['container', 'inspect', '--format', '{{.Image}}', $container]);
         $id = trim($result->output);
 
         return $result->successful() && 1 === preg_match(self::ID, $id) ? $id : null;

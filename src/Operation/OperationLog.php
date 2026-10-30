@@ -16,6 +16,9 @@ use Quire\Server\Site\SiteName;
  */
 final readonly class OperationLog
 {
+    /** Why an operation the agent's stop cut short failed, and where to look */
+    public const string INTERRUPTED = 'Interrupted: the agent stopped while it ran. What it left half done was put back when the agent started again ("quire-server logs agent" says how).';
+
     public function __construct(
         private Connection $connection,
         private string $schema = Schema::NAME,
@@ -80,8 +83,18 @@ final readonly class OperationLog
     }
 
     /**
-     * Operations a crash or a restart left "running": marked failed, so none looks busy forever.
+     * The operations that run now, e.g. "site.deploy of blog".
+     *
+     * @return list<string>
      */
+    public function running(): array
+    {
+        return array_map(
+            static fn (array $row): string => self::text($row['action'] ?? '').(null === ($row['site'] ?? null) ? '' : ' of '.self::text($row['site'])),
+            $this->connection->fetchAllAssociative(\sprintf("SELECT action, site FROM %s.operation WHERE status = 'running' ORDER BY started_at", $this->schema())),
+        );
+    }
+
     /**
      * When an action last started, or null when it never did.
      */
@@ -92,9 +105,12 @@ final readonly class OperationLog
         return \is_string($at) ? new \DateTimeImmutable($at) : null;
     }
 
+    /**
+     * Operations a crash or a restart left "running": marked failed, so none looks busy forever.
+     */
     public function abandonRunning(): int
     {
-        return (int) $this->connection->executeStatement(\sprintf("UPDATE %s.operation SET status = 'failed', error = 'Interrupted: the agent stopped while it ran.', finished_at = now() WHERE status = 'running'", $this->schema()));
+        return (int) $this->connection->executeStatement(\sprintf("UPDATE %s.operation SET status = 'failed', error = ?, finished_at = now() WHERE status = 'running'", $this->schema()), [self::INTERRUPTED]);
     }
 
     private function append(string $id, int $seq, string $line): void

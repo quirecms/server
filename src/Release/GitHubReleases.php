@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Quire\Server\Release;
 
 use Quire\Server\Process\ProcessRunner;
+use Quire\Server\Process\Unreachable;
 
 /**
  * Releases of a GitHub repository: which is the latest, their files, and whether a file was signed by
@@ -64,14 +65,23 @@ final readonly class GitHubReleases
      * Whether a file was signed by the repository's release workflow, run for this version's tag (its
      * Sigstore bundle beside it, as "<file>.sigstore.json").
      */
+    /**
+     * @throws ReleaseVerificationFailed When Sigstore couldn't be reached: not a verdict
+     */
     public function signed(string $repository, Version $version, string $file, string $work): bool
     {
-        return $this->runner->run(
+        $result = $this->runner->run(
             ['cosign', 'verify-blob', '--bundle', $file.'.sigstore.json', '--certificate-identity', self::identity($repository, $version), '--certificate-oidc-issuer', self::ISSUER, $file],
             // Sigstore's trusted roots are cached in its home.
             ['HOME' => $work],
             timeout: 120,
-        )->successful();
+        );
+
+        if (!$result->successful() && Unreachable::said($result->errorOutput)) {
+            throw new ReleaseVerificationFailed(\sprintf('The signature of %s couldn\'t be checked: Sigstore didn\'t answer (%s). Try again later.', basename($file), Unreachable::lastLine($result->errorOutput)));
+        }
+
+        return $result->successful();
     }
 
     /**

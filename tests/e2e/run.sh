@@ -107,7 +107,7 @@ check 'it can'\''t reach the server'\''s PostgreSQL' "! inside 'docker exec demo
 check 'it was backed up first' "inside 'ls /srv/quire/backups/demo/before-server-*.tar'"
 check 'its settings as they were are kept (root only)' "[ \"\$(inside 'cat /srv/quire/sites/demo/prod.env.before-server')\" = \"\$demo_env\" ] && [ \"\$(inside 'stat -c %a /srv/quire/sites/demo/prod.env.before-server')\" = 600 ]"
 check 'two lines of its prod.env changed' "inside 'grep -c compose.server.yaml /srv/quire/sites/demo/prod.env' | grep -q 1 && inside 'grep -q \"^COMPOSE_PROJECT_NAME='\\''demo'\\''\" /srv/quire/sites/demo/prod.env'"
-check 'its image has its own name' "inside 'docker inspect demo-php-1 --format \"{{.Config.Image}}\"' | grep -q '^demo-php-prod'"
+check 'its image has its own name' "inside 'docker inspect demo-php-1 --format \"{{.Config.Image}}\"' | grep -q '^quire-sites/demo/php-prod'"
 check 'the adoption is recorded' "inside 'quire-server operations' | grep -q 'site.adopt.*succeeded'"
 check 'its versions are recorded in its folder' "inside 'test -f /srv/quire/sites/demo/composer.lock'"
 fi
@@ -176,6 +176,11 @@ check 'its settings and password are root'\''s only' "[ \"\$(inside 'stat -c %a 
 password=$(inside "sed -n \"s/^QUIRE_SERVER_BACKUP_PASSWORD='\\(.*\\)'\$/\\1/p\" /srv/quire/server/server.env")
 check 'the agent has them' "inside 'quire-server backups jane 2>&1' | grep -q 'No backup of \"jane\" off the server yet'"
 
+# A table of the site's application, outside Quire's schema: its backups have it too
+orders() { inside "docker exec $1-php-1 bin/console dbal:run-sql 'SELECT count(*) FROM public.app_order'" 2>/dev/null | grep -oE '[0-9]+' | tail -1; }
+inside "docker exec jane-php-1 bin/console dbal:run-sql -q 'CREATE TABLE public.app_order (id int PRIMARY KEY)' && docker exec jane-php-1 bin/console dbal:run-sql -q 'INSERT INTO public.app_order VALUES (1), (2)'" >/dev/null
+# What an earlier backup cut short left in the site's container, where 0.3.0 always wrote it
+inside "docker exec jane-php-1 sh -c 'echo partial > /tmp/quire-off-server-backup.tar'"
 inside 'quire-server backups:now 2>&1' | tee "$logs"/now.log | sed 's/^/    /'
 check 'every site and the server are backed up off the server' "grep -q 'Backed up off the server: jane, server' $logs/now.log"
 check 'each site'\''s backups are listed on their own' "[ \"\$(inside 'quire-server backups jane' | grep -cE '^ +[0-9a-f]{8} ')\" = 1 ] && [ \"\$(inside 'quire-server backups server' | grep -cE '^ +[0-9a-f]{8} ')\" = 1 ]"
@@ -183,11 +188,13 @@ check 'what is stored is encrypted (no site data in it as text)' "! inside 'dock
 check 'its secrets aren'\''t in its log' "! inside \"quire-server operations \$(inside 'quire-server operations' | grep backups.nightly | head -1 | awk '{print \$1}')\" | grep -q -e e2e-secret -e '$password'"
 
 inside "docker exec jane-php-1 bin/console quire:settings:set site.title 'Jane after'" >/dev/null
+inside "docker exec jane-php-1 bin/console dbal:run-sql -q 'INSERT INTO public.app_order VALUES (3)'" >/dev/null
 check 'the site changed since its backup' "inside \"curl -sk $resolve https://jane.test/\" | grep -q 'Jane after'"
 server_snapshot=$(inside 'quire-server backups server' | grep -oE '^ +[0-9a-f]{8} ' | tr -d ' ' | head -1)
 check 'another backup than the site'\''s own isn'\''t restored to it' "inside 'quire-server backups:restore jane --snapshot=$server_snapshot --yes 2>&1' | grep -q 'no such backup' && inside \"curl -sk $resolve https://jane.test/\" | grep -q 'Jane after'"
 inside 'quire-server backups:restore jane --yes 2>&1' | tee "$logs"/restore.log | sed 's/^/    /'
 check 'restoring it from off the server puts it back as it was' "grep -q 'is as it was on' $logs/restore.log && inside \"curl -sk $resolve https://jane.test/\" | grep -q 'Jane before'"
+check 'its application'\''s own tables too' "[ \"\$(orders jane)\" = 2 ]"
 check 'the restore is recorded, and it was backed up first' "inside 'quire-server operations' | grep -q 'site.restore.*succeeded' && inside 'ls /srv/quire/backups/jane/before-restore-*.tar'"
 check 'nothing of the restore is left on the server' "[ -z \"\$(inside 'ls -d /srv/quire/backups/jane/from-off-server-* /srv/quire/backups/jane/off-server-*.tar 2>/dev/null')\" ]"
 
@@ -204,6 +211,7 @@ echo '== A site from a backup, as a new site: a copy here, and moved from anothe
 inside 'quire-server backups:restore jane --as=jane-copy --domain=copy.test --yes 2>&1' | tee "$logs"/copy.log | sed 's/^/    /'
 check 'a copy of a site runs from its backup, with its data' "grep -q 'jane-copy\" runs, as \"jane\" was' $logs/copy.log && inside 'curl -sk --resolve copy.test:443:127.0.0.1 https://copy.test/' | grep -q 'Jane before'"
 check 'the copy has settings of its own (no secret of the site'\''s)' "[ \"\$(inside \"sed -n 's/^APP_SECRET=//p' /srv/quire/sites/jane/prod.env\")\" != \"\$(inside \"sed -n 's/^APP_SECRET=//p' /srv/quire/sites/jane-copy/prod.env\")\" ] && inside 'quire-server site:list' | grep -q 'jane-copy.*running'"
+check 'with its application'\''s own tables' "[ \"\$(orders jane-copy)\" = 2 ]"
 check 'the site itself is untouched' "inside \"curl -sk $resolve https://jane.test/\" | grep -q 'Jane before' && inside 'quire-server site:list' | grep -q 'jane .*running'"
 check 'a name taken isn'\''t restored over' "inside 'quire-server backups:restore jane --as=jane --domain=other.test --yes 2>&1' | grep -q 'exists already' && inside \"curl -sk $resolve https://jane.test/\" | grep -q 'Jane before'"
 # This machine as a second server, under another name in the same bucket: the first one's backups are another server's.
@@ -217,6 +225,7 @@ echo '== A whole server from its backups (as a server that replaces it)'
 inside 'quire-server site:remove jane --yes >/dev/null 2>&1'
 inside 'quire-server backups:restore-server --from-server=quire-server --yes 2>&1' | tee "$logs"/restore-server.log | sed 's/^/    /'
 check 'every site of the old server is restored, with its name and domains' "grep -Eq 'jane +restored' $logs/restore-server.log && inside \"curl -sk $resolve https://jane.test/\" | grep -q 'Jane before'"
+check 'with its application'\''s own tables' "[ \"\$(orders jane)\" = 2 ]"
 check 'with its update policy' "inside 'quire-server site:updates jane' | grep -q 'fix a known vulnerability'"
 check 'a server with no backups is refused' "inside 'quire-server backups:restore-server --from-server=no-such-server --yes 2>&1' | grep -q 'no backup of the server'"
 fi
@@ -225,8 +234,16 @@ if want sites; then
 # The agent's nightly updates off on this machine: only the checks below update the site.
 inside "printf 'QUIRE_SERVER_UPDATE_HOUR=off\\n' >> /srv/quire/server/server.env && quire-server up >/dev/null 2>&1"
 check 'automatic updates can be off for the whole server' "inside 'quire-server logs agent' | grep -q 'Automatic updates: off on this server'"
+check '"down -v" is refused: the server'\''s data stays' "inside 'quire-server down -v 2>&1' | grep -q 'keeps the server.s data' && inside 'quire-server ps --format \"{{.Service}} {{.Health}}\"' | grep -q 'database healthy'"
+# Another program took ports 80 and 443 while the front door was gone, then let them go
+inside 'docker rm -f quire-server-front-1 >/dev/null && docker run -d --name other-web -p 80:80 -p 443:443 alpine:3.22 sleep 1d >/dev/null'
+inside 'quire-server up >/dev/null 2>&1' || true
+inside 'docker rm -f other-web >/dev/null'
+inside 'quire-server up 2>&1' > "$logs"/up-after-ports.log || true
+check 'after a port conflict, "up" gets the front door its ports back' "grep -q 'starting it again' $logs/up-after-ports.log && inside 'docker port quire-server-front-1 443'"
 echo '== Adding a site (a few minutes: it is built)'
-inside 'quire-server site:add jane --domain=jane.test --domain=www.jane.test --admin-email=jane@example.com --title="Jane" 2>&1' | tee "$logs"/add.log | sed 's/^/    /'
+# Its third domain is one public DNS knows: it names 127.0.0.1, the front door itself (as a real domain names the server)
+inside 'quire-server site:add jane --domain=jane.test --domain=www.jane.test --domain=jane.127.0.0.1.sslip.io --admin-email=jane@example.com --title="Jane" 2>&1' | tee "$logs"/add.log | sed 's/^/    /'
 check 'the site runs' "inside 'quire-server site:list' | grep -q running"
 check 'a password was shown once (no email server)' "grep -q 'signs in with the password' $logs/add.log"
 
@@ -257,6 +274,7 @@ check 'its log has the steps, and no secret' "inside 'quire-server operations $o
 echo '== Updating the site'
 check 'its versions are recorded in its folder' "inside 'test -f /srv/quire/sites/jane/composer.lock'"
 check 'the front door says "back in a moment" while a site is down' "inside 'docker stop jane-php-1 >/dev/null' && inside \"curl -sk $resolve -D- https://jane.test/\" | grep -q '^HTTP/2 503' && inside \"curl -sk $resolve https://jane.test/\" | grep -q 'Back in a moment'; inside 'docker start jane-php-1 >/dev/null; sleep 15'"
+check 'with a domain public DNS knows too, not a loop to the front door itself' "inside 'docker stop jane-php-1 >/dev/null' && [ \"\$(inside \"curl -sk --resolve jane.127.0.0.1.sslip.io:443:127.0.0.1 -o /dev/null -w '%{http_code}' https://jane.127.0.0.1.sslip.io/\")\" = 503 ]; inside 'docker start jane-php-1 >/dev/null; sleep 15'"
 # An older Symfony YAML with a known vulnerability, as if the site had been made a while ago: built and
 # running. (Composer refuses such versions: --no-blocking, only here, to make the site an old one.)
 inside 'docker exec quire-server-agent-1 composer update symfony/yaml --with=symfony/yaml:8.1.0 --with-all-dependencies --no-blocking --no-install --no-scripts --no-plugins --ignore-platform-req=ext-* --no-interaction -q --working-dir=/srv/quire/sites/jane' 2>&1 | sed 's/^/    /'
@@ -268,7 +286,7 @@ check 'the plan shows the update fixes it, and changes nothing' "grep -q 'Fixes 
 inside 'quire-server site:update jane --yes 2>&1' | tee "$logs"/update.log | sed 's/^/    /'
 check 'the site is updated' "grep -q 'is up to date' $logs/update.log && ! inside 'grep -A1 \"\\\"name\\\": \\\"symfony/yaml\\\"\" /srv/quire/sites/jane/composer.lock' | grep -q '\"v8.1.0\"'"
 check 'it answers after its update' "[ \"\$(inside \"curl -sk $resolve -o /dev/null -w '%{http_code}' https://jane.test/\")\" = 200 ]"
-check 'the image it ran is kept to undo' "inside 'docker image inspect jane-php-prod:before-update' >/dev/null"
+check 'the image it ran is kept to undo' "inside 'docker image inspect quire-sites/jane/php-prod:before-update' >/dev/null"
 inside 'quire-server site:undo jane --yes 2>&1' | tee "$logs"/undo.log | sed 's/^/    /'
 check 'undoing it puts the older version back' "grep -q 'as it was before its update' $logs/undo.log && inside 'grep -A1 \"\\\"name\\\": \\\"symfony/yaml\\\"\" /srv/quire/sites/jane/composer.lock' | grep -q '\"v8.1.0\"' && [ \"\$(inside \"curl -sk $resolve -o /dev/null -w '%{http_code}' https://jane.test/\")\" = 200 ]"
 
@@ -299,6 +317,12 @@ check 'it is recorded as made by itself' "inside 'quire-server operations' | gre
 check 'it answers after its automatic update' "[ \"\$(inside \"curl -sk $resolve -o /dev/null -w '%{http_code}' https://jane.test/\")\" = 200 ]"
 inside 'quire-server site:update --all --automatic 2>&1' > "$logs"/automatic-again.log
 check 'the next run finds nothing to fix' "grep -Eq 'jane +up to date +no known vulnerability' $logs/automatic-again.log"
+check 'Composer ran in a container of its own, gone after' "[ -z \"\$(inside 'docker ps -aq --filter label=com.quirecms.server.sandbox')\" ] && inside 'docker network inspect quire-sandbox'"
+check 'that container reaches neither the docker-proxy nor the database' "! inside 'docker run --rm --network quire-sandbox alpine:3.22 sh -c \"wget -qT5 -O- http://docker-proxy:2375/_ping || nc -zw5 quire-database 5432\"'"
+# A composer.json in the site's folder that has Composer post to the docker-proxy
+inside 'cp /srv/quire/sites/jane/composer.json /root/jane-composer.json && sed -i "s#^    \"type\": \"project\",#    \"type\": \"project\", \"repositories\": [{\"type\": \"composer\", \"url\": \"http://docker-proxy:2375\", \"options\": {\"http\": {\"method\": \"POST\"}}}], \"config\": {\"secure-http\": false},#" /srv/quire/sites/jane/composer.json'
+check 'a composer.json fetching other than over HTTPS is refused' "inside 'quire-server site:audit jane 2>&1' | tr -s ' \\n' ' ' | grep -q 'over HTTPS only' && inside 'quire-server site:update jane --dry-run 2>&1' | tr -s ' \\n' ' ' | grep -q 'over HTTPS only'"
+inside 'cp /root/jane-composer.json /srv/quire/sites/jane/composer.json'
 fi
 
 if want git; then
@@ -321,6 +345,35 @@ check 'no key in its folder or its image' "! inside 'grep -rl \"PRIVATE KEY\" /s
 commit 'mkdir -p public && echo two > public/hello.txt' 'Two'
 inside 'quire-server site:deploy blog 2>&1' | sed 's/^/    /'
 check 'a deploy runs the new commit' "[ \"\$(inside \"curl -sk $gresolve https://blog.test/hello.txt\")\" = two ]"
+# A commit whose Compose file asks for one of the server's settings (Compose fills in "${…}" from the
+# environment it runs in before the site's env file)
+inside "printf '%s\n' '{print} /^    environment:\$/ && !done {print \"      QUIRE_LEAK: \${QUIRE_SERVER_POSTGRES_ADMIN_URL:-none}\"; done = 1}' > /root/leak.awk && docker cp /root/leak.awk git-server:/tmp/leak.awk"
+commit 'awk -f /tmp/leak.awk compose.prod.yaml > /tmp/c && cat /tmp/c > compose.prod.yaml' 'Settings'
+inside 'quire-server site:deploy blog 2>&1' | sed 's/^/    /'
+check 'a site'\''s Compose file gets none of the server'\''s settings' "[ \"\$(inside 'docker exec blog-php-1 printenv QUIRE_LEAK')\" = none ]"
+check 'it runs with its own APP_SECRET, not the agent'\''s' "s=\$(inside 'docker exec blog-php-1 printenv APP_SECRET') && [ -n \"\$s\" ] && inside \"grep -qxF \\\"APP_SECRET='\$s'\\\" /srv/quire/sites/blog/prod.env\" && [ \"\$s\" != \"\$(inside 'docker exec quire-server-agent-1 printenv APP_SECRET')\" ]"
+# Commits reading files outside the site (another site's prod.env could be named), then its own server files
+commit 'printf "include:\n  - path: compose.yaml\n    env_file: ../../server/server.env\n" >> compose.prod.yaml' 'Include'
+inside 'quire-server site:deploy blog 2>&1' | tee "$logs"/git-include.log | sed 's/^/    /'
+check 'a commit including other files is refused, never read' "grep -q '\"include\" reads other files' $logs/git-include.log && grep -q 'as it was before' $logs/git-include.log"
+commit 'git revert --no-commit HEAD' 'Back'
+commit 'printf "services: {}\n" > compose.server.yaml' 'Its own server file'
+inside 'quire-server site:deploy blog 2>&1' | tee "$logs"/git-tracked.log | sed 's/^/    /'
+check 'a commit with the server'\''s own files is refused, they stay' "grep -q 'the server.s own files' $logs/git-tracked.log && inside 'grep -q cap_drop /srv/quire/sites/blog/compose.server.yaml'"
+commit 'git revert --no-commit HEAD' 'Back again'
+check 'its image is named in its own namespace' "[ \"\$(inside 'docker inspect blog-php-1 --format \"{{.Config.Image}}\"')\" = quire-sites/blog/php-prod ]"
+# A commit building an image under another site's name (its next start would run this code)
+inside "printf '%s\n' '{print} /^services:\$/ && !done {print \"  squat:\"; print \"    build: .\"; print \"    image: quire-sites/jane/php-prod\"; done = 1}' > /root/squat.awk && docker cp /root/squat.awk git-server:/tmp/squat.awk"
+commit 'awk -f /tmp/squat.awk compose.prod.yaml > /tmp/c && cat /tmp/c > compose.prod.yaml' 'Squat'
+inside 'quire-server site:deploy blog 2>&1' | tee "$logs"/git-squat.log | sed 's/^/    /'
+check 'a commit naming another site'\''s image is refused, never built' "grep -q 'quire-sites/jane/php-prod' $logs/git-squat.log && grep -q 'as it was before' $logs/git-squat.log && ! inside 'docker image inspect quire-sites/jane/php-prod'"
+commit 'git revert --no-commit HEAD' 'Back'
+# A commit adding a service with Docker's defaults (NET_RAW) in the web container's network
+inside "printf '%s\n' '{print} /^services:\$/ && !done {print \"  sidecar:\"; print \"    image: alpine:3.22\"; print \"    network_mode: service:php\"; done = 1}' > /root/sidecar.awk && docker cp /root/sidecar.awk git-server:/tmp/sidecar.awk"
+commit 'awk -f /tmp/sidecar.awk compose.prod.yaml > /tmp/c && cat /tmp/c > compose.prod.yaml' 'Sidecar'
+inside 'quire-server site:deploy blog 2>&1' | tee "$logs"/git-sidecar.log | sed 's/^/    /'
+check 'a commit adding a service with Docker'\''s defaults is refused, never started' "tr -s ' \\n' ' ' < $logs/git-sidecar.log | grep -q 'cap_drop: \[ALL\]. is missing' && ! inside 'docker ps -a --format \"{{.Names}}\"' | grep -q '^blog-sidecar'"
+commit 'git revert --no-commit HEAD' 'Back again'
 inside "printf '\nQUIRE_SERVER_GIT_POLL_SECONDS=60\n' >> /srv/quire/server/server.env && quire-server up >/dev/null 2>&1 && quire-server site:poll blog on >/dev/null"
 commit 'echo three > public/hello.txt' 'Three'
 waited=0
@@ -333,6 +386,11 @@ check 'undoing a deploy runs the commit before' "[ \"\$(inside \"curl -sk $greso
 commit 'ln -sf /srv/quire/server/keys/blog/id_ed25519 public/key.txt' 'A link to its own key'
 inside 'quire-server site:deploy blog 2>&1' | sed 's/^/    /'
 check 'a symbolic link in the repository is a plain file, not the key' "inside \"curl -sk $gresolve https://blog.test/key.txt\" | grep -q '^/srv/quire/server/keys/blog/id_ed25519' && ! inside \"curl -sk $gresolve https://blog.test/key.txt\" | grep -q 'PRIVATE KEY'"
+# A commit adding a service on the docker-proxy's network (which is root on the host)
+inside "printf '%s\n' '{print} /^services:\$/ && !done {print \"  proxied:\"; print \"    image: alpine:3.22\"; print \"    network_mode: quire-docker\"; done = 1}' > /root/network.awk && docker cp /root/network.awk git-server:/tmp/network.awk"
+commit 'awk -f /tmp/network.awk compose.prod.yaml > /tmp/c && cat /tmp/c > compose.prod.yaml' 'Network'
+inside 'quire-server site:deploy blog 2>&1' | tee "$logs"/git-network.log | sed 's/^/    /'
+check 'a commit joining another network is refused, never started' "grep -q 'network_mode: quire-docker' $logs/git-network.log && grep -q 'as it was before' $logs/git-network.log && ! inside 'docker ps -a --format \"{{.Names}}\"' | grep -q '^blog-proxied'"
 # A commit giving the site's web container every privilege
 inside "printf '%s\n' '{print} /^  php:\$/ && !done {print \"    privileged: true\"; done = 1}' > /root/privileged.awk && docker cp /root/privileged.awk git-server:/tmp/privileged.awk"
 commit 'awk -f /tmp/privileged.awk compose.prod.yaml > /tmp/c && cat /tmp/c > compose.prod.yaml' 'Privileged'
@@ -346,6 +404,17 @@ fi
 if [ "${KEEP:-}" = 1 ]; then echo "$failures check(s) failed so far; the site is kept."; exit 0; fi
 
 if want sites; then
+echo '== A release a crash cut short, put back at the agent'\''s start'
+# As a power cut in the middle of a rebuild leaves it: its intent, naming the image it ran before (the
+# one kept to undo its update, which differs from the one it runs now)
+before=$(inside "docker image inspect quire-sites/jane/php-prod:before-update jane-php-prod:before-update --format '{{.Id}}' 2>/dev/null" | head -1)
+image=$(inside "docker inspect jane-php-1 --format '{{.Config.Image}}'")
+inside "printf '{\"operation\": \"x\", \"what\": \"rebuild\", \"image\": \"%s\", \"image_before\": \"%s\", \"backup\": null, \"put_back\": []}\n' '$image' '$before' > /srv/quire/backups/jane/release.json && chmod 600 /srv/quire/backups/jane/release.json"
+inside 'docker restart quire-server-agent-1 >/dev/null'
+waited=0
+until inside 'quire-server operations --site=jane' | grep site.recover | grep -qv running || [ $waited -ge 300 ]; do sleep 10; waited=$((waited + 10)); done
+check 'the agent puts the site back as it was before, by itself' "inside 'quire-server operations --site=jane' | grep -q 'site.recover.*succeeded' && [ \"\$(inside \"docker inspect jane-php-1 --format '{{.Image}}'\")\" = \"$before\" ] && ! inside 'test -e /srv/quire/backups/jane/release.json' && [ \"\$(inside \"curl -sk $resolve -o /dev/null -w '%{http_code}' https://jane.test/\")\" = 200 ]"
+
 echo '== Removing the site'
 inside 'quire-server site:remove jane --yes 2>&1' | sed 's/^/    /'
 check 'its final backup is kept' "inside 'ls /srv/quire/backups/jane/final-*.tar'"

@@ -89,6 +89,7 @@ final class ReleasesTest extends TestCase
         self::assertSame('https://github.com/quirecms/server/.github/workflows/release.yaml@refs/tags/v0.2.0', $this->after($cosign, '--certificate-identity'));
         self::assertSame('https://token.actions.githubusercontent.com', $this->after($cosign, '--certificate-oidc-issuer'));
         self::assertSame($this->work.'/release.env', end($cosign));
+        self::assertSame($this->work.'/release.env.sigstore.json', $this->after($cosign, '--bundle'), 'Its own signature\'s bundle.');
 
         // Only HTTPS, for every download
         foreach ($this->runner->runs as $run) {
@@ -148,6 +149,33 @@ final class ReleasesTest extends TestCase
     public function testAnArchiveThatIsNotTheServersIsRefused(): void
     {
         $this->served['quire-server-0.2.0.tar.gz'] = $this->archive(['quire-server-0.2.0/README.md' => 'x']);
+        $this->serveReleaseEnv();
+        $this->refused('/isn\'t Quire Server\'s/');
+    }
+
+    public function testAValueInACommentIsntRead(): void
+    {
+        $this->serveReleaseEnv();
+        $this->served['release.env'] = '# IMAGE=ghcr.io/quirecms/server@sha256:'.str_repeat('9', 64)."\n".$this->served['release.env'];
+        self::assertSame(self::IMAGE, new Releases(new GitHubReleases($this->runner), $this->runner)->fetch(new Version('0.2.0'), $this->work, static function (): void {})->image);
+    }
+
+    public function testAnArchiveNameInAnotherFolderIsRefused(): void
+    {
+        $this->serveReleaseEnv(archive: '../quire-server-0.2.0.tar.gz');
+        $this->refused('/names no archive/');
+    }
+
+    public function testAChecksumThatIsntOneIsRefused(): void
+    {
+        $this->serveReleaseEnv();
+        $this->served['release.env'] = (string) preg_replace('/^ARCHIVE_SHA256=/m', 'ARCHIVE_SHA256=x', $this->served['release.env']);
+        $this->refused('/names no checksum/');
+    }
+
+    public function testAnArchiveWithoutTheCommandIsRefused(): void
+    {
+        $this->served['quire-server-0.2.0.tar.gz'] = $this->archive(['quire-server-0.2.0/compose.yaml' => 'name: quire-server']);
         $this->serveReleaseEnv();
         $this->refused('/isn\'t Quire Server\'s/');
     }

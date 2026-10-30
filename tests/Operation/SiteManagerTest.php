@@ -4,8 +4,10 @@ declare(strict_types=1);
 
 namespace Quire\Server\Tests\Operation;
 
+use Quire\Server\Backup\SiteDatabaseDumps;
 use Quire\Server\Database\SiteDatabases;
 use Quire\Server\Docker\Compose;
+use Quire\Server\Docker\ComposeFiles;
 use Quire\Server\Docker\ComposePolicy;
 use Quire\Server\Docker\PolicyViolation;
 use Quire\Server\Docker\RuntimeImages;
@@ -20,6 +22,7 @@ use Quire\Server\Operation\SiteRequest;
 use Quire\Server\Process\ProcessResult;
 use Quire\Server\Process\ProcessRunner;
 use Quire\Server\Registry\RuntimeBuilds;
+use Quire\Server\Registry\RuntimeFloors;
 use Quire\Server\Registry\SiteGit;
 use Quire\Server\Registry\SiteLock;
 use Quire\Server\Registry\SiteRegistry;
@@ -36,6 +39,9 @@ use Symfony\Component\Filesystem\Filesystem;
  */
 final class SiteManagerTest extends RegistryTestCase
 {
+    /** @var list<string> The BuildKit builders there are (Compose::builder()) */
+    private array $builders = [];
+
     private string $root;
     private SiteName $name;
     private ServerPaths $paths;
@@ -82,11 +88,35 @@ final class SiteManagerTest extends RegistryTestCase
                 default => self::ok($command, ''),
             },
             'docker compose cp' => static function (array $command): ProcessResult {
-                file_put_contents(self::argument($command, 10), 'backup');
+                file_put_contents(self::argument($command, 11), 'backup');
 
                 return self::ok($command, '');
             },
             'docker compose down' => static fn (array $command): ProcessResult => self::ok($command, "Removed\n"),
+            // Each site's own BuildKit (Compose::builder())
+            'docker buildx inspect' => fn (array $command): ProcessResult => \in_array(self::argument($command, 3), $this->builders, true) ? self::ok($command, '') : new ProcessResult(self::strings($command), 1, '', 'ERROR: no builder "'.self::argument($command, 3).'" found'),
+            'docker buildx create' => function (array $command): ProcessResult {
+                $this->builders[] = self::argument($command, 4);
+
+                return self::ok($command, '');
+            },
+            'docker container ls' => fn (array $command): ProcessResult => self::ok($command, implode("\n", array_map(static fn (string $builder): string => 'buildx_buildkit_'.$builder.'0', $this->builders))."\n"),
+            'docker container rm' => function (array $command): ProcessResult {
+                $this->builders = array_values(array_filter($this->builders, static fn (string $builder): bool => 'buildx_buildkit_'.$builder.'0' !== $command[5]));
+
+                return self::ok($command, '');
+            },
+            'docker volume rm' => static fn (array $command): ProcessResult => self::ok($command, ''),
+            // The server's PostgreSQL, where a site's database is dumped and restored (SiteDatabaseDumps)
+            'docker ps --quiet' => static fn (array $command): ProcessResult => self::ok($command, "abcdef123456\n"),
+            'docker exec -e' => static fn (array $command): ProcessResult => self::ok($command, ''),
+            'docker cp --quiet' => static function (array $command): ProcessResult {
+                file_put_contents(self::argument($command, 4), 'the site\'s own tables');
+
+                return self::ok($command, '');
+            },
+            'docker exec abcdef123456' => static fn (array $command): ProcessResult => self::ok($command, ''),
+            'docker exec --interactive' => static fn (array $command): ProcessResult => self::ok($command, ''),
         ];
     }
 
@@ -113,7 +143,7 @@ final class SiteManagerTest extends RegistryTestCase
 
         // Composer never runs the skeleton's code; the policy is checked before building and starting.
         self::assertSame(['composer', 'create-project', 'quire/skeleton', $this->paths->site($this->name), '^0.1', '--no-install', '--no-scripts', '--no-plugins', '--no-interaction', '--no-progress', '--no-ansi'], $this->commands[0]);
-        self::assertSame(['config', 'build', 'config', 'up', 'exec', 'exec', 'cp'], array_map(static fn (array $command): string => $command[8], \array_slice($this->commands, 1)));
+        self::assertSame(['config', 'build', 'config', 'up', 'exec', 'exec', 'cp'], array_map(static fn (array $command): string => $command[8], $this->commands()));
         self::assertFileExists($this->paths->site($this->name).'/composer.lock', 'The versions its image was built with, recorded in its folder.');
 
         $env = (string) file_get_contents($this->paths->site($this->name).'/prod.env');
@@ -131,11 +161,36 @@ final class SiteManagerTest extends RegistryTestCase
         self::assertStringNotContainsString('Sup3rSecretAdminPw', $log, 'The admin\'s password never reaches the log.');
         self::assertStringContainsString('[secret]', $log);
         self::assertStringNotContainsString($this->envValue($env, 'QUIRE_DATABASE_PASSWORD'), $log);
+        self::assertStringNotContainsString($this->envValue($env, 'APP_SECRET'), $log);
+    }
+
+    public function testAFailedInstallUndoesEverything(): void
+    {
+        $this->script['docker compose exec'] = static fn (array $command): ProcessResult => 'quire:install' === ($command[12] ?? '')
+            ? new ProcessResult(self::strings($command), 1, '', "The database refused the connection.\n")
+            : self::ok($command, '{"contract": 1}');
+
+        try {
+            $this->manager()->add($this->request(), 'cli', 'darko', static fn (): null => null);
+            self::fail('A site that didn\'t install was added.');
+        } catch (\RuntimeException $e) {
+            self::assertStringContainsString('The database refused the connection', $e->getMessage());
+        }
+
+        $this->assertNothingLeft();
+        self::assertSame('failed', $this->operations->latest()[0]['status']);
     }
 
     public function testAFailedBuildUndoesEverything(): void
     {
         $this->script['docker compose build'] = static fn (array $command): ProcessResult => new ProcessResult(self::strings($command), 1, '', "no space left on device\n");
+        // Undone last first: its containers stopped while its folder (their Compose files) and database are there
+        $at = [];
+        $this->script['docker compose down'] = function (array $command) use (&$at): ProcessResult {
+            $at = [is_file($this->paths->site($this->name).'/compose.yaml'), $this->databases->exists($this->name)];
+
+            return self::ok($command, '');
+        };
 
         try {
             $this->manager()->add($this->request(), 'cli', 'darko', static fn (): null => null);
@@ -146,6 +201,7 @@ final class SiteManagerTest extends RegistryTestCase
 
         $this->assertNothingLeft();
         self::assertContains('down', array_map(static fn (array $command): string => $command[8] ?? '', $this->commands), 'Its containers and volumes removed.');
+        self::assertSame([true, true], $at, 'Last first: stopped before its folder and database went.');
         self::assertSame('failed', $this->operations->latest()[0]['status']);
 
         // Its name and domains are free to try again.
@@ -172,6 +228,12 @@ final class SiteManagerTest extends RegistryTestCase
         $env = (string) file_get_contents($directory.'/prod.env');
         self::assertStringNotContainsString('the-old-secret', $env);
         self::assertStringNotContainsString('the-old-password', $env);
+        self::assertStringContainsString("COMPOSE_FILE='compose.yaml:compose.prod.yaml:compose.server.yaml'", $env, 'The server\'s.');
+        self::assertStringNotContainsString('elsewhere', $env);
+        // Its owner's own settings, as they were
+        self::assertStringContainsString("QUIRE_STORAGE_BUCKET='jane-files'", $env);
+        self::assertStringContainsString("MAILER_DSN='smtp://mail.example.com:587'", $env, 'Its own, over the server\'s default.');
+        self::assertStringNotContainsString('smtp://mailer:25', $env);
         self::assertMatchesRegularExpression("/^APP_SECRET='[0-9a-f]{64}'\$/m", $env);
         self::assertStringNotContainsString('old-site', (string) file_get_contents($directory.'/compose.server.yaml'));
         self::assertTrue($this->databases->exists($this->name));
@@ -182,6 +244,9 @@ final class SiteManagerTest extends RegistryTestCase
         self::assertNotContains('quire:install', $consoles);
         self::assertSame([$this->name->value, $this->name->value], array_values($this->frontDoor->all()));
         self::assertSame(['site.restore_as_new', 'succeeded'], [$this->operations->latest()[0]['action'], $this->operations->latest()[0]['status']]);
+        // Checked, built and started with the server's override, like any site
+        self::assertSame(['config', 'build', 'config', 'up'], \array_slice(array_values(array_filter(array_map(static fn (array $command): string => $command[8] ?? '', $this->commands()), static fn (string $sub): bool => \in_array($sub, ['config', 'build', 'up'], true))), 0, 4));
+        self::assertStringContainsString('quire-edge', (string) file_get_contents($directory.'/compose.server.yaml'));
     }
 
     public function testARestoreAsANewSiteThatFailsUndoesEverything(): void
@@ -215,7 +280,8 @@ final class SiteManagerTest extends RegistryTestCase
 
             return self::ok($command, '');
         };
-        $this->script['git -C'] = static fn (array $command): ProcessResult => self::ok($command, $commit."\n");
+        // The commit (and none of the server's files in it)
+        $this->script['git -C'] = static fn (array $command): ProcessResult => self::ok($command, \in_array('ls-tree', self::strings($command), true) ? '' : $commit."\n");
 
         $site = $this->manager()->restoreAsNew($this->name, $this->request()->domains, new Repository('https://example.com/jane.git', 'main'), $backup, [], 'cli', 'darko', static fn (): null => null, poll: true);
 
@@ -223,6 +289,16 @@ final class SiteManagerTest extends RegistryTestCase
         $git = new SiteGit($this->connection, $this->schema)->of($this->name);
         self::assertSame(['https://example.com/jane.git', 'main', $commit, true], [$git['repository']->url ?? null, $git['repository']->branch ?? null, $git['deployed'] ?? null, $git['poll'] ?? null]);
         self::assertContains('quire:restore', array_map(static fn (array $command): string => $command[12] ?? '', $this->commands));
+
+        // Removed, its deploy key (which reads its repository) and its Git settings go with it.
+        new Filesystem()->dumpFile($this->paths->keys($this->name).'/id_ed25519', 'its key');
+        $this->manager()->remove($this->name, false, 'cli', 'darko', static fn (): null => null);
+        self::assertDirectoryDoesNotExist($this->paths->keys($this->name));
+        self::assertNull(new SiteGit($this->connection, $this->schema)->of($this->name));
+        self::assertSame(['site.remove', 'succeeded'], [$this->operations->latest()[0]['action'], $this->operations->latest()[0]['status']]);
+
+        $this->expectExceptionMessageIsOrContains('There\'s no site named');
+        $this->manager()->remove($this->name, false, 'cli', 'darko', static fn (): null => null);
     }
 
     public function testOnlyASitesFolderIsRestoredAsOne(): void
@@ -283,6 +359,30 @@ final class SiteManagerTest extends RegistryTestCase
         self::assertNull($this->registry->get($this->name));
     }
 
+    public function testEachSiteIsBuiltByAPinnedBuilderOfItsOwnThatGoesWithIt(): void
+    {
+        $prefix = 'quire-'.$this->name->value.'-';
+        $current = $prefix.substr(hash('sha256', Compose::BUILDKIT), 0, 12);
+        // One of an older BuildKit, and another site's whose name starts with this one's
+        $this->builders = [$prefix.'0123456789ab', 'quire-'.$this->name->value.'-blog-'.substr(hash('sha256', Compose::BUILDKIT), 0, 12)];
+        $manager = $this->manager();
+        $manager->add($this->request(), 'cli', 'darko', static fn (): null => null);
+
+        $create = array_first(array_filter($this->dockerCommands(), static fn (array $command): bool => 'create' === ($command[2] ?? null))) ?? [];
+        self::assertSame(['docker', 'buildx', 'create', '--name', $current, '--driver', 'docker-container', '--driver-opt', 'image='.Compose::BUILDKIT, '--bootstrap'], $create);
+        self::assertMatchesRegularExpression('/^moby\/buildkit:v[0-9.]+@sha256:[0-9a-f]{64}\z/', Compose::BUILDKIT, 'Pinned by digest.');
+        $build = array_first(array_filter($this->commands(), static fn (array $command): bool => 'build' === ($command[8] ?? null))) ?? [];
+        $at = array_search('--builder', $build, true);
+        self::assertIsInt($at);
+        self::assertSame($current, $build[$at + 1] ?? null);
+        self::assertSame([$prefix.'0123456789ab'], array_values(array_diff([$prefix.'0123456789ab', 'quire-'.$this->name->value.'-blog-'.substr(hash('sha256', Compose::BUILDKIT), 0, 12)], $this->builders)), 'The older one goes; the other site\'s stays.');
+
+        $manager->remove($this->name, false, 'cli', 'darko', static fn (): null => null);
+
+        self::assertSame(['quire-'.$this->name->value.'-blog-'.substr(hash('sha256', Compose::BUILDKIT), 0, 12)], $this->builders, 'Its own goes with it, with its cache.');
+        self::assertContains(['docker', 'volume', 'rm', '--force', 'buildx_buildkit_'.$current.'0_state'], $this->dockerCommands());
+    }
+
     public function testRemovingASiteBacksItUpFirstAndKeepsItsFolder(): void
     {
         $manager = $this->manager();
@@ -296,6 +396,14 @@ final class SiteManagerTest extends RegistryTestCase
         self::assertSame('0600', substr(\sprintf('%o', fileperms($backup)), -4));
         $commands = $this->commands();
         self::assertSame(['exec', 'cp', 'exec', 'down'], array_map(static fn (array $command): string => $command[8] ?? '', $commands), 'Backed up before anything is stopped.');
+        // The rest of its database too, as its own role, beside its backup
+        $dump = array_first(array_filter($this->dockerCommands(), static fn (array $command): bool => \in_array('pg_dump', $command, true))) ?? [];
+        self::assertContains('--username='.$this->name->databaseIdentifier(), $dump, 'As the site\'s own role.');
+        self::assertContains('--exclude-schema=quire', $dump, 'quire:backup has Quire\'s own schema.');
+        self::assertSame([$this->name->databaseIdentifier()], \array_slice($dump, -1));
+        $kept = substr($backup, 0, -4).'.database.dump';
+        self::assertSame('the site\'s own tables', file_get_contents($kept));
+        self::assertSame('0600', substr(\sprintf('%o', fileperms($kept)), -4));
         self::assertContains('--volumes', $commands[3] ?? []);
         self::assertSame([], $this->frontDoor->all());
         self::assertFalse($this->databases->exists($this->name));
@@ -324,6 +432,77 @@ final class SiteManagerTest extends RegistryTestCase
         self::assertFileExists($this->paths->site($this->name).'/prod.env');
     }
 
+    public function testABackupThatIsALinkIsntTaken(): void
+    {
+        $manager = $this->manager();
+        $manager->add($this->request(), 'cli', 'darko', static fn (): null => null);
+        // The site's container made its backup a link to another site's secrets, which Docker copies as one.
+        $secrets = $this->paths->site(new SiteName('other')).'/prod.env';
+        new Filesystem()->dumpFile($secrets, 'POSTGRES_PASSWORD=the other site\'s');
+        $this->script['docker compose cp'] = static function (array $command) use ($secrets): ProcessResult {
+            self::assertSame('--follow-link', $command[9], 'Followed in the container, among its own files.');
+            symlink($secrets, self::argument($command, 11));
+
+            return self::ok($command, '');
+        };
+
+        try {
+            $manager->remove($this->name, true, 'cli', 'darko', static fn (): null => null);
+            self::fail('It was removed with a link for a backup.');
+        } catch (\RuntimeException $e) {
+            self::assertStringContainsString('isn\'t a plain file', $e->getMessage());
+        }
+
+        $kept = glob($this->paths->backups($this->name).'/{,.}*', \GLOB_BRACE);
+        self::assertSame([], array_filter(false === $kept ? [] : $kept, static fn (string $file): bool => !\in_array(basename($file), ['.', '..'], true)), 'Nothing of it kept.');
+        self::assertSame(Site::RUNNING, $this->registry->get($this->name)?->status);
+    }
+
+    public function testABackupCutShortLeavesNothingThatStopsTheNext(): void
+    {
+        $manager = $this->manager();
+        $manager->add($this->request(), 'cli', 'darko', static fn (): null => null);
+        $this->commands = [];
+        $this->script['docker compose exec'] = static fn (array $command): ProcessResult => 'quire:backup' === ($command[12] ?? '')
+            ? new ProcessResult(self::strings($command), 1, '', 'No space left on device')
+            : self::ok($command, '');
+
+        try {
+            $manager->remove($this->name, true, 'cli', 'darko', static fn (): null => null);
+            self::fail('It was removed without a backup.');
+        } catch (\RuntimeException) {
+        }
+
+        $exec = array_values(array_filter($this->commands(), static fn (array $command): bool => 'exec' === ($command[8] ?? '')));
+        $file = $exec[0][13] ?? '';
+        self::assertMatchesRegularExpression('#^/tmp/quire-final-backup-[0-9a-f]{12}\.tar\z#', $file, 'A name of its own: one left by an earlier backup is never in the way.');
+        self::assertSame(['rm', '-f', $file], \array_slice($exec[1] ?? [], 11), 'Removed even though the backup failed.');
+    }
+
+    public function testASiteWhoseAddWasCutShortBeforeItsFolderCanBeRemoved(): void
+    {
+        // The agent stopped right after recording it: no folder, no database, its name and domains taken
+        $this->registry->add($this->name, $this->request()->domains, Site::SHARED_DATABASE, $this->name->value);
+
+        $this->manager()->remove($this->name, true, 'cli', 'darko', static fn (): null => null);
+
+        self::assertSame(Site::REMOVED, $this->registry->get($this->name)?->status);
+        self::assertContains('Its folder isn\'t there: nothing to back up', $this->operations->lines($this->operations->latest()[0]['id']));
+        self::assertSame([], $this->commands(), 'Nothing to stop.');
+    }
+
+    public function testSitesLeftBeingCreatedAreRemovedAtTheAgentsStart(): void
+    {
+        $manager = $this->manager();
+        $manager->add($this->request(), 'cli', 'darko', static fn (): null => null);
+        $unfinished = new SiteName('t'.bin2hex(random_bytes(3)).'-kate');
+        $this->registry->add($unfinished, [new Domain('kate.example')], Site::SHARED_DATABASE, $unfinished->value);
+
+        self::assertSame([$unfinished->value], $manager->removeUnfinished());
+        self::assertSame(Site::REMOVED, $this->registry->get($unfinished)?->status);
+        self::assertSame(Site::RUNNING, $this->registry->get($this->name)?->status, 'A site that runs is left alone.');
+    }
+
     public function testAdoptingASiteThatRunsAlready(): void
     {
         $original = $this->siteInstalledByHand();
@@ -337,7 +516,7 @@ final class SiteManagerTest extends RegistryTestCase
         self::assertSame(['jane.example', 'www.jane.example'], array_map(static fn (Domain $domain): string => $domain->value, $site->domains), 'From its SERVER_NAME.');
         self::assertSame(['Recording the site', 'Backing it up, as it is', 'Changing its settings (a copy of them is kept)', 'Checking and building it (a few minutes; it keeps running meanwhile)', 'Moving it behind the front door (a few seconds offline)', 'Opening it to visitors'], $said);
         // Backed up before anything changes; built before it's stopped; the policy checked before both.
-        self::assertSame(['exec', 'cp', 'exec', 'config', 'build', 'config', 'up', 'cp'], array_map(static fn (array $command): string => $command[8] ?? '', $this->commands));
+        self::assertSame(['exec', 'cp', 'exec', 'exec', 'cp', 'exec', 'config', 'build', 'config', 'up', 'cp'], array_map(static fn (array $command): string => $command[8] ?? '', $this->commands()));
         self::assertFileExists($this->paths->site($this->name).'/composer.lock', 'Its versions recorded.');
         $backups = glob($this->paths->backups($this->name).'/before-server-*.tar');
         self::assertCount(1, false === $backups ? [] : $backups, 'Backed up as it was.');
@@ -471,7 +650,15 @@ final class SiteManagerTest extends RegistryTestCase
      */
     private function commands(): array
     {
-        return $this->commands;
+        return array_values(array_filter($this->commands, static fn (array $command): bool => 'compose' === ($command[1] ?? null)));
+    }
+
+    /**
+     * @return list<list<string>> The Docker commands that aren't Compose's (the server's PostgreSQL)
+     */
+    private function dockerCommands(): array
+    {
+        return array_values(array_filter($this->commands, static fn (array $command): bool => 'docker' === $command[0] && 'compose' !== ($command[1] ?? null)));
     }
 
     private function assertNothingLeft(): void
@@ -506,16 +693,17 @@ final class SiteManagerTest extends RegistryTestCase
         return new SiteManager(
             $this->registry,
             $this->operations,
-            new SiteLock($this->connection),
+            new SiteLock($this->connection, $this->schema),
             new SkeletonInstaller($runner),
             $this->databases,
             new \Quire\Server\Site\SiteFiles(),
-            new Compose($runner, new ComposePolicy(), new RuntimeImages($runner), new RuntimeBuilds($this->connection, $this->schema), 'tcp://docker-proxy:2375'),
+            $compose = new Compose($runner, new ComposePolicy(), new ComposeFiles(), new RuntimeImages($runner, new RuntimeFloors($this->connection, $this->schema)), new RuntimeBuilds($this->connection, $this->schema), 'tcp://docker-proxy:2375'),
             $this->frontDoor,
             $this->paths,
             new Git($runner, $keys = new DeployKeys($runner, $this->paths)),
             new SiteGit($this->connection, $this->schema),
             $keys,
+            new SiteDatabaseDumps($runner, $compose, 'tcp://docker-proxy:2375'),
             'smtp://mailer:25',
         );
     }
@@ -530,16 +718,24 @@ final class SiteManagerTest extends RegistryTestCase
     {
         $this->commands[] = $command;
 
+        // Every Docker command goes through the proxy.
         if ('docker' === $command[0]) {
-            // Every Docker command goes through the proxy, with nothing inherited choosing its files.
             self::assertSame('tcp://docker-proxy:2375', $env['DOCKER_HOST'] ?? null);
+        }
+
+        // Compose's, with nothing inherited choosing its files.
+        if ('docker' === $command[0] && 'compose' === $command[1]) {
             self::assertFalse($env['COMPOSE_FILE'] ?? null);
             // Its own settings, or (putting an adopted site back) the copy of those it had before.
             self::assertContains($command[5], [$this->paths->site($this->name).'/prod.env', $this->paths->site($this->name).'/prod.env.before-server']);
             self::assertSame(['--project-directory', $this->paths->site($this->name), '--env-file', $command[5], '--project-name', $this->name->value], \array_slice($command, 2, 6));
         }
 
-        $key = 'docker' === $command[0] ? 'docker compose '.$command[8] : $command[0].' '.$command[1];
+        $key = match (true) {
+            'docker' === $command[0] && 'compose' === $command[1] => 'docker compose '.$command[8],
+            'docker' === $command[0] => 'docker '.$command[1].' '.$command[2],
+            default => $command[0].' '.$command[1],
+        };
 
         return ($this->script[$key] ?? throw new \LogicException('Unexpected command: '.implode(' ', $command)))($command);
     }
@@ -560,7 +756,7 @@ final class SiteManagerTest extends RegistryTestCase
             'composer.json' => '{"require": {"quire/core": "^0.1"}}',
             'composer.lock' => '{"packages": []}',
             'src/Kernel.php' => '<?php // the site\'s own code',
-            'prod.env' => "APP_SECRET='the-old-secret'\nQUIRE_DATABASE_PASSWORD='the-old-password'\n",
+            'prod.env' => "COMPOSE_FILE='compose.yaml:../elsewhere.yaml'\nAPP_SECRET='the-old-secret'\nQUIRE_DATABASE_PASSWORD='the-old-password'\n# Its owner's own\nMAILER_DSN='smtp://mail.example.com:587'\nQUIRE_STORAGE_BUCKET='jane-files'\n",
             'prod.env.before-server' => "APP_SECRET='the-old-secret'\n",
             'compose.server.yaml' => '# old-site',
         ] as $path => $content) {
@@ -591,9 +787,9 @@ final class SiteManagerTest extends RegistryTestCase
                 'name' => $this->name->value,
                 'networks' => ['default' => ['name' => $this->name->value.'_default'], 'quire-edge' => ['name' => 'quire-edge', 'external' => true]],
                 'services' => [
-                    'php' => ['build' => $build, 'networks' => ['default' => null, 'quire-edge' => ['aliases' => ['jane.example', 'www.jane.example']]], 'volumes' => [['type' => 'volume', 'source' => 'storage_data', 'target' => '/app/storage']]],
-                    'worker' => ['build' => $build, 'networks' => ['default' => null]],
-                    'database' => ['image' => 'postgres:18-alpine', 'networks' => ['default' => null], 'volumes' => [['type' => 'volume', 'source' => 'database_data', 'target' => '/var/lib/postgresql']]],
+                    'php' => ['image' => 'quire-sites/'.$this->name->value.'/php-prod', 'build' => $build, 'cap_drop' => ['ALL'], 'security_opt' => ['no-new-privileges:true'], 'mem_limit' => '536870912', 'pids_limit' => 256, 'networks' => ['default' => null, 'quire-edge' => ['aliases' => ['jane.example.quire.internal', 'www.jane.example.quire.internal']]], 'volumes' => [['type' => 'volume', 'source' => 'storage_data', 'target' => '/app/storage']]],
+                    'worker' => ['image' => 'quire-sites/'.$this->name->value.'/php-prod', 'build' => $build, 'cap_drop' => ['ALL'], 'security_opt' => ['no-new-privileges:true'], 'mem_limit' => '536870912', 'pids_limit' => 256, 'networks' => ['default' => null]],
+                    'database' => ['image' => 'postgres:18-alpine', 'cap_drop' => ['ALL'], 'security_opt' => ['no-new-privileges:true'], 'mem_limit' => '536870912', 'pids_limit' => 256, 'networks' => ['default' => null], 'volumes' => [['type' => 'volume', 'source' => 'database_data', 'target' => '/var/lib/postgresql']]],
                 ],
                 'volumes' => ['storage_data' => ['name' => $this->name->value.'_storage_data'], 'database_data' => ['name' => $this->name->value.'_database_data']],
             ];
@@ -603,8 +799,8 @@ final class SiteManagerTest extends RegistryTestCase
             'name' => $this->name->value,
             'networks' => ['default' => ['name' => $this->name->value.'_default'], 'quire-edge' => ['name' => 'quire-edge', 'external' => true], 'quire-data' => ['name' => 'quire-data', 'external' => true]],
             'services' => [
-                'php' => ['build' => $build, 'networks' => ['default' => null, 'quire-edge' => ['aliases' => ['jane.example', 'www.jane.example']], 'quire-data' => null], 'volumes' => [['type' => 'volume', 'source' => 'storage_data', 'target' => '/app/storage']]],
-                'worker' => ['build' => $build, 'networks' => ['default' => null, 'quire-data' => null]],
+                'php' => ['image' => 'quire-sites/'.$this->name->value.'/php-prod', 'build' => $build, 'cap_drop' => ['ALL'], 'security_opt' => ['no-new-privileges:true'], 'mem_limit' => '536870912', 'pids_limit' => 256, 'networks' => ['default' => null, 'quire-edge' => ['aliases' => ['jane.example.quire.internal', 'www.jane.example.quire.internal']], 'quire-data' => null], 'volumes' => [['type' => 'volume', 'source' => 'storage_data', 'target' => '/app/storage']]],
+                'worker' => ['image' => 'quire-sites/'.$this->name->value.'/php-prod', 'build' => $build, 'cap_drop' => ['ALL'], 'security_opt' => ['no-new-privileges:true'], 'mem_limit' => '536870912', 'pids_limit' => 256, 'networks' => ['default' => null, 'quire-data' => null]],
             ],
             'volumes' => ['storage_data' => ['name' => $this->name->value.'_storage_data']],
         ];

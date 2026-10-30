@@ -58,12 +58,60 @@ final class ComposePolicyTest extends TestCase
     public static function hostile(): iterable
     {
         yield 'privileged' => [['services' => ['php' => ['privileged' => true]]], '"privileged" runs privileged'];
+        yield 'privileged, as a string' => [['services' => ['php' => ['privileged' => 'yes']]], '"privileged" runs privileged'];
+        // Below a service's settings, fail-closed at every level: a new setting there may have host powers.
+        yield 'a setting the server doesn\'t know, in a build' => [['services' => ['php' => ['build' => ['some_future_key' => true]]]], '"build.some_future_key" isn\'t a setting the server allows (yet)'];
+        yield '… in deploy' => [['services' => ['php' => ['deploy' => ['some_future_key' => true]]]], '"deploy.some_future_key" isn\'t a setting'];
+        yield '… in deploy\'s resources' => [['services' => ['php' => ['deploy' => ['resources' => ['limits' => ['some_future_key' => 1]]]]]], '"deploy.resources.limits.some_future_key" isn\'t a setting'];
+        yield '… in a mount' => [['services' => ['php' => ['volumes' => [0 => ['some_future_key' => true]]]]], '"volumes.some_future_key" isn\'t a setting'];
+        yield '… in a mount\'s volume options' => [['services' => ['php' => ['volumes' => [0 => ['volume' => ['some_future_key' => true]]]]]], '"volumes.volume.some_future_key" isn\'t a setting'];
+        yield '… in a network it joins' => [['services' => ['php' => ['networks' => ['quire-edge' => ['some_future_key' => true]]]]], 'on the network "quire-edge", "some_future_key" isn\'t a setting'];
+        yield '… in logging' => [['services' => ['php' => ['logging' => ['driver' => 'json-file', 'some_future_key' => true]]]], '"logging.some_future_key" isn\'t a setting'];
+        yield '… in a hook' => [['services' => ['php' => ['post_start' => [['command' => ['id'], 'some_future_key' => true]]]]], '"post_start.some_future_key" isn\'t a setting'];
+        yield '… in a secret it uses' => [['services' => ['php' => ['secrets' => [['source' => 'key', 'some_future_key' => true]]]]], '"secrets.some_future_key" isn\'t a setting'];
+        yield '… in a volume' => [['volumes' => ['caddy_data' => ['some_future_key' => true]]], 'Volume "caddy_data": "some_future_key" isn\'t a setting'];
+        yield '… in a network' => [['networks' => ['default' => ['some_future_key' => true]]], 'Network "default": "some_future_key" isn\'t a setting'];
+        yield '… in a network\'s IPAM' => [['networks' => ['default' => ['ipam' => ['some_future_key' => true]]]], '"ipam.some_future_key" isn\'t a setting'];
+        yield '… in a top-level secret' => [['secrets' => ['key' => ['file' => '/x', 'some_future_key' => true]]], 'Secret "key": "some_future_key" isn\'t a setting'];
+        // Rules no test held before (each could be deleted with every test still passing)
+        yield 'another network, external, named by its key' => [['networks' => ['blog_default' => ['name' => 'blog_default', 'external' => true]]], 'the external network "blog_default" isn\'t one the server shares'];
+        yield 'a security option that only ends like no-new-privileges' => [['services' => ['php' => ['security_opt' => ['no-new-privileges:true', 'seccomp=/etc/no-new-privileges']]]], '"security_opt: seccomp=/etc/no-new-privileges": only "no-new-privileges" is allowed'];
+        yield 'a security option, as one string' => [['services' => ['php' => ['security_opt' => 'seccomp=unconfined']]], '"security_opt: seccomp=unconfined"'];
+        yield 'a capability, as one string' => [['services' => ['php' => ['cap_add' => 'SYS_ADMIN']]], '"cap_add: SYS_ADMIN"'];
+        yield 'oom_kill_disable' => [['services' => ['php' => ['oom_kill_disable' => true]]], '"oom_kill_disable" lets the container take the host\'s memory'];
+        yield 'oom_score_adj below 0' => [['services' => ['php' => ['oom_score_adj' => -1]]], '"oom_score_adj" below 0'];
+        yield 'another isolation' => [['services' => ['php' => ['isolation' => 'hyperv']]], '"isolation": only the default is allowed'];
+        yield 'another isolation, for the build' => [['services' => ['php' => ['build' => ['isolation' => 'hyperv']]]], 'its build asks for another isolation'];
+        yield 'a host device\'s I/O' => [['services' => ['php' => ['blkio_config' => ['device_read_bps' => [['path' => '/dev/sda', 'rate' => '1mb']]]]]], '"blkio_config" names host devices'];
+        yield 'a network\'s driver options' => [['networks' => ['default' => ['driver_opts' => ['com.docker.network.bridge.name' => 'docker0']]]], 'Network "default": "driver_opts" aren\'t allowed'];
+        yield 'an absolute Dockerfile' => [['services' => ['php' => ['build' => ['dockerfile' => '/srv/quire/sites/blog/Dockerfile']]]], 'its Dockerfile is outside the site\'s folder'];
+        yield 'an IPAM plugin' => [['networks' => ['default' => ['ipam' => ['driver' => 'evil-plugin']]]], 'the IPAM driver "evil-plugin" isn\'t allowed'];
+        yield 'oom_kill_disable, as a string' => [['services' => ['php' => ['oom_kill_disable' => 'true']]], '"oom_kill_disable" lets the container take the host\'s memory'];
+        yield 'a privileged hook, as a string' => [['services' => ['php' => ['post_start' => [['command' => ['id'], 'privileged' => 'yes']]]]], '"post_start" runs a privileged command'];
         yield 'capabilities' => [['services' => ['php' => ['cap_add' => ['NET_BIND_SERVICE', 'SYS_ADMIN']]]], '"cap_add: SYS_ADMIN" adds a Linux capability'];
         yield 'capabilities, spelled CAP_' => [['services' => ['php' => ['cap_add' => ['CAP_SYS_PTRACE']]]], '"cap_add: CAP_SYS_PTRACE"'];
         yield 'all capabilities' => [['services' => ['php' => ['cap_add' => ['ALL']]]], '"cap_add: ALL"'];
         yield 'host PID' => [['services' => ['php' => ['pid' => 'host']]], '"pid: host"'];
         yield 'host network' => [['services' => ['php' => ['network_mode' => 'host']]], '"network_mode: host"'];
         yield 'another container\'s network' => [['services' => ['php' => ['network_mode' => 'container:quire-server-agent-1']]], '"network_mode: container:quire-server-agent-1"'];
+        yield 'the docker-proxy\'s network' => [['services' => ['php' => ['network_mode' => 'quire-docker']]], '"network_mode: quire-docker"'];
+        yield 'the database\'s network, past its checks' => [['services' => ['php' => ['network_mode' => 'quire-data']]], '"network_mode: quire-data"'];
+        yield 'Docker\'s default bridge' => [['services' => ['php' => ['network_mode' => 'bridge']]], '"network_mode: bridge"'];
+        yield 'Docker\'s default network, by its other name' => [['services' => ['php' => ['network_mode' => 'default']]], '"network_mode: default"'];
+        yield 'a service the site doesn\'t have' => [['services' => ['php' => ['network_mode' => 'service:quire-server-agent']]], '"network_mode: service:quire-server-agent"'];
+        yield 'its own network, in a loop' => [['services' => ['php' => ['network_mode' => 'service:php']]], '"network_mode: service:php"'];
+        yield 'another site\'s image, built' => [['services' => ['php' => ['image' => 'quire-sites/blog/php-prod']]], 'the image it builds is named "quire-sites/blog/php-prod"'];
+        yield 'an image whose name a site prefix could share' => [['services' => ['php' => ['image' => 'jane-php-prod']]], 'a site\'s images are named "quire-sites/jane/<name>"'];
+        yield 'another site\'s image, as a build tag' => [['services' => ['php' => ['build' => ['tags' => ['quire-sites/blog/php-prod:latest']]]]], 'its build is tagged "quire-sites/blog/php-prod:latest"'];
+        yield 'the agent\'s image (installed from a checkout, it runs by that name)' => [['services' => ['php' => ['image' => 'quire-server-agent']]], 'the image it builds is named "quire-server-agent"'];
+        yield 'another site\'s image, run' => [['services' => ['worker' => ['build' => null, 'image' => 'quire-sites/blog/php-prod']]], '"image: quire-sites/blog/php-prod" is another site\'s'];
+        yield 'a service with Docker\'s default capabilities (NET_RAW)' => [['services' => ['sidecar' => ['image' => 'alpine:3.22', 'network_mode' => 'service:php']]], 'Service "sidecar": "cap_drop: [ALL]" is missing'];
+        yield 'a service that may gain privileges' => [['services' => ['sidecar' => ['image' => 'alpine:3.22', 'cap_drop' => ['ALL'], 'mem_limit' => '64m', 'pids_limit' => 16]]], 'Service "sidecar": "security_opt: [no-new-privileges:true]" is missing'];
+        yield 'no memory limit' => [['services' => ['php' => ['mem_limit' => null]]], 'Service "php": "mem_limit" is missing'];
+        yield 'too many processes' => [['services' => ['php' => ['pids_limit' => 100000]]], 'Service "php": "pids_limit" (1 to 4096) is missing'];
+        yield 'many of a service' => [['services' => ['worker' => ['scale' => 50]]], '"scale: 50": a site runs one container of each service'];
+        yield 'many replicas' => [['services' => ['worker' => ['deploy' => ['replicas' => 20]]]], '"deploy.replicas: 20"'];
+        yield 'raw packets' => [['services' => ['php' => ['cap_add' => ['NET_RAW']]]], '"cap_add: NET_RAW"'];
         yield 'host IPC' => [['services' => ['php' => ['ipc' => 'host']]], '"ipc: host"'];
         yield 'host user namespace' => [['services' => ['php' => ['userns_mode' => 'host']]], '"userns_mode: host"'];
         yield 'host cgroup' => [['services' => ['php' => ['cgroup' => 'host']]], '"cgroup: host"'];
@@ -207,7 +255,7 @@ final class ComposePolicyTest extends TestCase
 
     public function testHarmlessValuesOfForbiddenSettingsPass(): void
     {
-        $config = array_replace_recursive($this->site(), ['services' => ['php' => ['privileged' => false, 'cap_add' => ['NET_BIND_SERVICE', 'cap_net_bind_service'], 'devices' => [], 'security_opt' => ['no-new-privileges:true'], 'cap_drop' => ['ALL'], 'oom_score_adj' => 100, 'logging' => ['driver' => 'json-file'], 'x-custom' => 'anything']]]);
+        $config = array_replace_recursive($this->site(), ['services' => ['php' => ['privileged' => false, 'gpus' => 'false', 'blkio_config' => ['weight' => 300], 'post_start' => [['command' => ['id'], 'privileged' => false]], 'isolation' => 'default', 'oom_kill_disable' => 'false', 'deploy' => ['resources' => ['limits' => ['cpus' => '1.5', 'memory' => '1g', 'pids' => 512]], 'restart_policy' => ['condition' => 'on-failure']], 'cap_add' => ['NET_BIND_SERVICE', 'cap_net_bind_service', 'CHOWN', 'SETUID'], 'scale' => 1, 'devices' => [], 'security_opt' => ['no-new-privileges:true'], 'cap_drop' => ['ALL'], 'oom_score_adj' => 0, 'logging' => ['driver' => 'json-file'], 'x-custom' => 'anything', 'build' => ['tags' => ['quire-sites/jane/php-prod:before-update']]], 'worker' => ['network_mode' => 'service:php']]]);
 
         self::assertSame([], $this->violations($config));
     }
@@ -245,7 +293,7 @@ final class ComposePolicyTest extends TestCase
             'services' => [
                 'php' => [
                     'build' => $build,
-                    'image' => 'jane-php-prod',
+                    'image' => 'quire-sites/jane/php-prod',
                     'command' => null,
                     'entrypoint' => null,
                     'environment' => ['SERVER_NAME' => 'http://jane.example, http://www.jane.example, php:80', 'APP_SECRET' => 'x'],
@@ -264,12 +312,16 @@ final class ComposePolicyTest extends TestCase
                 ],
                 'worker' => [
                     'build' => $build,
-                    'image' => 'jane-php-prod',
+                    'image' => 'quire-sites/jane/php-prod',
                     'command' => ['php', 'bin/console', 'messenger:consume', 'quire'],
                     'depends_on' => ['php' => ['condition' => 'service_healthy', 'required' => true]],
                     'healthcheck' => ['test' => ['CMD', 'php', '-r', 'exit(0);']],
                     'networks' => $networks,
                     'restart' => 'unless-stopped',
+                    'security_opt' => ['no-new-privileges:true'],
+                    'cap_drop' => ['ALL'],
+                    'mem_limit' => '536870912',
+                    'pids_limit' => 256,
                     'volumes' => [['type' => 'volume', 'source' => 'storage_data', 'target' => '/app/storage', 'volume' => []]],
                 ],
             ],

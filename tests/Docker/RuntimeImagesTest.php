@@ -4,18 +4,19 @@ declare(strict_types=1);
 
 namespace Quire\Server\Tests\Docker;
 
-use PHPUnit\Framework\TestCase;
 use Quire\Server\Docker\RuntimeImageNotTrusted;
 use Quire\Server\Docker\RuntimeImages;
 use Quire\Server\Process\ProcessResult;
+use Quire\Server\Registry\RuntimeFloors;
+use Quire\Server\Tests\Registry\RegistryTestCase;
 use Quire\Server\Tests\ScriptedRunner;
 use Symfony\Component\Filesystem\Filesystem;
 
 /**
- * Quire's runtime images, checked before a site builds on them (cosign scripted): built on by the
- * digest that was checked, or not at all.
+ * Quire's runtime images, checked before a site builds on them (cosign and the registry scripted, the
+ * floor on the registry's real tables): built on by the digest that was checked, or not at all.
  */
-final class RuntimeImagesTest extends TestCase
+final class RuntimeImagesTest extends RegistryTestCase
 {
     private const string BUILDER = 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
     private const string RUNTIME = 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
@@ -26,6 +27,14 @@ final class RuntimeImagesTest extends TestCase
     /** @var array<string, string> What cosign says it checked, by image */
     private array $signed = ['ghcr.io/quirecms/runtime:8.5-builder' => self::BUILDER, 'ghcr.io/quirecms/runtime:8.5' => self::RUNTIME];
 
+    /** @var array<string, array{string, string}> What each digest's image is: its title, and when it was built */
+    private array $images = [
+        self::BUILDER => ['Quire runtime (builder)', '2026-10-26T02:50:00Z'],
+        self::RUNTIME => ['Quire runtime (runtime)', '2026-10-26T02:55:00Z'],
+    ];
+
+    private int $now = 1_793_000_000;
+
     /** @var list<string> */
     private array $said = [];
     private ScriptedRunner $runner;
@@ -33,6 +42,7 @@ final class RuntimeImagesTest extends TestCase
     #[\Override]
     protected function setUp(): void
     {
+        parent::setUp();
         $this->site = sys_get_temp_dir().'/quire-runtime-'.bin2hex(random_bytes(6));
         new Filesystem()->dumpFile($this->site.'/Dockerfile', self::DOCKERFILE);
         $this->runner = new ScriptedRunner([
@@ -44,6 +54,13 @@ final class RuntimeImagesTest extends TestCase
                     ? ScriptedRunner::failed($command, 'Error: no matching signatures: none of the expected identities matched')
                     : ScriptedRunner::ok($command, json_encode([['critical' => ['image' => ['docker-manifest-digest' => $digest]]], ['critical' => ['image' => ['docker-manifest-digest' => $digest]]]])."\n");
             },
+            // An index: each platform's configuration
+            'docker buildx imagetools' => function (array $command): ProcessResult {
+                [$title, $created] = $this->images[substr((string) strrchr((string) end($command), '@'), 1)] ?? ['', ''];
+                $config = ['created' => $created, 'config' => ['Labels' => ['org.opencontainers.image.title' => $title]]];
+
+                return ScriptedRunner::ok($command, (string) json_encode(['linux/amd64' => $config, 'linux/arm64' => $config]));
+            },
         ]);
     }
 
@@ -51,6 +68,7 @@ final class RuntimeImagesTest extends TestCase
     protected function tearDown(): void
     {
         new Filesystem()->remove($this->site);
+        parent::tearDown();
     }
 
     public function testItBuildsOnTheDigestsThatWereChecked(): void
@@ -60,7 +78,7 @@ final class RuntimeImagesTest extends TestCase
             'RUNTIME' => 'ghcr.io/quirecms/runtime:8.5@'.self::RUNTIME,
         ], $this->pinned());
 
-        foreach ($this->runner->runs as $run) {
+        foreach (array_filter($this->runner->runs, static fn (array $run): bool => 'cosign' === $run['command'][0]) as $run) {
             self::assertContains('https://github.com/quirecms/framework/.github/workflows/runtime.yaml@refs/heads/main', $run['command'], 'Signed by the framework\'s runtime workflow, from main');
             self::assertContains('https://token.actions.githubusercontent.com', $run['command']);
         }
@@ -72,8 +90,22 @@ final class RuntimeImagesTest extends TestCase
     {
         unset($this->signed['ghcr.io/quirecms/runtime:8.5']);
         $this->expectException(RuntimeImageNotTrusted::class);
-        $this->expectExceptionMessageIsOrContains('ghcr.io/quirecms/runtime:8.5 didn\'t check out');
+        $this->expectExceptionMessageIsOrContains('ghcr.io/quirecms/runtime:8.5 didn\'t check out (it must be signed by https://github.com/quirecms/framework/.github/workflows/runtime.yaml@refs/heads/main): not building on it. cosign: Error: no matching signatures');
         $this->pinned();
+    }
+
+    public function testARegistryThatDoesntAnswerIsNoAlarm(): void
+    {
+        $this->runner->script['cosign verify'] = static fn (): ProcessResult => new ProcessResult([], 1, '', "Error: GET https://ghcr.io/v2/quirecms/runtime/manifests/8.5: dial tcp: lookup ghcr.io: no such host\n");
+
+        try {
+            $this->pinned();
+            self::fail('It was built on.');
+        } catch (RuntimeImageNotTrusted) {
+            self::fail('Reported as a signature that didn\'t check out.');
+        } catch (\RuntimeException $e) {
+            self::assertStringContainsString('couldn\'t be checked: the registry or Sigstore didn\'t answer (Error: GET https://ghcr.io/v2/quirecms/runtime/manifests/8.5: dial tcp: lookup ghcr.io: no such host)', $e->getMessage());
+        }
     }
 
     public function testAPinnedDigestMustBeTheOneChecked(): void
@@ -87,6 +119,22 @@ final class RuntimeImagesTest extends TestCase
     {
         $this->dockerfile('ARG RUNTIME=ghcr.io/quirecms/runtime:8.5@'.self::RUNTIME."\nFROM \${RUNTIME}\n");
         self::assertSame(['RUNTIME' => 'ghcr.io/quirecms/runtime:8.5@'.self::RUNTIME], $this->pinned());
+    }
+
+    public function testAnImageByDigestAloneIsCheckedToo(): void
+    {
+        $this->signed['ghcr.io/quirecms/runtime@'.self::RUNTIME] = self::RUNTIME;
+        $this->dockerfile('ARG RUNTIME=ghcr.io/quirecms/runtime@'.self::RUNTIME."\nFROM \${RUNTIME}\n");
+
+        self::assertSame(['RUNTIME' => 'ghcr.io/quirecms/runtime@'.self::RUNTIME], $this->pinned());
+        self::assertSame(['cosign verify', 'docker buildx imagetools'], $this->runner->keys(), 'Its signature checked, never skipped.');
+    }
+
+    public function testAnAnswerWithoutADigestIsRefused(): void
+    {
+        $this->runner->script['cosign verify'] = static fn (): ProcessResult => new ProcessResult([], 0, (string) json_encode([['critical' => ['image' => ['docker-manifest-digest' => 'sha256:not-a-digest']]]]), '');
+        $this->expectExceptionMessageIsOrContains('didn\'t say which image it checked');
+        $this->pinned();
     }
 
     public function testAnAnswerAboutSeveralImagesIsRefused(): void
@@ -135,9 +183,64 @@ final class RuntimeImagesTest extends TestCase
      */
     private function pinned(): array
     {
-        return new RuntimeImages($this->runner)->pinned($this->site, function (string $line): void {
+        return $this->subject()->pinned($this->site, function (string $line): void {
             $this->said[] = $line;
         });
+    }
+
+    private function subject(): RuntimeImages
+    {
+        return new RuntimeImages($this->runner, new RuntimeFloors($this->connection, $this->schema), now: fn (): int => $this->now);
+    }
+
+    public function testTheBuilderIsntTakenForTheProductionBase(): void
+    {
+        // Signed by the same workflow: the tag of the production base moved to the builder's image
+        $this->signed['ghcr.io/quirecms/runtime:8.5'] = self::BUILDER;
+        $this->expectException(RuntimeImageNotTrusted::class);
+        $this->expectExceptionMessageIsOrContains('RUNTIME names ghcr.io/quirecms/runtime:8.5, which is "Quire runtime (builder)", not "Quire runtime (runtime)"');
+        $this->pinned();
+    }
+
+    public function testATagMovedBackToAnOlderSignedBuildIsntBuiltOn(): void
+    {
+        $this->pinned();
+        $older = 'sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
+        $this->images[$older] = ['Quire runtime (runtime)', '2026-08-03T02:55:00Z'];
+        $this->signed['ghcr.io/quirecms/runtime:8.5'] = $older;
+        $this->now += 3600;
+
+        try {
+            $this->pinned();
+            self::fail('It was built on.');
+        } catch (RuntimeImageNotTrusted $e) {
+            self::assertStringContainsString('is now a build of 2026-08-03 02:55, older than one this server built on before (2026-10-26 02:55, '.self::RUNTIME.'): a tag moved back', $e->getMessage());
+        }
+
+        // A newer one raises the floor; a site that names a digest of its own chose it.
+        $newer = 'sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff';
+        $this->images[$newer] = ['Quire runtime (runtime)', '2026-11-02T02:55:00Z'];
+        $this->signed['ghcr.io/quirecms/runtime:8.5'] = $newer;
+        self::assertSame('ghcr.io/quirecms/runtime:8.5@'.$newer, $this->pinned()['RUNTIME'] ?? null);
+        self::assertSame($newer, new RuntimeFloors($this->connection, $this->schema)->of('ghcr.io/quirecms/runtime:8.5')['digest'] ?? null);
+        $this->signed['ghcr.io/quirecms/runtime:8.5@'.self::RUNTIME] = self::RUNTIME;
+        $this->dockerfile('ARG RUNTIME=ghcr.io/quirecms/runtime:8.5@'.self::RUNTIME."\nFROM \${RUNTIME}\n");
+        self::assertSame(['RUNTIME' => 'ghcr.io/quirecms/runtime:8.5@'.self::RUNTIME], $this->pinned());
+    }
+
+    public function testAnOldBuildIsSaid(): void
+    {
+        $this->now = (int) new \DateTimeImmutable('2026-12-30')->format('U');
+        $this->pinned();
+
+        self::assertContains('Quire\'s runtime ghcr.io/quirecms/runtime:8.5 was built on 2026-10-26: Quire\'s runtime is built every week, so this one may miss security fixes.', $this->said);
+    }
+
+    public function testAnImageThatDoesntSayWhenItWasBuiltIsRefused(): void
+    {
+        $this->images[self::RUNTIME] = ['Quire runtime (runtime)', ''];
+        $this->expectExceptionMessageIsOrContains('doesn\'t say when it was built');
+        $this->pinned();
     }
 
     private function dockerfile(string $content): void
@@ -147,16 +250,14 @@ final class RuntimeImagesTest extends TestCase
 
     public function testAnImageCheckedInTheLastMinutesIsntCheckedAgain(): void
     {
-        $now = 1000;
-        $runtime = new RuntimeImages($this->runner, static function () use (&$now): int {
-            return $now;
-        });
+        $runtime = $this->subject();
         $runtime->pinned($this->site, static function (): void {});
         $runtime->pinned($this->site, static function (): void {});
-        self::assertCount(2, $this->runner->runs, 'Each image checked once.');
+        self::assertCount(2, array_filter($this->runner->runs, static fn (array $run): bool => 'cosign' === $run['command'][0]), 'Each image checked once.');
 
-        $now += 601;
+        $this->now += 601;
         $this->signed['ghcr.io/quirecms/runtime:8.5'] = 'sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd';
+        $this->images['sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd'] = ['Quire runtime (runtime)', '2026-11-02T02:55:00Z'];
         self::assertSame('ghcr.io/quirecms/runtime:8.5@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd', $runtime->pinned($this->site, static function (): void {})['RUNTIME'] ?? null, 'Then checked again: a newer build.');
     }
 }

@@ -4,8 +4,10 @@ declare(strict_types=1);
 
 namespace Quire\Server\Tests\Update;
 
+use Quire\Server\Backup\SiteDatabaseDumps;
 use Quire\Server\Database\SiteDatabases;
 use Quire\Server\Docker\Compose;
+use Quire\Server\Docker\ComposeFiles;
 use Quire\Server\Docker\ComposePolicy;
 use Quire\Server\Docker\Images;
 use Quire\Server\Docker\RuntimeImages;
@@ -19,6 +21,7 @@ use Quire\Server\Operation\OperationLog;
 use Quire\Server\Operation\SiteManager;
 use Quire\Server\Process\ProcessResult;
 use Quire\Server\Registry\RuntimeBuilds;
+use Quire\Server\Registry\RuntimeFloors;
 use Quire\Server\Registry\SiteGit;
 use Quire\Server\Registry\SiteLock;
 use Quire\Server\Registry\SiteRegistry;
@@ -65,10 +68,16 @@ final class SiteUpdaterTest extends RegistryTestCase
     private string $remote = self::COMMIT_2;
 
     /** @var array<string, string> Image name => ID */
-    private array $tags = ['jane-php-prod' => self::OLD];
+    private array $tags = ['quire-sites/jane/php-prod' => self::OLD];
 
     /** The image the site's containers run */
     private string $running = self::OLD;
+
+    /** Whether a release's intent was there while it built */
+    private bool $intentAtBuild = false;
+
+    /** What the release's intent says while it starts the new version ('' to read it) */
+    private ?string $intentDuringUp = null;
 
     /** @var array<string, int> Migrations the database has run, by the image that ran them */
     private array $migrations = [self::OLD => 19, self::NEW => 19];
@@ -102,25 +111,37 @@ final class SiteUpdaterTest extends RegistryTestCase
         $filesystem->dumpFile($site.'/composer.json', '{"require": {"quire/core": "^0.1"}}');
         $filesystem->dumpFile($site.'/composer.lock', LockTest::lock(['quire/core' => 'v0.1.0'])->content);
         $filesystem->dumpFile($site.'/Dockerfile', 'FROM 0.1.0');
-        $filesystem->dumpFile($site.'/'.SiteFiles::ENV_FILE, "COMPOSE_PROJECT_NAME='jane'\n");
+        $filesystem->dumpFile($site.'/'.SiteFiles::ENV_FILE, "COMPOSE_PROJECT_NAME='jane'\nQUIRE_DATABASE_PASSWORD='the-site-password'\n");
 
         $this->runner = new ScriptedRunner([
             'docker compose config' => fn (array $command): ProcessResult => ScriptedRunner::ok($command, json_encode($this->config(), \JSON_THROW_ON_ERROR)),
+            'docker buildx inspect' => static fn (array $command): ProcessResult => ScriptedRunner::ok($command),
+            'docker container ls' => static fn (array $command): ProcessResult => ScriptedRunner::ok($command),
             'docker compose build' => function (array $command): ProcessResult {
+                $this->intentAtBuild = is_file($this->intentFile());
+
                 if ($this->buildFails) {
+                    // As a build can: the image's name moved to what it got done before it failed
+                    $this->tags['quire-sites/jane/php-prod'] = 'sha256:5555555555555555555555555555555555555555555555555555555555555555';
+
                     return ScriptedRunner::failed($command, "composer install: your requirements could not be resolved\n");
                 }
 
-                $this->tags['jane-php-prod'] = self::NEW;
+                $this->tags['quire-sites/jane/php-prod'] = self::NEW;
 
                 return ScriptedRunner::ok($command);
             },
+            'docker container inspect' => fn (array $command): ProcessResult => ScriptedRunner::ok($command, $this->running."\n"),
             'docker compose up' => function (array $command): ProcessResult {
+                if (null !== $this->intentDuringUp && is_file($this->intentFile())) {
+                    $this->intentDuringUp = (string) file_get_contents($this->intentFile());
+                }
+
                 if (null !== $this->ups && $this->ups-- <= 0) {
                     return ScriptedRunner::failed($command, "container jane-php-1 is unhealthy\n");
                 }
 
-                $this->running = $this->tags['jane-php-prod'];
+                $this->running = $this->tags['quire-sites/jane/php-prod'];
                 // Migrations run as it starts.
                 $this->executed = max($this->executed, $this->migrations[$this->running]);
 
@@ -137,8 +158,8 @@ final class SiteUpdaterTest extends RegistryTestCase
             },
             'docker compose cp' => static function (array $command): ProcessResult {
                 // Out of the site: its backup. (Nothing is copied into it.)
-                self::assertStringStartsWith('php:', $command[9]);
-                file_put_contents($command[10], 'backup');
+                self::assertStringStartsWith('php:', $command[10]);
+                file_put_contents($command[11], 'backup');
 
                 return ScriptedRunner::ok($command);
             },
@@ -148,6 +169,16 @@ final class SiteUpdaterTest extends RegistryTestCase
 
                 return ScriptedRunner::ok($command);
             },
+            // The server's PostgreSQL, where a site's database is dumped and restored (SiteDatabaseDumps)
+            'docker ps --quiet' => static fn (array $command): ProcessResult => ScriptedRunner::ok($command, "abcdef123456\n"),
+            'docker exec -e' => static fn (array $command): ProcessResult => ScriptedRunner::ok($command),
+            'docker cp --quiet' => static function (array $command): ProcessResult {
+                file_put_contents($command[4], 'the site\'s own tables');
+
+                return ScriptedRunner::ok($command);
+            },
+            'docker exec abcdef123456' => static fn (array $command): ProcessResult => ScriptedRunner::ok($command),
+            'docker exec --interactive' => static fn (array $command): ProcessResult => ScriptedRunner::ok($command),
             'git ls-remote' => fn (array $command): ProcessResult => ScriptedRunner::ok($command, $this->remote."\trefs/heads/main\n"),
             'git fetch' => static fn (array $command): ProcessResult => ScriptedRunner::ok($command),
             'git rev-parse' => fn (array $command): ProcessResult => ScriptedRunner::ok($command, (str_starts_with((string) end($command), 'HEAD') ? $this->checkedOut : $this->remote)."\n"),
@@ -160,6 +191,7 @@ final class SiteUpdaterTest extends RegistryTestCase
                 return ScriptedRunner::ok($command);
             },
             'git clean' => static fn (array $command): ProcessResult => ScriptedRunner::ok($command),
+            'git ls-tree' => static fn (array $command): ProcessResult => ScriptedRunner::ok($command),
         ]);
         $this->keys = new DeployKeys($this->runner, $this->paths);
         $this->git = new Git($this->runner, $this->keys);
@@ -182,10 +214,11 @@ final class SiteUpdaterTest extends RegistryTestCase
 
         self::assertSame(['Keeping its files as they are, to put them back', 'Changing its files', 'Checking and building the new version (a few minutes; it keeps running meanwhile)', 'Backing it up', 'Starting the new version (a few seconds offline)', 'Checking it'], $said);
         self::assertSame(self::NEW, $this->running);
-        self::assertSame(self::OLD, $this->tags['jane-php-prod:before-update'], 'The image it ran keeps a name: nothing prunes it while the update can be undone.');
+        self::assertSame(self::OLD, $this->tags['quire-sites/jane/php-prod:before-update'], 'The image it ran keeps a name: nothing prunes it while the update can be undone.');
         $site = $this->paths->site($this->name);
         self::assertStringContainsString('v0.1.1', (string) file_get_contents($site.'/composer.lock'));
         self::assertSame('FROM 0.1.1', file_get_contents($site.'/Dockerfile'));
+        self::assertSame('{"require": {"quire/core": "^0.1.1"}}', file_get_contents($site.'/composer.json'), 'Its composer.json goes with its lock.');
 
         // Built while the old version runs; backed up just before it's stopped; checked after.
         $order = array_values(array_filter($this->runner->keys(), static fn (string $key): bool => \in_array($key, ['docker compose build', 'docker compose up', 'docker compose cp'], true)));
@@ -242,7 +275,8 @@ final class SiteUpdaterTest extends RegistryTestCase
         }
 
         self::assertSame($before, [(string) file_get_contents($site.'/composer.lock'), (string) file_get_contents($site.'/Dockerfile')], 'Its files as they were.');
-        self::assertSame(self::OLD, $this->tags['jane-php-prod']);
+        self::assertSame(self::OLD, $this->tags['quire-sites/jane/php-prod'], 'Its image\'s name back on the image it runs: its next start isn\'t what the failed build left.');
+        self::assertSame('{"require": {"quire/core": "^0.1"}}', file_get_contents($site.'/composer.json'));
         self::assertNotContains('docker compose up', $this->runner->keys(), 'Never stopped.');
         self::assertNotContains('docker compose cp', $this->runner->keys());
         self::assertNull($this->updates->undoable($this->name));
@@ -262,6 +296,9 @@ final class SiteUpdaterTest extends RegistryTestCase
         }
 
         self::assertSame(self::OLD, $this->running, 'The image it had runs again.');
+        $ups = array_keys(array_filter($this->runner->keys(), static fn (string $key): bool => 'docker compose up' === $key));
+        $checks = array_keys(array_filter($this->runner->runs, static fn (array $run): bool => \in_array('-r', $run['command'], true)));
+        self::assertGreaterThan(end($ups), end($checks), 'And it\'s checked once rolled back.');
         self::assertCount(1, $this->restored, 'Its database as before the update: the new migrations ran.');
         self::assertStringContainsString('/backups/jane/update-', $this->restored[0]);
         self::assertSame('FROM 0.1.0', file_get_contents($this->paths->site($this->name).'/Dockerfile'));
@@ -302,6 +339,109 @@ final class SiteUpdaterTest extends RegistryTestCase
         self::assertStringContainsString('Its backup: '.$this->paths->backups($this->name).'/update-', (string) $this->operations->latest()[0]['error'], 'Where its backup is, for a person.');
     }
 
+    public function testWhileItRunsAReleaseSaysHowToPutItsSiteBack(): void
+    {
+        $this->intentDuringUp = '';
+        $this->updater()->update($this->plan(), false, 'cli', 'darko', static fn (): null => null);
+
+        self::assertNotSame('', $this->intentDuringUp, 'Written before the swap.');
+        /** @var array{image_before: string, backup: string, put_back: array{paths: list<string>}} $intent */
+        $intent = json_decode($this->intentDuringUp, true, 512, \JSON_THROW_ON_ERROR);
+        self::assertSame(self::OLD, $intent['image_before']);
+        self::assertStringContainsString('/backups/jane/update-', $intent['backup']);
+        self::assertSame(['composer.json', 'composer.lock'], \array_slice($intent['put_back']['paths'], 0, 2));
+        self::assertFileDoesNotExist($this->intentFile(), 'Over: gone.');
+    }
+
+    public function testItsIntentIsThereWhileItBuilds(): void
+    {
+        $this->updater()->update($this->plan(), false, 'cli', 'darko', static fn (): null => null);
+
+        self::assertTrue($this->intentAtBuild, 'A crash while it builds leaves its files put back too.');
+    }
+
+    public function testAFailedBuildLeavesNoIntent(): void
+    {
+        $this->buildFails = true;
+
+        try {
+            $this->updater()->update($this->plan(), false, 'cli', 'darko', static fn (): null => null);
+        } catch (UpdateFailed) {
+        }
+
+        self::assertFileDoesNotExist($this->intentFile(), 'Put back already: nothing for the agent\'s start.');
+    }
+
+    public function testWithNoSavedCopyItsFilesAreLeftAsTheyAre(): void
+    {
+        // Cut short before its files were saved: they hadn't changed
+        $site = $this->paths->site($this->name);
+        new Filesystem()->dumpFile($this->intentFile(), (string) json_encode(['operation' => 'o', 'what' => 'update', 'image' => 'quire-sites/jane/php-prod', 'image_before' => self::OLD, 'backup' => null, 'put_back' => ['files' => $this->paths->backups($this->name).'/update-never/files', 'paths' => ['composer.json', 'composer.lock']]]));
+
+        $this->updater()->recoverInterrupted(static fn (): null => null);
+
+        self::assertFileExists($site.'/composer.json');
+        self::assertFileExists($site.'/composer.lock');
+    }
+
+    public function testItGoesBackToTheImageItRanNotToWhatItsTagNames(): void
+    {
+        // A power cut after a build: the tag names that build (never run, maybe broken), the site the old one
+        $this->tags['quire-sites/jane/php-prod'] = 'sha256:9999999999999999999999999999999999999999999999999999999999999999';
+        // The new version doesn't answer: it's rolled back
+        $this->healthy = [self::OLD];
+
+        try {
+            $this->updater()->update($this->plan(), false, 'cli', 'darko', static fn (): null => null);
+            self::fail('It wasn\'t rolled back.');
+        } catch (UpdateFailed) {
+        }
+
+        self::assertSame(self::OLD, $this->running, 'Back on the image it ran.');
+    }
+
+    public function testAReleaseACrashCutShortIsPutBackAtTheAgentsStart(): void
+    {
+        // As a power cut leaves it: the new version runs, its files changed, its intent there
+        $saved = $this->paths->backups($this->name).'/update-x/files';
+        $site = $this->paths->site($this->name);
+        new Filesystem()->dumpFile($saved.'/composer.lock', 'the old lock');
+        new Filesystem()->dumpFile($saved.'/composer.json', 'the old json');
+        file_put_contents($site.'/composer.lock', 'the new lock');
+        $this->tags['quire-sites/jane/php-prod'] = self::NEW;
+        $this->running = self::NEW;
+        $backup = $this->paths->backups($this->name).'/update-x.tar';
+        file_put_contents($backup, 'backup');
+        file_put_contents($this->intentFile(), (string) json_encode(['operation' => 'o', 'what' => 'update', 'image' => 'quire-sites/jane/php-prod', 'image_before' => self::OLD, 'backup' => $backup, 'put_back' => ['files' => $saved, 'paths' => ['composer.json', 'composer.lock']]]));
+
+        $outcomes = $this->updater()->recoverInterrupted(static fn (): null => null);
+
+        self::assertSame(['jane' => 'put back as it was before'], $outcomes);
+        self::assertSame(self::OLD, $this->running);
+        self::assertSame('the old lock', file_get_contents($site.'/composer.lock'));
+        self::assertSame([$backup], $this->restored, 'Its backup: the new version\'s migrations may have run.');
+        self::assertFileDoesNotExist($this->intentFile());
+        self::assertSame('site.recover', $this->operations->latest()[0]['action']);
+        self::assertSame([], $this->updater()->recoverInterrupted(static fn (): null => null), 'Nothing twice.');
+    }
+
+    public function testASiteThatCantBePutBackIsMarkedFailed(): void
+    {
+        new Filesystem()->dumpFile($this->intentFile(), (string) json_encode(['operation' => 'o', 'what' => 'rebuild', 'image' => 'quire-sites/jane/php-prod', 'image_before' => self::OLD, 'backup' => null, 'put_back' => []]));
+        $this->healthy = [];
+
+        $outcomes = $this->updater()->recoverInterrupted(static fn (): null => null);
+
+        self::assertNotSame('put back as it was before', $outcomes['jane'] ?? 'put back as it was before');
+        self::assertSame(Site::FAILED, $this->registry->get($this->name)?->status);
+        self::assertFileExists($this->intentFile(), 'Kept, for whoever puts it back by hand.');
+    }
+
+    private function intentFile(): string
+    {
+        return $this->paths->backups($this->name).'/release.json';
+    }
+
     public function testUndoingAnUpdateThatRanNoMigrations(): void
     {
         $updater = $this->updater();
@@ -313,6 +453,9 @@ final class SiteUpdaterTest extends RegistryTestCase
         self::assertSame([], $this->restored, 'Code only: nothing lost.');
         self::assertSame('FROM 0.1.0', file_get_contents($this->paths->site($this->name).'/Dockerfile'));
         self::assertStringContainsString('v0.1.0', (string) file_get_contents($this->paths->site($this->name).'/composer.lock'));
+        self::assertSame('{"require": {"quire/core": "^0.1"}}', file_get_contents($this->paths->site($this->name).'/composer.json'), 'With its lock, as it was.');
+        $keys = $this->runner->keys();
+        self::assertSame('docker compose exec', array_last($keys), 'Checked after it started again.');
         self::assertNull($this->updates->undoable($this->name), 'Undone once.');
         self::assertSame(['site.undo', 'succeeded'], [$this->operations->latest()[0]['action'], $this->operations->latest()[0]['status']]);
     }
@@ -337,6 +480,15 @@ final class SiteUpdaterTest extends RegistryTestCase
         self::assertSame(self::OLD, $this->running);
         self::assertCount(1, $this->restored);
         self::assertStringContainsString('/backups/jane/update-', $this->restored[0], 'The backup from before the update.');
+
+        // And the rest of its database, from the dump beside that backup, as its own role, after Quire's
+        $restores = array_values(array_filter($this->runner->runs, static fn (array $run): bool => 'docker exec --interactive' === ScriptedRunner::key($run['command'])));
+        self::assertCount(1, $restores);
+        self::assertSame(substr($this->restored[0], 0, -4).'.database.dump', $restores[0]['inputFile']);
+        self::assertContains('--username=site_jane', $restores[0]['command']);
+        self::assertSame('the-site-password', $restores[0]['env']['PGPASSWORD'] ?? null, 'In the environment, never an argument.');
+        $quire = array_key_last(array_filter($this->runner->runs, static fn (array $run): bool => \in_array('quire:restore', $run['command'], true)));
+        self::assertGreaterThan($quire, array_search('docker exec --interactive', $this->runner->keys(), true));
     }
 
     public function testAPlanIsAppliedOnlyToTheFilesItWasMadeFrom(): void
@@ -432,6 +584,20 @@ final class SiteUpdaterTest extends RegistryTestCase
         self::assertSame([], $this->operations->latest(), 'Nothing to record.');
     }
 
+    public function testAFolderADeployLeftAtItsCommitIsntTakenForWhatRuns(): void
+    {
+        // A deploy of COMMIT_2 the agent's restart cut short: its folder there, COMMIT_1 still runs.
+        $this->followRepository();
+        $this->repositories->deployed($this->name, self::COMMIT_1);
+        $this->checkedOut = self::COMMIT_2;
+
+        self::assertSame(self::COMMIT_2, $this->updater()->deploy($this->name, null, 'cli', 'darko', static fn (): null => null), 'Built and checked, not "runs that commit already".');
+        self::assertContains('docker compose build', $this->runner->keys());
+        self::assertSame(self::NEW, $this->running);
+        $update = $this->updates->undoable($this->name);
+        self::assertSame(self::COMMIT_1, $update['commit_before'] ?? null, 'Undone, it goes back to what ran.');
+    }
+
     public function testOnlyCommitsOfTheBranchAreDeployed(): void
     {
         $this->followRepository();
@@ -518,11 +684,11 @@ final class SiteUpdaterTest extends RegistryTestCase
 
     private function updater(): SiteUpdater
     {
-        $compose = new Compose($this->runner, new ComposePolicy(), new RuntimeImages($this->runner), new RuntimeBuilds($this->connection, $this->schema), 'tcp://docker-proxy:2375');
+        $compose = new Compose($this->runner, new ComposePolicy(), new ComposeFiles(), new RuntimeImages($this->runner, new RuntimeFloors($this->connection, $this->schema)), new RuntimeBuilds($this->connection, $this->schema), 'tcp://docker-proxy:2375');
         $sites = new SiteManager(
             $this->registry,
             $this->operations,
-            new SiteLock($this->connection),
+            new SiteLock($this->connection, $this->schema),
             new SkeletonInstaller($this->runner),
             new SiteDatabases($this->connection),
             new SiteFiles(),
@@ -532,10 +698,11 @@ final class SiteUpdaterTest extends RegistryTestCase
             $this->git,
             $this->repositories,
             $this->keys,
+            new SiteDatabaseDumps($this->runner, $compose, 'tcp://docker-proxy:2375'),
             '',
         );
 
-        return new SiteUpdater($this->registry, $this->updates, $this->repositories, $this->operations, new SiteLock($this->connection), $sites, $compose, new Images($this->runner, 'tcp://docker-proxy:2375'), $this->git, $this->paths);
+        return new SiteUpdater($this->registry, $this->updates, $this->repositories, $this->operations, new SiteLock($this->connection, $this->schema), $sites, $compose, new Images($this->runner, 'tcp://docker-proxy:2375'), $this->git, $this->paths);
     }
 
     /**
@@ -564,8 +731,8 @@ final class SiteUpdaterTest extends RegistryTestCase
             'name' => 'jane',
             'networks' => ['default' => ['name' => 'jane_default'], 'quire-edge' => ['name' => 'quire-edge', 'external' => true], 'quire-data' => ['name' => 'quire-data', 'external' => true]],
             'services' => [
-                'php' => ['image' => 'jane-php-prod', 'build' => $build, 'networks' => ['default' => null, 'quire-edge' => ['aliases' => ['jane.example']], 'quire-data' => null]],
-                'worker' => ['image' => 'jane-php-prod', 'build' => $build, 'networks' => ['default' => null, 'quire-data' => null]],
+                'php' => ['image' => 'quire-sites/jane/php-prod', 'build' => $build, 'cap_drop' => ['ALL'], 'security_opt' => ['no-new-privileges:true'], 'mem_limit' => '536870912', 'pids_limit' => 256, 'networks' => ['default' => null, 'quire-edge' => ['aliases' => ['jane.example.quire.internal']], 'quire-data' => null]],
+                'worker' => ['image' => 'quire-sites/jane/php-prod', 'build' => $build, 'cap_drop' => ['ALL'], 'security_opt' => ['no-new-privileges:true'], 'mem_limit' => '536870912', 'pids_limit' => 256, 'networks' => ['default' => null, 'quire-data' => null]],
             ],
         ];
     }

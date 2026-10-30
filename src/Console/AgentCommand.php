@@ -4,12 +4,15 @@ declare(strict_types=1);
 
 namespace Quire\Server\Console;
 
+use Quire\Server\Backup\LocalBackups;
 use Quire\Server\Backup\OffsiteBackups;
 use Quire\Server\FrontDoor\DomainDirectory;
 use Quire\Server\Git\GitPoller;
 use Quire\Server\Operation\OperationLog;
+use Quire\Server\Operation\SiteManager;
 use Quire\Server\Registry\SiteRegistry;
 use Quire\Server\Update\AutomaticUpdates;
+use Quire\Server\Update\SiteUpdater;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Attribute\Option;
 use Symfony\Component\Console\Command\Command;
@@ -39,6 +42,9 @@ final class AgentCommand
         private readonly GitPoller $poller,
         private readonly AutomaticUpdates $updates,
         private readonly OffsiteBackups $backups,
+        private readonly SiteUpdater $sites,
+        private readonly LocalBackups $local,
+        private readonly SiteManager $manager,
     ) {
     }
 
@@ -64,6 +70,16 @@ final class AgentCommand
             $io->warning(\sprintf('%d operation(s) were interrupted and are marked failed.', $abandoned));
         }
 
+        // Sites an add cut short left being created: removed, their names and domains free again.
+        foreach ($this->manager->removeUnfinished() as $site) {
+            $io->writeln(\sprintf('Recovery: "%s" was being added when the agent stopped: removed (add it again)', $site));
+        }
+
+        // Sites a crash or a power cut stopped in the middle of a release: as they were before it.
+        foreach ($this->sites->recoverInterrupted(static fn (string $line) => $io->writeln('Recovery: '.$line)) as $site => $outcome) {
+            $io->writeln(\sprintf('Recovery: "%s": %s', $site, $outcome));
+        }
+
         do {
             $changes = $this->frontDoor->reconcile($this->registry->servedDomains());
 
@@ -78,6 +94,7 @@ final class AgentCommand
             touch(self::HEARTBEAT);
             $this->poller->poll($this->alive(static fn (string $line) => $io->writeln('Git: '.$line)));
             $this->backUp($io);
+            $this->expire($io);
             $this->updates->run(false, 'agent', $this->alive(static fn (string $line) => $io->writeln('Updates: '.$line)));
             touch(self::HEARTBEAT);
 
@@ -87,6 +104,22 @@ final class AgentCommand
         } while (!$once && !$this->stopping);
 
         return Command::SUCCESS;
+    }
+
+    /**
+     * The backups on the server older than LocalBackups::KEEP_DAYS, once a day.
+     */
+    private function expire(SymfonyStyle $io): void
+    {
+        try {
+            if ($this->local->due()) {
+                foreach ($this->local->expire('agent', 'automatic') as $removed) {
+                    $io->writeln('Backups: removed '.$removed);
+                }
+            }
+        } catch (\Throwable $e) {
+            $io->writeln('Backups: removing old ones failed: '.$e->getMessage());
+        }
     }
 
     /**

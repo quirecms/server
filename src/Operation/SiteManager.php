@@ -4,15 +4,16 @@ declare(strict_types=1);
 
 namespace Quire\Server\Operation;
 
+use Quire\Server\Backup\SiteDatabaseDumps;
 use Quire\Server\Database\SiteDatabases;
 use Quire\Server\Docker\Compose;
-use Quire\Server\Docker\PolicyContext;
 use Quire\Server\Docker\SiteProject;
 use Quire\Server\Docker\SkeletonInstaller;
 use Quire\Server\FrontDoor\DomainDirectory;
 use Quire\Server\Git\DeployKeys;
 use Quire\Server\Git\Git;
 use Quire\Server\Git\Repository;
+use Quire\Server\Process\Durable;
 use Quire\Server\Registry\SiteGit;
 use Quire\Server\Registry\SiteLock;
 use Quire\Server\Registry\SiteRegistry;
@@ -46,6 +47,7 @@ final readonly class SiteManager
         private Git $git,
         private SiteGit $repositories,
         private DeployKeys $keys,
+        private SiteDatabaseDumps $dumps,
         private string $mailerDsn = '',
         private Filesystem $filesystem = new Filesystem(),
     ) {
@@ -77,7 +79,7 @@ final readonly class SiteManager
             try {
                 // Checked before anything is done, so undoing never touches what was there before.
                 if (file_exists($directory)) {
-                    throw new \DomainException(\sprintf('The folder "%s" exists already: move it away first.', $directory));
+                    throw new \DomainException(\sprintf('The folder "%s" exists already: move it away first (if an add of "%s" was cut short, "quire-server site:remove %2$s --skip-backup" clears what it left).', $directory, $request->name));
                 }
 
                 if ($request->repository instanceof Repository && $request->repository->overSsh() && !$this->keys->exists($request->name)) {
@@ -207,10 +209,19 @@ final readonly class SiteManager
                 $undo[] = fn () => $this->registry->setStatus($name, Site::REMOVED);
                 $undo[] = fn () => $this->archive($name, $directory);
 
+                $own = [];
+
                 if (\is_string($code)) {
                     $step('Putting its code in place, as the backup has it');
                     $this->filesystem->mirror($code, $directory);
-                    // Its settings are this server's to write: none of the backed-up site's are kept.
+                    // Its owner's own settings (e.g. a storage disk, an SMTP server): its server's are
+                    // this server's to write, its secrets new.
+                    $own = is_file($directory.'/'.SiteFiles::ENV_FILE) ? SiteFiles::ownSettings(EnvFile::read($directory.'/'.SiteFiles::ENV_FILE)) : [];
+
+                    foreach ($own as $value) {
+                        $operation->secret($value);
+                    }
+
                     $this->filesystem->remove(array_map(static fn (string $file): string => $directory.'/'.$file, [SiteFiles::ENV_FILE, SiteFiles::ENV_FILE.'.before-server', SiteFiles::OVERRIDE]));
                 } else {
                     $this->repositories->follow($name, $code, $poll);
@@ -228,10 +239,11 @@ final readonly class SiteManager
                 $secret = bin2hex(random_bytes(32));
                 $operation->secret($secret);
                 $this->files->writeEnv($directory, $name, $domains[0], array_filter([
+                    'MAILER_DSN' => $this->mailerDsn,
+                    ...$own,
                     'APP_SECRET' => $secret,
                     'QUIRE_DATABASE_PASSWORD' => $databasePassword,
                     'POSTGRES_PASSWORD' => bin2hex(random_bytes(24)),
-                    'MAILER_DSN' => $this->mailerDsn,
                 ], static fn (string $value): bool => '' !== $value));
                 $this->files->writeOverride($directory, $name, $domains, Site::SHARED_DATABASE);
                 $project = $this->project($name, $domains, $name->value, Site::SHARED_DATABASE);
@@ -245,6 +257,7 @@ final readonly class SiteManager
 
                 $step('Restoring its database and files from the backup');
                 $this->compose->exec($project, self::PHP, ['bin/console', 'quire:restore', '-', '--force', '--no-interaction'], $operation->output(...), 3600, $backup)->orFail('Restoring the backup');
+                $this->restoreDatabase($name, $project, $backup, $operation->output(...));
 
                 if ($code instanceof Repository) {
                     $this->repositories->deployed($name, $this->git->head($code, $name, $directory));
@@ -361,7 +374,7 @@ final readonly class SiteManager
                 $step('Changing its settings (a copy of them is kept)');
                 $this->files->write($before, $env->content(), 0o600);
                 $files = $env->get('COMPOSE_FILE') ?? 'compose.yaml:compose.prod.yaml';
-                $this->files->writeOverride($directory, $name, $domains, Site::OWN_DATABASE);
+                $this->files->writeOverride($directory, $name, $domains, Site::OWN_DATABASE, $project);
                 $this->files->write($envPath, $env->with([
                     'COMPOSE_FILE' => str_contains($files, SiteFiles::OVERRIDE) ? $files : $files.':'.SiteFiles::OVERRIDE,
                     'COMPOSE_PROJECT_NAME' => $project,
@@ -452,7 +465,8 @@ final readonly class SiteManager
 
             $operation = $this->operations->start('site.remove', $name, ['backup' => $backup], $channel, $requestedBy);
             $directory = $this->paths->site($name);
-            $project = $this->project($name, $site->domains, $site->project, $site->databaseMode);
+            // A site whose add was cut short may have no folder yet: nothing of it to back up or stop.
+            $project = is_dir($directory) ? $this->project($name, $site->domains, $site->project, $site->databaseMode) : null;
             $step = static function (string $what) use ($operation, $say): void {
                 $operation->line('== '.$what);
                 $say($what);
@@ -461,10 +475,12 @@ final readonly class SiteManager
             try {
                 $file = null;
 
-                if ($backup) {
+                if ($backup && $project instanceof SiteProject) {
                     $step('Backing it up');
                     $file = $this->backup($name, $project, 'final');
                     $operation->line('Backed up to '.$file);
+                } elseif ($backup) {
+                    $operation->line('Its folder isn\'t there: nothing to back up');
                 }
 
                 $step('Closing it to visitors');
@@ -477,8 +493,9 @@ final readonly class SiteManager
 
                 $step('Stopping it and removing its containers and volumes');
 
-                if (is_file($directory.'/'.SiteFiles::ENV_FILE)) {
+                if ($project instanceof SiteProject && is_file($directory.'/'.SiteFiles::ENV_FILE)) {
                     $this->compose->down($project, volumes: true, output: $operation->output(...));
+                    $this->compose->removeBuilders($project);
                 }
 
                 if (Site::SHARED_DATABASE === $site->databaseMode) {
@@ -504,6 +521,26 @@ final readonly class SiteManager
     }
 
     /**
+     * At the agent's start: sites an add or a restore as a new site left being created (the agent
+     * stopped while it ran) are removed. They never ran; their names and domains are free again.
+     *
+     * @return list<string> The sites removed
+     */
+    public function removeUnfinished(): array
+    {
+        $removed = [];
+
+        foreach ($this->registry->all() as $site) {
+            if (Site::CREATING === $site->status) {
+                $this->remove($site->name, false, 'agent', 'agent', static fn (): null => null);
+                $removed[] = $site->name->value;
+            }
+        }
+
+        return $removed;
+    }
+
+    /**
      * The site's Compose project, and what the policy allows it: its domains on the front door's
      * network, and the server's PostgreSQL network only when its database is there.
      *
@@ -511,12 +548,7 @@ final readonly class SiteManager
      */
     public function project(SiteName $name, array $domains, string $project, string $databaseMode): SiteProject
     {
-        $directory = $this->paths->site($name);
-
-        return new SiteProject($directory, $directory.'/'.SiteFiles::ENV_FILE, new PolicyContext($project, $directory, [
-            'quire-edge' => [self::PHP => array_map(static fn (Domain $domain): string => $domain->value, $domains)],
-            'quire-data' => Site::SHARED_DATABASE === $databaseMode ? [self::PHP => [], 'worker' => []] : [],
-        ]));
+        return SiteProject::of($this->paths, $name, $domains, $project, $databaseMode);
     }
 
     public function projectOf(Site $site): SiteProject
@@ -563,22 +595,46 @@ final readonly class SiteManager
     }
 
     /**
-     * A backup of the site with quire:backup (its database and files), to
-     * /srv/quire/backups/<site>/<kind>-<time>.tar, readable by root only.
+     * A backup of the site with quire:backup (Quire's data and files), to
+     * /srv/quire/backups/<site>/<kind>-<time>.tar, and the rest of its database beside it
+     * (SiteDatabaseDumps), readable by root only.
      */
     public function backup(SiteName $name, SiteProject $project, string $kind): string
     {
         $directory = $this->paths->backups($name);
         $this->filesystem->mkdir($directory, 0o700);
         $file = $directory.'/'.$kind.'-'.new \DateTimeImmutable()->format('Ymd-His').'.tar';
-        $inside = '/tmp/quire-'.$kind.'-backup.tar';
+        // A name of its own each time: one an interrupted backup left (quire:backup won't overwrite a
+        // file) never stops the next.
+        $inside = '/tmp/quire-'.$kind.'-backup-'.bin2hex(random_bytes(6)).'.tar';
 
-        $this->compose->exec($project, self::PHP, ['bin/console', 'quire:backup', $inside, '--no-interaction'], timeout: 3600)->orFail('Backing up the site');
-        $this->compose->copyFrom($project, self::PHP, $inside, $file);
-        $this->compose->exec($project, self::PHP, ['rm', '-f', $inside], timeout: 60);
+        try {
+            $this->compose->exec($project, self::PHP, ['bin/console', 'quire:backup', $inside, '--no-interaction'], timeout: 3600)->orFail('Backing up the site');
+            $this->compose->copyFrom($project, self::PHP, $inside, $file);
+        } finally {
+            $this->compose->exec($project, self::PHP, ['rm', '-f', $inside], timeout: 60);
+        }
+
         chmod($file, 0o600);
+        Durable::sync($file);
+        $this->dumps->dump($project, $this->registry->get($name)->databaseMode ?? Site::SHARED_DATABASE, SiteDatabaseDumps::of($file));
 
         return $file;
+    }
+
+    /**
+     * After quire:restore: the rest of the site's database, from the dump beside the backup (backups
+     * made before Quire Server 0.3.1 have none).
+     *
+     * @param (\Closure(string): void)|null $output
+     */
+    public function restoreDatabase(SiteName $name, SiteProject $project, string $backup, ?\Closure $output = null): void
+    {
+        $dump = SiteDatabaseDumps::of($backup);
+
+        if (is_file($dump)) {
+            $this->dumps->restore($project, $this->registry->get($name)->databaseMode ?? Site::SHARED_DATABASE, $dump, $output);
+        }
     }
 
     /**

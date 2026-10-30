@@ -1,0 +1,1 @@
+the image it builds is named "quire-sites/blog/php-prod"

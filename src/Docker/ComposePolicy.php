@@ -38,14 +38,20 @@ final readonly class ComposePolicy
         'pid', 'ports', 'post_start', 'pre_stop', 'runtime', 'security_opt', 'userns_mode', 'uts', 'volumes',
     ];
 
-    /** Service settings no site may use */
     /**
-     * Capabilities a site may add back after dropping them all: binding ports below 1024 inside its own
-     * network namespace (FrankenPHP's binary carries it as a file capability, and can't even start
-     * without it under "no-new-privileges"). It gives no power over the host.
+     * Capabilities a service may add back after dropping them all, each among Docker's defaults and with
+     * no power over the host: binding ports below 1024 inside its own network namespace (FrankenPHP's
+     * binary carries it as a file capability, and can't even start without it under
+     * "no-new-privileges"), and what a database's entrypoint needs to own its data and become its user
+     * (CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID). Never NET_RAW or NET_ADMIN (spoofing and
+     * reconfiguring the networks other sites are on), nor any SYS_ one.
      */
-    private const array ALLOWED_CAPABILITIES = ['NET_BIND_SERVICE'];
+    private const array ALLOWED_CAPABILITIES = ['NET_BIND_SERVICE', 'CHOWN', 'DAC_OVERRIDE', 'FOWNER', 'SETGID', 'SETUID'];
 
+    /** The most processes a container may run */
+    private const int MAX_PIDS = 4096;
+
+    /** Service settings no site may use */
     private const array FORBIDDEN_SERVICE_KEYS = [
         'cgroup_parent' => 'places the container in another control group',
         'container_name' => 'takes a fixed container name, which may belong to another project',
@@ -65,6 +71,34 @@ final readonly class ComposePolicy
     ];
 
     private const array TOP_LEVEL_KEYS = ['name', 'services', 'volumes', 'networks', 'secrets', 'configs'];
+
+    /**
+     * The settings allowed below a service's, level by level: fail-closed there too, as a new setting
+     * with host powers may come at any level (a build's, a mount's, a network's IPAM). Some are
+     * checked further below; the rest have no power over the host or other sites.
+     */
+    private const array NESTED_KEYS = [
+        'build' => ['context', 'dockerfile', 'dockerfile_inline', 'args', 'labels', 'target', 'tags', 'no_cache', 'pull', 'shm_size', 'extra_hosts', 'ulimits', 'platforms', 'provenance', 'sbom',
+            // Checked in build()
+            'network', 'isolation', 'additional_contexts', 'ssh', 'secrets', 'entitlements', 'cache_to', 'cache_from', 'privileged'],
+        'deploy' => ['mode', 'replicas', 'labels', 'resources', 'restart_policy', 'update_config', 'rollback_config', 'placement', 'endpoint_mode'],
+        'deploy.resources' => ['limits', 'reservations'],
+        'deploy.resources.limits' => ['cpus', 'memory', 'pids'],
+        'deploy.resources.reservations' => ['cpus', 'memory', 'devices'],
+        'mount' => ['type', 'source', 'target', 'read_only', 'consistency', 'volume', 'tmpfs'],
+        'mount.volume' => ['nocopy', 'subpath'],
+        'mount.tmpfs' => ['size', 'mode'],
+        'logging' => ['driver', 'options'],
+        'blkio_config' => ['weight', 'weight_device', 'device_read_bps', 'device_write_bps', 'device_read_iops', 'device_write_iops'],
+        'hook' => ['command', 'user', 'privileged', 'working_dir', 'environment'],
+        'attachment' => ['aliases', 'ipv4_address', 'ipv6_address', 'link_local_ips', 'mac_address', 'driver_opts', 'priority', 'gw_priority', 'interface_name'],
+        'reference' => ['source', 'target', 'uid', 'gid', 'mode'],
+        'volume' => ['name', 'driver', 'driver_opts', 'external', 'labels'],
+        'network' => ['name', 'driver', 'driver_opts', 'external', 'labels', 'ipam', 'internal', 'attachable', 'enable_ipv4', 'enable_ipv6'],
+        'network.ipam' => ['driver', 'config', 'options'],
+        'network.ipam.config' => ['subnet', 'ip_range', 'gateway', 'aux_addresses'],
+        'secret' => ['name', 'file', 'environment', 'content', 'external', 'labels'],
+    ];
 
     /**
      * @param array<mixed> $config What "docker compose config --format json --no-env-resolution" printed, decoded
@@ -88,7 +122,7 @@ final readonly class ComposePolicy
         $services = $this->map($config['services'] ?? []);
 
         foreach ($services as $name => $service) {
-            foreach ($this->service((string) $name, $this->map($service), $context) as $violation) {
+            foreach ($this->service((string) $name, $this->map($service), array_map(strval(...), array_keys($services)), $context) as $violation) {
                 $violations[] = \sprintf('Service "%s": %s', $name, $violation);
             }
         }
@@ -109,7 +143,11 @@ final readonly class ComposePolicy
             foreach ($this->map($config[$kind] ?? []) as $name => $item) {
                 $item = $this->map($item);
 
-                if (true === ($item['external'] ?? false)) {
+                foreach ($this->unknown($item, 'secret', '') as $violation) {
+                    $violations[] = \sprintf('%s "%s": %s', ucfirst(rtrim($kind, 's')), $name, $violation);
+                }
+
+                if ($this->true($item['external'] ?? false)) {
                     $violations[] = \sprintf('%s "%s": external ones aren\'t allowed.', ucfirst(rtrim($kind, 's')), $name);
                 }
 
@@ -124,10 +162,11 @@ final readonly class ComposePolicy
 
     /**
      * @param array<array-key, mixed> $service
+     * @param list<string>            $services All the project's services
      *
      * @return list<string>
      */
-    private function service(string $name, array $service, PolicyContext $context): array
+    private function service(string $name, array $service, array $services, PolicyContext $context): array
     {
         $violations = [];
 
@@ -136,7 +175,7 @@ final readonly class ComposePolicy
 
             if (isset(self::FORBIDDEN_SERVICE_KEYS[$key])) {
                 // An empty value (e.g. "privileged: false", "cap_add: []") asks for nothing.
-                if (null !== $value && false !== $value && [] !== $value && '' !== $value) {
+                if (null !== $value && [] !== $value && '' !== $value && !$this->false($value)) {
                     $violations[] = \sprintf('"%s" %s.', $key, self::FORBIDDEN_SERVICE_KEYS[$key]);
                 }
             } elseif (!\in_array($key, self::SAFE_SERVICE_KEYS, true) && !\in_array($key, self::CHECKED_SERVICE_KEYS, true) && !str_starts_with($key, 'x-')) {
@@ -152,11 +191,32 @@ final readonly class ComposePolicy
             }
         }
 
-        foreach (['pid', 'ipc', 'uts', 'userns_mode', 'network_mode', 'cgroup'] as $namespace) {
+        // Any other value joins a Docker network by its name, past the checks of "networks" below: the
+        // host's, the default bridge, or the docker-proxy's (quire-docker), which is root on the host.
+        $network = $this->string($service['network_mode'] ?? '');
+        $sibling = str_starts_with($network, 'service:') ? substr($network, 8) : null;
+
+        if ('' !== $network && 'none' !== $network && (null === $sibling || $sibling === $name || !\in_array($sibling, $services, true))) {
+            $violations[] = \sprintf('"network_mode: %s": a service joins only its site\'s own networks, no network, or another of its services\' ("service:<name>").', $network);
+        }
+
+        foreach (['pid', 'ipc', 'uts', 'userns_mode', 'cgroup'] as $namespace) {
             $mode = $this->string($service[$namespace] ?? '');
 
             if ('host' === $mode || str_starts_with($mode, 'container:')) {
                 $violations[] = \sprintf('"%s: %s" shares a namespace with the host or another container.', $namespace, $mode);
+            }
+        }
+
+        array_push($violations, ...$this->hardening($service));
+
+        foreach (['logging', 'blkio_config'] as $nested) {
+            array_push($violations, ...$this->unknown($this->map($service[$nested] ?? []), $nested, $nested.'.'));
+        }
+
+        foreach (['secrets', 'configs'] as $kind) {
+            foreach ($this->list($service[$kind] ?? []) as $reference) {
+                array_push($violations, ...$this->unknown($this->map($reference), 'reference', $kind.'.'));
             }
         }
 
@@ -178,7 +238,7 @@ final readonly class ComposePolicy
             }
         }
 
-        if (true === ($service['oom_kill_disable'] ?? false)) {
+        if ($this->true($service['oom_kill_disable'] ?? false)) {
             $violations[] = '"oom_kill_disable" lets the container take the host\'s memory.';
         }
 
@@ -206,7 +266,9 @@ final readonly class ComposePolicy
 
         foreach (['post_start', 'pre_stop'] as $hook) {
             foreach ($this->list($service[$hook] ?? []) as $handler) {
-                if (true === ($this->map($handler)['privileged'] ?? false)) {
+                array_push($violations, ...$this->unknown($this->map($handler), 'hook', $hook.'.'));
+
+                if ($this->true($this->map($handler)['privileged'] ?? false)) {
                     $violations[] = \sprintf('"%s" runs a privileged command.', $hook);
                 }
             }
@@ -223,14 +285,28 @@ final readonly class ComposePolicy
         }
 
         $deploy = $this->map($service['deploy'] ?? []);
+        $resources = $this->map($deploy['resources'] ?? []);
+        array_push(
+            $violations,
+            ...$this->unknown($deploy, 'deploy', 'deploy.'),
+            ...$this->unknown($resources, 'deploy.resources', 'deploy.resources.'),
+            ...$this->unknown($this->map($resources['limits'] ?? []), 'deploy.resources.limits', 'deploy.resources.limits.'),
+            ...$this->unknown($this->map($resources['reservations'] ?? []), 'deploy.resources.reservations', 'deploy.resources.reservations.'),
+        );
 
-        if ([] !== $this->list($this->map($this->map($deploy['resources'] ?? [])['reservations'] ?? [])['devices'] ?? [])) {
+        if ([] !== $this->list($this->map($resources['reservations'] ?? [])['devices'] ?? [])) {
             $violations[] = '"deploy.resources.reservations.devices" gives access to host devices.';
         }
 
         foreach ($this->list($service['volumes'] ?? []) as $mount) {
             $mount = $this->map($mount);
             $type = $this->string($mount['type'] ?? '');
+            array_push(
+                $violations,
+                ...$this->unknown($mount, 'mount', 'volumes.'),
+                ...$this->unknown($this->map($mount['volume'] ?? []), 'mount.volume', 'volumes.volume.'),
+                ...$this->unknown($this->map($mount['tmpfs'] ?? []), 'mount.tmpfs', 'volumes.tmpfs.'),
+            );
 
             if (!\in_array($type, ['volume', 'tmpfs'], true)) {
                 $violations[] = \sprintf('A "%s" mount of "%s": only named volumes and tmpfs are allowed.', $type, $this->string($mount['source'] ?? ''));
@@ -241,7 +317,88 @@ final readonly class ComposePolicy
             array_push($violations, ...$this->build($this->map($service['build']), $context));
         }
 
+        array_push($violations, ...$this->images($service, $context));
+
         array_push($violations, ...$this->attachments($name, $this->map($service['networks'] ?? []), $context));
+
+        return $violations;
+    }
+
+    /**
+     * What every service carries, whoever wrote it (the server's override gives it to the services it
+     * knows, a service a site adds says so itself): no capabilities but those added back, no gaining
+     * privileges, limits on memory and processes, and one container. Without it a service has Docker's
+     * defaults: NET_RAW, which spoofs other containers' addresses on the networks sites share, and no
+     * limit on what it takes from the machine.
+     *
+     * @param array<array-key, mixed> $service
+     *
+     * @return list<string>
+     */
+    private function hardening(array $service): array
+    {
+        $violations = [];
+        $dropped = array_map(fn (mixed $capability): string => strtoupper($this->string($capability)), $this->list($service['cap_drop'] ?? []));
+
+        if (!\in_array('ALL', $dropped, true)) {
+            $violations[] = '"cap_drop: [ALL]" is missing: every service drops Docker\'s default capabilities (NET_RAW among them).';
+        }
+
+        if ([] === array_filter($this->list($service['security_opt'] ?? []), fn (mixed $option): bool => 1 === preg_match('/^no-new-privileges(?:[:=]true)?\z/', $this->string($option)))) {
+            $violations[] = '"security_opt: [no-new-privileges:true]" is missing.';
+        }
+
+        $deploy = $this->map($service['deploy'] ?? []);
+        $limits = $this->map($this->map($deploy['resources'] ?? [])['limits'] ?? []);
+
+        if (null === ($service['mem_limit'] ?? $limits['memory'] ?? null)) {
+            $violations[] = '"mem_limit" is missing: every service has a memory limit.';
+        }
+
+        $pids = $service['pids_limit'] ?? $limits['pids'] ?? null;
+
+        if (!is_numeric($pids) || (int) $pids < 1 || (int) $pids > self::MAX_PIDS) {
+            $violations[] = \sprintf('"pids_limit" (1 to %d) is missing: every service has a limit on its processes.', self::MAX_PIDS);
+        }
+
+        foreach (['scale' => $service['scale'] ?? null, 'deploy.replicas' => $deploy['replicas'] ?? null] as $key => $count) {
+            if (is_numeric($count) && (int) $count > 1) {
+                $violations[] = \sprintf('"%s: %d": a site runs one container of each service.', $key, (int) $count);
+            }
+        }
+
+        return $violations;
+    }
+
+    /**
+     * The names of the images a service builds are the site's own: "quire-sites/<project>/…", which no
+     * other project's can be (project names have no "/"). Another site's name would have its next start
+     * (an undo, a rollback, a new domain) run this site's code with its secrets and domains. And no
+     * service runs an image of another site's.
+     *
+     * @param array<array-key, mixed> $service
+     *
+     * @return list<string>
+     */
+    private function images(array $service, PolicyContext $context): array
+    {
+        $violations = [];
+        $image = $this->string($service['image'] ?? '');
+        $own = '#^'.preg_quote(PolicyContext::IMAGES.$context->project.'/', '#').'[a-z0-9]([a-z0-9._-]{0,126})(:[A-Za-z0-9_][A-Za-z0-9._-]{0,127})?\z#';
+
+        if (isset($service['build'])) {
+            if (1 !== preg_match($own, $image)) {
+                $violations[] = \sprintf('the image it builds is named "%s": a site\'s images are named "%s%s/<name>".', $image, PolicyContext::IMAGES, $context->project);
+            }
+
+            foreach ($this->list($this->map($service['build'])['tags'] ?? []) as $tag) {
+                if (1 !== preg_match($own, $this->string($tag))) {
+                    $violations[] = \sprintf('its build is tagged "%s": a site\'s images are named "%s%s/<name>".', $this->string($tag), PolicyContext::IMAGES, $context->project);
+                }
+            }
+        } elseif (str_starts_with($image, PolicyContext::IMAGES) && 1 !== preg_match($own, $image)) {
+            $violations[] = \sprintf('"image: %s" is another site\'s.', $image);
+        }
 
         return $violations;
     }
@@ -253,19 +410,20 @@ final readonly class ComposePolicy
      */
     private function build(array $build, PolicyContext $context): array
     {
-        $violations = [];
+        $violations = $this->unknown($build, 'build', 'build.');
         $buildContext = $this->string($build['context'] ?? '');
 
         if (!$context->contains($buildContext)) {
             $violations[] = \sprintf('it builds from "%s", outside the site\'s folder.', $buildContext);
-        } elseif (isset($build['dockerfile']) && !$context->contains(rtrim($buildContext, '/').'/'.$this->string($build['dockerfile']))) {
+        } elseif (isset($build['dockerfile']) && !$context->contains(str_starts_with($this->string($build['dockerfile']), '/') ? $this->string($build['dockerfile']) : rtrim($buildContext, '/').'/'.$this->string($build['dockerfile']))) {
+            // Compose keeps an absolute one as it is: relative to the context it's another file.
             $violations[] = 'its Dockerfile is outside the site\'s folder.';
         }
 
         foreach (['additional_contexts' => 'reads other build contexts', 'ssh' => 'forwards SSH keys', 'secrets' => 'reads build secrets', 'entitlements' => 'asks for build entitlements', 'cache_to' => 'writes a build cache', 'cache_from' => 'reads a build cache', 'privileged' => 'builds privileged'] as $key => $what) {
             $value = $build[$key] ?? null;
 
-            if (null !== $value && false !== $value && [] !== $value) {
+            if (null !== $value && false !== $value && [] !== $value && !$this->false($value)) {
                 $violations[] = \sprintf('its build %s ("%s").', $what, $key);
             }
         }
@@ -297,6 +455,10 @@ final readonly class ComposePolicy
         foreach ($networks as $network => $attachment) {
             $network = (string) $network;
             $attachment = $this->map($attachment);
+
+            foreach ($this->unknown($attachment, 'attachment', '') as $violation) {
+                $violations[] = \sprintf('on the network "%s", %s', $network, $violation);
+            }
 
             if (!$context->isSharedNetwork($network)) {
                 continue;
@@ -333,9 +495,9 @@ final readonly class ComposePolicy
      */
     private function volume(array $volume, PolicyContext $context): array
     {
-        $violations = [];
+        $violations = $this->unknown($volume, 'volume', '');
 
-        if (true === ($volume['external'] ?? false)) {
+        if ($this->true($volume['external'] ?? false)) {
             $violations[] = 'external volumes aren\'t allowed: they may belong to others.';
         } elseif (!$context->ownsName($this->string($volume['name'] ?? ''))) {
             $violations[] = \sprintf('its name "%s" isn\'t in the project\'s own ("%s_…").', $this->string($volume['name'] ?? ''), $context->project);
@@ -362,12 +524,28 @@ final readonly class ComposePolicy
     private function network(string $key, array $network, PolicyContext $context): array
     {
         $name = $this->string($network['name'] ?? $key);
+        $violations = $this->unknown($network, 'network', '');
 
-        if (true === ($network['external'] ?? false)) {
-            return $context->isSharedNetwork($name) && $name === $key ? [] : [\sprintf('the external network "%s" isn\'t one the server shares.', $name)];
+        if ($this->true($network['external'] ?? false)) {
+            return $context->isSharedNetwork($name) && $name === $key ? $violations : [...$violations, \sprintf('the external network "%s" isn\'t one the server shares.', $name)];
         }
 
-        $violations = [];
+        $ipam = $this->map($network['ipam'] ?? []);
+        array_push($violations, ...$this->unknown($ipam, 'network.ipam', 'ipam.'));
+
+        foreach ($this->list($ipam['config'] ?? []) as $pool) {
+            array_push($violations, ...$this->unknown($this->map($pool), 'network.ipam.config', 'ipam.config.'));
+        }
+
+        $ipamDriver = $this->string($ipam['driver'] ?? '');
+
+        if ('' !== $ipamDriver && 'default' !== $ipamDriver) {
+            $violations[] = \sprintf('the IPAM driver "%s" isn\'t allowed (a plugin runs on the host).', $ipamDriver);
+        }
+
+        if ([] !== $this->map($ipam['options'] ?? [])) {
+            $violations[] = '"ipam.options" aren\'t allowed.';
+        }
 
         if ($context->isSharedNetwork($name) || !$context->ownsName($name)) {
             $violations[] = \sprintf('its name "%s" isn\'t in the project\'s own ("%s_…").', $name, $context->project);
@@ -384,6 +562,41 @@ final readonly class ComposePolicy
         }
 
         return $violations;
+    }
+
+    /**
+     * The settings of a map that aren't allowed at its level (extensions, "x-…", are).
+     *
+     * @param array<array-key, mixed> $map
+     *
+     * @return list<string>
+     */
+    private function unknown(array $map, string $level, string $prefix): array
+    {
+        $violations = [];
+
+        foreach (array_keys($map) as $key) {
+            $key = (string) $key;
+
+            if (!\in_array($key, self::NESTED_KEYS[$level], true) && !str_starts_with($key, 'x-')) {
+                $violations[] = \sprintf('"%s%s" isn\'t a setting the server allows (yet).', $prefix, $key);
+            }
+        }
+
+        return $violations;
+    }
+
+    /**
+     * A boolean, however it's written ("true", 1, "yes": YAML and Compose take them all).
+     */
+    private function true(mixed $value): bool
+    {
+        return true === $value || 1 === $value || (\is_string($value) && \in_array(strtolower(trim($value)), ['true', '1', 'yes', 'y', 'on'], true));
+    }
+
+    private function false(mixed $value): bool
+    {
+        return false === $value || 0 === $value || (\is_string($value) && \in_array(strtolower(trim($value)), ['false', '0', 'no', 'n', 'off'], true));
     }
 
     /**

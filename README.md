@@ -2,7 +2,7 @@
 
 Many Quire sites on one machine, each with its own Quire version, database and domains, behind one front door that holds their certificates. Add a site with one command; nothing else on the server restarts.
 
-> **Status: early.** The front door, the agent and its commands, the installer, adopting sites installed before, updating sites, and sites deployed from a Git repository. Still to come: signed releases and the server's own updates, the web console with passkeys, backups off the server, and one-click images. Until the first release of Quire Server, install it from a checkout (below).
+> **Status: early.** The front door, the agent and its commands, the installer, adopting sites installed before, updating sites, sites deployed from a Git repository, signed releases and the server's own updates, and backups off the server. Still to come: the web console with passkeys, and one-click images.
 
 ## How it works
 
@@ -31,11 +31,15 @@ sh install.sh --email=you@example.com
 To check the installer itself first (with [cosign](https://docs.sigstore.dev/cosign/system_config/installation/)):
 
 ```bash
-curl -fsSLO https://github.com/quirecms/server/releases/latest/download/install.sh.sigstore.json
+version=0.3.0   # the release you install (its tag, without the "v")
+curl -fsSLO https://github.com/quirecms/server/releases/download/v$version/install.sh
+curl -fsSLO https://github.com/quirecms/server/releases/download/v$version/install.sh.sigstore.json
 cosign verify-blob install.sh --bundle install.sh.sigstore.json \
-  --certificate-identity-regexp '^https://github\.com/quirecms/server/\.github/workflows/release\.yaml@refs/tags/v' \
+  --certificate-identity "https://github.com/quirecms/server/.github/workflows/release.yaml@refs/tags/v$version" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
+
+The identity names that version's tag: a signature of another release (an older one, with its known flaws) doesn't check out.
 
 From a checkout instead (a version not released yet, or your own changes): `git clone https://github.com/quirecms/server.git && sh server/install.sh --source=server`. The agent is then built on the machine.
 
@@ -46,7 +50,7 @@ The installer:
 3. **Puts the server in `/srv/quire/server`,** its settings and newly generated secrets in `server.env` (readable by root only), and the `quire-server` command in `/usr/local/bin`.
 4. **Starts PostgreSQL, the docker-proxy and the agent,** from images pinned by digest: the release's agent image (`ghcr.io/quirecms/server`), never built on the machine.
 5. **Adopts the Quire sites already running from `/srv/quire/sites`** (it asks first; see below).
-6. **Starts the front door,** once nothing else holds ports 80 and 443. If another web server holds them, it says which and stops there. It never stops anything it didn't start.
+6. **Starts the front door,** once nothing else holds ports 80 and 443. If another web server holds them, it says which and stops there. It never stops anything it didn't start. When the machine's firewall is ufw and it's on, 80/tcp, 443/tcp and 443/udp are allowed in it.
 7. **Turns on automatic security updates** for the operating system (Ubuntu and Debian; `--no-os-updates` leaves them as they are).
 
 Running it again is safe: it keeps the secrets it made and finishes what's left, e.g. after you've freed ports 80 and 443. `--yes` answers yes to its questions; `--help` lists its options.
@@ -101,7 +105,8 @@ quire-server backups:restore-server --from-server=old   # every site of another 
 quire-server backups:check [--read=5]   # check the stored backups
 quire-server operations [--site=jane]  # what was done, by whom, and how it ended
 quire-server operations <id>           # an operation's log
-quire-server up | down | ps | logs     # the server itself
+quire-server up | down | ps | logs     # the server itself ("down -v" is refused: it would delete every site's database;
+                                       # up and down wait for no operation to run, or --force)
 ```
 
 - **Site names** are 2 to 30 lowercase letters, digits and single dashes (`jane`, `club-news`). They name the site's folder, its containers (`jane-php-1`) and its database (`site_jane`). Its domains are separate, and the first one is its main address.
@@ -126,6 +131,7 @@ Then the update:
 4. **Starts the new version.** The site is offline for a few seconds; the front door shows visitors a "Back in a moment" page (503, `Retry-After`), so search engines come back.
 5. **Checks it:** its health check, home page and sign-in page.
 6. **Rolls back by itself if anything fails:** the files and image it had, and its backup restored if the new version's migrations ran (or that can't be known, for sites older than Quire 0.1.1). If even that fails, the site is marked failed, and the operation's log says where its backup is.
+7. **If the machine stops in the middle** (a crash, a power cut), the agent puts the site back by itself when it starts again, as a failed update is rolled back: the files and image it had, and its backup when one was taken (`quire-server operations` shows it as `site.recover`). The same goes for deploys and rebuilds.
 
 `quire-server site:undo jane` undoes the last update within a week. If that update ran no migrations, only the code goes back. Otherwise its backup from before the update is restored too, and changes made since are lost; you're asked first.
 
@@ -165,17 +171,17 @@ A server installed from a checkout (`--source`) moves to releases the same way.
 
 ## Backups
 
-Every site is backed up on the server before anything risky (an update, a restore, removing it), in `/srv/quire/backups/<site>/`. **Backups off the server** are what survive losing the server itself: set them up once.
+Every site is backed up on the server before anything risky (an update, a restore, removing it), in `/srv/quire/backups/<site>/`, and kept for two weeks (each site's newest one, and the final one of a site that was removed, for good). **Backups off the server** are what survive losing the server itself: set them up once.
 
 ```bash
 quire-server backups:setup
 ```
 
-It asks for an S3-compatible bucket (DigitalOcean Spaces, Backblaze B2, Hetzner Object Storage, AWS S3…) and a key for it, checks they work, creates the backup repository there, and **shows its password once: keep it, with the bucket's key, somewhere other than this server** (a password manager). Without them the backups can't be read, and if the server is lost, they're the way back.
+It asks for an S3-compatible bucket (DigitalOcean Spaces, Backblaze B2, Hetzner Object Storage, AWS S3…) and a key for it, checks they work, creates the backup repository there, and **shows its password once: keep it, with the bucket's key, somewhere other than this server** (a password manager). Without them the backups can't be read, and if the server is lost, they're the way back. Run again on a server whose backups are set up, it asks before replacing them, and keeps the settings it replaces (the old password among them) in `server.env.before-<time>`.
 
 Then, every night (from 02:00 UTC; `QUIRE_SERVER_BACKUP_HOUR` in `server.env`, or `off`):
 
-- **every running site** is backed up (`quire:backup`: its database and files) and **the server's own** (its registry, the front door's domains, Git mode sites' deploy keys);
+- **every running site** is backed up (`quire:backup`: Quire's data and files; and the rest of its database, e.g. an application's own tables, with `pg_dump` as the site's own role) and **the server's own** (its registry, the front door's domains, Git mode sites' deploy keys);
 - they're sent off the server with [restic](https://restic.net): **encrypted on the server** (AES-256) before they leave it, and stored once per unique piece, so a night adds only what changed;
 - **kept** 7 daily, 4 weekly and 6 monthly, for each site on its own (`QUIRE_SERVER_BACKUP_KEEP`); on Sundays the storage only forgotten backups used is freed, and 5% of the stored data is read back to check it;
 - a site that fails doesn't stop the others; `quire-server operations` shows each night's run.
@@ -229,7 +235,7 @@ The agent can act on Docker, and that's root on the machine, so the server is bu
 
 - **Every site's configuration is checked before it's built or started.** The check runs on all its Compose files merged, as Docker would run them. It refuses:
   - **Privileges:** privileged containers, added capabilities, host devices;
-  - **The host itself:** the host's network, process, IPC or user namespaces, other runtimes, mounts of host paths, other projects' volumes or networks, files from outside the site's folder;
+  - **The host itself:** the host's network, process, IPC or user namespaces, any network but the site's own (`network_mode` names none but another of its services), other runtimes, mounts of host paths, other projects' volumes or networks, files from outside the site's folder;
   - **Exposure:** published ports;
   - **Names that belong to others:** another site's domain or the database's name on a shared network, fixed container names;
   - **New settings:** any Compose setting it doesn't know yet, until it's reviewed (e.g. `use_api_socket`, which hands a container the Docker socket).
@@ -237,18 +243,20 @@ The agent can act on Docker, and that's root on the machine, so the server is bu
   Docker's own authorization plugins have been bypassed (CVE-2024-41110, CVE-2026-34040), so this check is the boundary.
 - **Sites are isolated from the server and from each other:**
   - no Docker access, and no route to the agent or the docker-proxy;
-  - a PostgreSQL role that opens only the site's own database;
-  - no Linux capabilities, `no-new-privileges`, memory and process limits.
-- **The front door serves only registered domains,** and gets certificates only for them. A request's Host header must also match the name its connection was encrypted for, so a forged header can't reach another container.
+  - a PostgreSQL role that opens only the site's own database, with a share of the server's PostgreSQL it can't exceed (32 connections, 5 GB of temporary files; queries and idle transactions end after 15 and 10 minutes unless the site asks otherwise), and connections kept for the server itself;
+  - every service of a site, whoever wrote it: no Linux capabilities but a few harmless ones added back, `no-new-privileges`, memory and process limits, one container each (a site's own extra service without them is refused).
+- **Composer runs in a container of its own** when the server audits or plans a site's update: the agent's image, as nobody, with no capabilities, on a network of its own that only reaches the internet, with only a copy of the site's composer.json and composer.lock. A composer.json that has it fetch other than over HTTPS (`secure-http: false`, `http://` repositories, request `options`) is refused.
+- **The front door serves only registered domains,** and gets certificates only for them. A request's Host header must also match the name its connection was encrypted for, so a forged header can't reach another container. It reaches each site by a name only Docker's network knows (`<domain>.quire.internal`), never the public one: a site that's down gives "Back in a moment", not a loop back to the server.
 - **Secrets:**
   - files readable by root only, never in images or command lines;
+  - never in what the agent hands to the programs it runs: they get only the basics of its environment (PATH, HOME, the locale), so a site's Compose file can't read the server's settings with `${…}`, and each site runs with its own `APP_SECRET`;
   - database passwords sent to PostgreSQL only as SCRAM verifiers;
   - operation logs scrubbed of them.
 - **Nothing is deleted without a backup,** and every operation is recorded. **Backups off the server are encrypted on it** (restic) before they leave; their password and the bucket's keys are in `server.env` (root only), never in a command line or a log.
 - **Sites build on Quire's runtime images only when they check out:** before every build, each runtime image a site's Dockerfile names (`ghcr.io/quirecms/runtime`, `RUNTIME_BUILDER` and `RUNTIME`) must be signed by quirecms/framework's runtime workflow (Sigstore), and the build gets it by the digest that was checked. One that doesn't check out stops the build (an update is rolled back). Other base images are the site's choice, built on as they are and noted in the operation's log.
 - **Updates of the server are checked before any of their code runs,** by the release that runs (see "Updating the server"). The updater is the one part with Docker itself rather than the docker-proxy, since it may replace the docker-proxy: it runs only on demand, only the installed release's code, and takes nothing but a version.
 
-What this doesn't protect against: a kernel exploit from inside a container (containers share the machine's kernel), a bug in Docker itself, and anyone who is root on the machine.
+What this doesn't protect against: a kernel exploit from inside a container (containers share the machine's kernel), a bug in Docker itself, and anyone who is root on the machine or holds `server.env`. [SECURITY.md](SECURITY.md) has the whole threat model, and how to report a vulnerability.
 
 ## Working on Quire Server
 
@@ -264,14 +272,14 @@ The end-to-end test runs the whole server in a Docker-in-Docker machine of its o
 
 ```bash
 docker build -t quire-server-agent:test .
-tests/e2e/run.sh quire-server-agent:test                 # everything, about 35 minutes
+tests/e2e/run.sh quire-server-agent:test                 # everything, one part after another (an hour or more)
 E2E_ONLY=git E2E_CACHE=1 tests/e2e/run.sh quire-server-agent:test   # one part, with a build cache
 KEEP=1 tests/e2e/run.sh quire-server-agent:test          # keep the machine, to look around
 E2E_ONLY=release tests/e2e/run.sh                        # this install.sh installs the latest release
 E2E_ONLY=update tests/e2e/run.sh quire-server-agent:test # this checkout updates itself to a release
 ```
 
-CI runs the five parts (`adopt`, `sites`, `git`, `release`, `update`) in parallel, on clean machines.
+CI runs the six parts (`adopt`, `sites`, `git`, `release`, `update`, `backups`) in parallel, on clean machines. How to contribute: [CONTRIBUTING.md](CONTRIBUTING.md).
 
 Sites are found and managed through the contract every Quire site keeps (`Quire\Runtime\ServerContract`, [docs](https://github.com/quirecms/framework/blob/main/docs/docker.md#tools-that-manage-sites)): Quire Server uses no Quire code of its own.
 

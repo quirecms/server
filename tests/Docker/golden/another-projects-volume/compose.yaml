@@ -1,0 +1,29 @@
+services:
+  php:
+    image: quire-sites/jane/php-prod
+    build:
+      context: .
+      target: frankenphp_prod
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    mem_limit: 512m
+    pids_limit: 256
+    networks:
+      default:
+      quire-edge:
+        aliases: [jane.example]
+      quire-data:
+    volumes:
+      - storage_data:/app/storage
+      - blog_data:/data
+
+volumes:
+  storage_data:
+  blog_data:
+    external: true
+    name: blog_storage_data
+networks:
+  quire-edge:
+    external: true
+  quire-data:
+    external: true

@@ -36,6 +36,9 @@ final class ServerUpdaterTest extends RegistryTestCase
     private const string SECRET = 'QUIRE_SERVER_POSTGRES_PASSWORD=s3cret';
 
     private string $root;
+
+    /** Whether the swap was written down while the new release started */
+    private bool $swapRecorded = false;
     private string $server;
     private ScriptedRunner $runner;
     private OperationLog $operations;
@@ -120,6 +123,7 @@ final class ServerUpdaterTest extends RegistryTestCase
             'docker compose up' => function (array $command, ?string $directory): ProcessResult {
                 $image = $this->image();
                 $this->agent = $image;
+                $this->swapRecorded = is_file($this->root.'/backups/server/swap.json');
 
                 foreach ($this->migratesTo[$image] ?? [] as $version) {
                     $this->connection->executeStatement(\sprintf('INSERT INTO %s VALUES (?) ON CONFLICT DO NOTHING', $this->migrations), [$version]);
@@ -143,22 +147,27 @@ final class ServerUpdaterTest extends RegistryTestCase
         parent::tearDown();
     }
 
+    public function testAnUpdateIsWrittenDownWhileItSwaps(): void
+    {
+        $this->update();
+
+        self::assertTrue($this->swapRecorded, 'While it swapped: what the machine\'s stop would leave.');
+        self::assertFileDoesNotExist($this->root.'/backups/server/swap.json', 'Over: gone.');
+        self::assertNull($this->updater('0.1.1')->cutShort());
+    }
+
+    public function testAnUpdateCutShortIsSaid(): void
+    {
+        new Filesystem()->dumpFile($this->root.'/backups/server/swap.json', '{"from": "0.1.1", "to": "0.2.0", "started_at": "2026-10-30T21:00:00+00:00"}');
+
+        self::assertSame(['from' => '0.1.1', 'to' => '0.2.0'], $this->updater('0.1.1')->cutShort());
+    }
+
     public function testUpdatingTheServer(): void
     {
-        // The updater's own settings (it runs the release before), which Compose would take over server.env's
-        $_ENV['QUIRE_SERVER_IMAGE'] = self::OLD;
-
-        try {
-            $this->update();
-        } finally {
-            unset($_ENV['QUIRE_SERVER_IMAGE']);
-        }
-
-        foreach ($this->runner->runs as $run) {
-            if ('compose' === ($run['command'][1] ?? null)) {
-                self::assertFalse($run['env']['QUIRE_SERVER_IMAGE'] ?? null, 'Only server.env names the image.');
-            }
-        }
+        // That only server.env names the image, and not the updater's own environment, is the runner's
+        // part: SymfonyProcessRunnerTest.
+        $this->update();
 
         self::assertSame(self::NEW, $this->agent);
         self::assertSame('release: 0.2.0', file_get_contents($this->server.'/compose.yaml'));
@@ -215,7 +224,7 @@ final class ServerUpdaterTest extends RegistryTestCase
     {
         $other = $this->otherConnection();
         // An operation on a site runs (it holds the server's lock, shared).
-        $other->fetchOne('SELECT pg_advisory_lock_shared(hashtextextended(?, 0))', [SiteLock::SERVER]);
+        $other->fetchOne('SELECT pg_advisory_lock_shared(hashtextextended(?, 0))', [$this->schema.':server']);
 
         try {
             $this->failsAndRuns('/An operation on a site runs/', self::OLD);
@@ -230,9 +239,9 @@ final class ServerUpdaterTest extends RegistryTestCase
         $other = $this->otherConnection();
 
         try {
-            self::assertTrue(new SiteLock($this->connection)->lockServer());
+            self::assertTrue(new SiteLock($this->connection, $this->schema)->lockServer());
             $this->expectExceptionMessageIsOrContains('The server is being updated');
-            new SiteLock($other)->run(new SiteName('jane'), static fn (): bool => true);
+            new SiteLock($other, $this->schema)->run(new SiteName('jane'), static fn (): bool => true);
         } finally {
             $other->close();
         }
@@ -252,6 +261,17 @@ final class ServerUpdaterTest extends RegistryTestCase
         self::assertNotContains('pg_restore', array_merge(...array_map(static fn (array $run): array => $run['command'], $this->runner->runs)), 'Its migrations didn\'t run: the database stays.');
         self::assertSame('failed', $this->operations->latest()[0]['status']);
         self::assertContains('It runs as it was (0.1.1)', $this->operations->lines($this->operations->latest()[0]['id']));
+        $other = $this->otherConnection();
+
+        try {
+            $ran = false;
+            new SiteLock($other, $this->schema)->run(new SiteName('jane'), static function () use (&$ran): void {
+                $ran = true;
+            });
+            self::assertTrue($ran, 'The server\'s lock is let go: sites can be worked on again.');
+        } finally {
+            $other->close();
+        }
         self::assertNull($this->updater('0.1.1')->undoable(), 'Nothing to undo.');
         self::assertSame([], glob($this->root.'/backups/server/*'), 'Its backup was the server as it runs: not kept.');
     }
@@ -390,7 +410,7 @@ final class ServerUpdaterTest extends RegistryTestCase
             new Releases(new GitHubReleases($this->runner), $this->runner),
             new ServerFolder($this->runner, $this->root),
             new ServerStack($this->runner, 'unix:///var/run/docker.sock', 's3cret'),
-            new SiteLock($this->connection),
+            new SiteLock($this->connection, $this->schema),
             $this->connection,
             $this->operations,
             $this->root,

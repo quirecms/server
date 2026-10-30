@@ -58,6 +58,19 @@ final class SiteDatabasesTest extends KernelTestCase
         $jane->close();
     }
 
+    public function testASiteTakesOnlyItsShareOfTheSharedPostgres(): void
+    {
+        $this->databases->create($this->jane);
+        $this->assertLimited($this->jane);
+
+        // A site of an earlier release, without them: the server's start (harden) gives them
+        $role = $this->admin->quoteSingleIdentifier($this->jane->databaseIdentifier());
+        $this->admin->executeStatement(\sprintf('ALTER ROLE %s CONNECTION LIMIT 64', $role));
+        $this->admin->executeStatement(\sprintf('ALTER ROLE %s RESET ALL', $role));
+        $this->databases->harden((string) $this->admin->getDatabase());
+        $this->assertLimited($this->jane);
+    }
+
     public function testThePasswordNeverReachesPostgresInPlainText(): void
     {
         $password = $this->databases->create($this->jane);
@@ -104,6 +117,17 @@ final class SiteDatabasesTest extends KernelTestCase
 
         $this->expectExceptionMessageIsOrContains('exists already');
         $this->databases->create($this->jane);
+    }
+
+    private function assertLimited(SiteName $site): void
+    {
+        /** @var array{rolconnlimit: int, rolconfig: string} $role */
+        $role = $this->admin->fetchAssociative('SELECT rolconnlimit, array_to_string(rolconfig, \',\') AS rolconfig FROM pg_roles WHERE rolname = ?', [$site->databaseIdentifier()]);
+        $settings = explode(',', $role['rolconfig']);
+        sort($settings);
+
+        self::assertSame(SiteDatabases::CONNECTIONS, $role['rolconnlimit']);
+        self::assertSame(['idle_in_transaction_session_timeout=10min', 'statement_timeout=15min', 'temp_file_limit=5GB'], $settings);
     }
 
     public function testTheVerifierHasPostgresFormat(): void

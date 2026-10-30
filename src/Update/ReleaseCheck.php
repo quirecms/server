@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Quire\Server\Update;
 
 use Doctrine\DBAL\Connection;
+use Quire\Server\Release\FeedNotTrusted;
 use Quire\Server\Release\QuireFeed;
 use Quire\Server\Site\Site;
 
@@ -41,6 +42,9 @@ final readonly class ReleaseCheck
 
         try {
             $feed = $this->feed->read();
+        } catch (FeedNotTrusted $e) {
+            // Not an outage: no update on a feed that may have been tampered with, asked for or not.
+            return ['vouched' => false, 'blocked' => [$e->getMessage()], 'notes' => [], 'security' => []];
         } catch (\Throwable $e) {
             return ['vouched' => false, 'blocked' => [], 'notes' => ['Quire\'s release feed couldn\'t be read ('.$e->getMessage().'): what Quire '.$to.' requires isn\'t checked.'], 'security' => []];
         }

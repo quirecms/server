@@ -12,13 +12,15 @@ use Quire\Server\Site\SiteName;
  * operation ends or its connection does (so a crash never leaves a site locked). Operations on sites
  * also share the server's lock, which updating the server takes alone: it never stops the agent while
  * one runs, and none starts while it updates.
+ *
+ * Its locks are named in a namespace: the server's own, or a test's (its schema), so tests running
+ * side by side against one PostgreSQL don't take each other's.
  */
 final readonly class SiteLock
 {
-    public const string SERVER = 'quire-server:server';
-
     public function __construct(
         private Connection $connection,
+        private string $namespace = 'quire-server',
     ) {
     }
 
@@ -31,9 +33,9 @@ final readonly class SiteLock
      */
     public function run(SiteName $site, \Closure $operation): mixed
     {
-        $key = 'quire-server:site:'.$site->value;
+        $key = $this->namespace.':site:'.$site->value;
 
-        if (true !== $this->connection->fetchOne('SELECT pg_try_advisory_lock_shared(hashtextextended(?, 0))', [self::SERVER])) {
+        if (true !== $this->connection->fetchOne('SELECT pg_try_advisory_lock_shared(hashtextextended(?, 0))', [$this->namespace.':server'])) {
             throw new \DomainException('The server is being updated right now; try again when it\'s finished ("quire-server operations").');
         }
 
@@ -48,7 +50,7 @@ final readonly class SiteLock
                 $this->connection->fetchOne('SELECT pg_advisory_unlock(hashtextextended(?, 0))', [$key]);
             }
         } finally {
-            $this->connection->fetchOne('SELECT pg_advisory_unlock_shared(hashtextextended(?, 0))', [self::SERVER]);
+            $this->connection->fetchOne('SELECT pg_advisory_unlock_shared(hashtextextended(?, 0))', [$this->namespace.':server']);
         }
     }
 
@@ -58,11 +60,11 @@ final readonly class SiteLock
      */
     public function lockServer(): bool
     {
-        return true === $this->connection->fetchOne('SELECT pg_try_advisory_lock(hashtextextended(?, 0))', [self::SERVER]);
+        return true === $this->connection->fetchOne('SELECT pg_try_advisory_lock(hashtextextended(?, 0))', [$this->namespace.':server']);
     }
 
     public function unlockServer(): void
     {
-        $this->connection->fetchOne('SELECT pg_advisory_unlock(hashtextextended(?, 0))', [self::SERVER]);
+        $this->connection->fetchOne('SELECT pg_advisory_unlock(hashtextextended(?, 0))', [$this->namespace.':server']);
     }
 }

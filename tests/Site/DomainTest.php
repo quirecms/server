@@ -65,6 +65,7 @@ final class DomainTest extends TestCase
         yield 'Caddy placeholder' => ['{http.request.host}.example'];
         yield 'invalid IDN (bidi)' => ['a‮b.example'];
         yield 'zero-width joiner' => ["ja\u{200D}ne.example"];
+        yield 'right-to-left and left-to-right in one label (bidi spoofing)' => ["\u{05E9}a.example"];
     }
 
     #[DataProvider('invalid')]

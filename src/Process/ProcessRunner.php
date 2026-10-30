@@ -7,13 +7,14 @@ namespace Quire\Server\Process;
 /**
  * Runs a program: always as a list of arguments, never through a shell, so nothing in a name or a
  * domain is ever interpreted. Secrets go in the environment or in files, never in the arguments,
- * which every process on the machine can read.
+ * which every process on the machine can read. A program gets none of the agent's own environment
+ * beyond the basics it needs to run (PATH, HOME, the locale, the time zone): only what it's given.
  */
 interface ProcessRunner
 {
     /**
      * @param list<string>                  $command   The program and its arguments
-     * @param array<string, string|false>   $env       Variables added to the runner's own environment; false removes one
+     * @param array<string, string|false>   $env       The program's environment, beyond those basics; false removes one of them
      * @param (\Closure(string): void)|null $output    Gets the output as it comes, e.g. to log it
      * @param string|null                   $inputFile A file streamed to the program's standard input (instead of $input; it may be large)
      */

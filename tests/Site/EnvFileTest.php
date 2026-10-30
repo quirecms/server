@@ -61,7 +61,8 @@ final class EnvFileTest extends TestCase
 
     public function testValuesThatCouldBreakTheFileAreRefused(): void
     {
-        foreach (["x'y", "x\ny", "x\0y"] as $value) {
+        // A value ending in "\": Compose would read its closing quote as escaped, and lose the next line.
+        foreach (["x'y", "x\ny", "x\0y", 'ends with \\'] as $value) {
             try {
                 EnvFile::parse('')->with(['A' => $value]);
                 self::fail(\sprintf('"%s" was accepted.', addcslashes($value, "\0..\37")));

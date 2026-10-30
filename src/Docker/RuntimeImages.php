@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Quire\Server\Docker;
 
 use Quire\Server\Process\ProcessRunner;
+use Quire\Server\Process\Unreachable;
+use Quire\Server\Registry\RuntimeFloors;
 
 /**
  * Quire's runtime images (ghcr.io/quirecms/runtime), which sites from Quire's skeleton build on: their
@@ -12,6 +14,11 @@ use Quire\Server\Process\ProcessRunner;
  * one it names is checked: signed (Sigstore, keyless) by quirecms/framework's runtime workflow, from
  * main. The build then gets it by the digest that was checked, so what's built on is exactly what was
  * checked, whatever the tag points to by then. A runtime that doesn't check out stops the build.
+ *
+ * A signature says who built an image, not which one it is, nor when: so the image's own title (in
+ * its configuration, which the signed digest covers) must be the role its argument names (the builder
+ * isn't the production base), and a tag's build must be no older than the newest this server built on
+ * (RuntimeFloors): a tag moved back to an older signed build isn't built on.
  *
  * Other base images (a site that changed its Dockerfile) are the site's choice: built on as they are,
  * and said so in the operation's log.
@@ -24,7 +31,11 @@ final class RuntimeImages
     public const string REPOSITORY = 'ghcr.io/quirecms/runtime';
     private const string IDENTITY = 'https://github.com/quirecms/framework/.github/workflows/runtime.yaml@refs/heads/main';
     private const string ISSUER = 'https://token.actions.githubusercontent.com';
-    private const array ARGUMENTS = ['RUNTIME_BUILDER', 'RUNTIME'];
+    /** Argument => the title of the image it must name (runtime.yaml's builds) */
+    private const array ARGUMENTS = ['RUNTIME_BUILDER' => 'Quire runtime (builder)', 'RUNTIME' => 'Quire runtime (runtime)'];
+
+    /** Quire's runtime is built every week: a build much older than that misses fixes */
+    private const int STALE_AFTER_DAYS = 30;
 
     /** @var array<string, array{string, int}> Image => the digest checked, and when */
     private array $checked = [];
@@ -34,6 +45,8 @@ final class RuntimeImages
      */
     public function __construct(
         private readonly ProcessRunner $runner,
+        private readonly RuntimeFloors $floors,
+        private readonly string $dockerHost = '',
         private readonly \Closure $now = time(...),
     ) {
     }
@@ -62,7 +75,7 @@ final class RuntimeImages
         preg_match_all('/^[ \t]*ARG[ \t]+([A-Z_]+)=(\S+)[ \t]*$/mi', $head, $matches, \PREG_SET_ORDER);
 
         foreach ($matches as [, $name, $image]) {
-            if (!\in_array($name, self::ARGUMENTS, true)) {
+            if (!isset(self::ARGUMENTS[$name])) {
                 continue;
             }
 
@@ -77,12 +90,75 @@ final class RuntimeImages
             }
 
             $digest = $this->verify($image);
-            $pinned = (str_contains($image, '@') ? strstr($image, '@', true) : $image).'@'.$digest;
+            $reference = str_contains($image, '@') ? (string) strstr($image, '@', true) : $image;
+            $pinned = $reference.'@'.$digest;
+            $created = $this->build($name, $image, $pinned);
+
+            // A tag (not a digest the site chose): never older than the newest built on here.
+            if (!str_contains($image, '@')) {
+                $floor = $this->floors->of($image);
+
+                if (null !== $floor && $floor['digest'] !== $digest && $created < $floor['created']) {
+                    throw new RuntimeImageNotTrusted(\sprintf('Quire\'s runtime %s is now a build of %s, older than one this server built on before (%s, %s): a tag moved back is how sites are rolled onto known flaws. Not building on it.', $image, $created->format('Y-m-d H:i'), $floor['created']->format('Y-m-d H:i'), $floor['digest']));
+                }
+
+                $this->floors->raise($image, $digest, $created);
+            }
+
+            if ($created < new \DateTimeImmutable('@'.($this->now)())->modify(\sprintf('-%d days', self::STALE_AFTER_DAYS))) {
+                $say(\sprintf('Quire\'s runtime %s was built on %s: Quire\'s runtime is built every week, so this one may miss security fixes.', $image, $created->format('Y-m-d')));
+            }
+
             $say(\sprintf('Quire\'s runtime %s checks out (Sigstore: signed by its workflow): %s', $image, $digest));
             $arguments[$name] = $pinned;
         }
 
         return $arguments;
+    }
+
+    /**
+     * When the image was built, after its title says it's what the argument names (every platform's).
+     *
+     * @throws RuntimeImageNotTrusted When it isn't
+     */
+    private function build(string $argument, string $image, string $pinned): \DateTimeImmutable
+    {
+        $result = $this->runner->run(['docker', 'buildx', 'imagetools', 'inspect', '--format', '{{json .Image}}', $pinned], ['HOME' => sys_get_temp_dir(), ...('' === $this->dockerHost ? [] : ['DOCKER_HOST' => $this->dockerHost])], timeout: 120);
+
+        if (!$result->successful()) {
+            throw new \RuntimeException(\sprintf('Quire\'s runtime %s couldn\'t be read (%s). Nothing was built; try again later.', $image, Unreachable::lastLine($result->errorOutput)));
+        }
+
+        $decoded = json_decode($result->output, true);
+        $decoded = \is_array($decoded) ? $decoded : [];
+        // One platform's configuration, or one per platform (an index)
+        $configs = isset($decoded['created']) || isset($decoded['config']) ? [$decoded] : array_values(array_filter($decoded, static fn (mixed $config, int|string $platform): bool => \is_array($config) && 'unknown/unknown' !== $platform, \ARRAY_FILTER_USE_BOTH));
+        $newest = null;
+
+        foreach ($configs as $config) {
+            $labels = \is_array($config['config'] ?? null) && \is_array($config['config']['Labels'] ?? null) ? $config['config']['Labels'] : [];
+            $title = $labels['org.opencontainers.image.title'] ?? null;
+
+            if (self::ARGUMENTS[$argument] !== $title) {
+                throw new RuntimeImageNotTrusted(\sprintf('%s names %s, which is "%s", not "%s": signed, but not the image it must be. Not building on it.', $argument, $image, \is_string($title) ? mb_substr($title, 0, 80) : 'untitled', self::ARGUMENTS[$argument]));
+            }
+
+            $created = \is_string($config['created'] ?? null) ? $config['created'] : '';
+
+            try {
+                $at = new \DateTimeImmutable($created);
+            } catch (\Exception) {
+                $at = null;
+            }
+
+            if ('' === $created || !$at instanceof \DateTimeImmutable) {
+                throw new RuntimeImageNotTrusted(\sprintf('Quire\'s runtime %s doesn\'t say when it was built: not building on it.', $image));
+            }
+
+            $newest = !$newest instanceof \DateTimeImmutable || $at > $newest ? $at : $newest;
+        }
+
+        return $newest ?? throw new RuntimeImageNotTrusted(\sprintf('Quire\'s runtime %s has no image to read: not building on it.', $image));
     }
 
     /**
@@ -112,7 +188,14 @@ final class RuntimeImages
         );
 
         if (!$result->successful()) {
-            throw new RuntimeImageNotTrusted(\sprintf('Quire\'s runtime %s didn\'t check out (it must be signed by %s): not building on it.', $image, self::IDENTITY));
+            $said = Unreachable::lastLine($result->errorOutput);
+
+            // Not a verdict on the image: nothing answered. As careful (nothing is built), but no alarm.
+            if (Unreachable::said($result->errorOutput)) {
+                throw new \RuntimeException(\sprintf('Quire\'s runtime %s couldn\'t be checked: the registry or Sigstore didn\'t answer (%s). Nothing was built; try again later.', $image, $said));
+            }
+
+            throw new RuntimeImageNotTrusted(\sprintf('Quire\'s runtime %s didn\'t check out (it must be signed by %s): not building on it. cosign: %s', $image, self::IDENTITY, $said));
         }
 
         $digests = [];

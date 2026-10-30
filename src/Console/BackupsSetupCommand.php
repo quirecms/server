@@ -70,8 +70,18 @@ final readonly class BackupsSetupCommand
 
         $io->title('Backups off the server');
 
+        // Its password is the only way into the backups made so far: never replaced unasked, never lost.
         if ($this->current->configured()) {
-            $io->note(\sprintf('Backups go to %s now: this replaces that.', $this->current->repository));
+            $io->warning([
+                \sprintf('Backups go to %s now. Setting them up again replaces that, and its password in server.env.', $this->current->repository),
+                'The settings it replaces are kept in server.env.before-<time> (root only): the backups made so far stay readable with them.',
+            ]);
+
+            if (!$yes && !$io->confirm('Replace them?', false)) {
+                $io->writeln('Nothing was changed.');
+
+                return Command::FAILURE;
+            }
         }
 
         try {
@@ -108,6 +118,12 @@ final readonly class BackupsSetupCommand
 
         if ($settings->plainHttp()) {
             $io->warning('The bucket is reached over plain HTTP: the backups are encrypted, but its keys travel in the clear. Use https:// unless it\'s on this machine.');
+        }
+
+        if ($this->current->configured()) {
+            $kept = $this->folder->path.'/server.env.before-'.new \DateTimeImmutable()->format('Ymd-His');
+            ServerFolder::writeSecret($kept, $this->folder->env()->content());
+            $io->writeln(\sprintf('  The settings before: %s', $kept));
         }
 
         $this->folder->writeEnv($this->folder->env()->with([

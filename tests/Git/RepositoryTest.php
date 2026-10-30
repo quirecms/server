@@ -74,5 +74,7 @@ final class RepositoryTest extends TestCase
         self::assertFalse(Repository::isCommit('HEAD'));
         self::assertFalse(Repository::isCommit(str_repeat('a', 12)));
         self::assertFalse(Repository::isCommit(str_repeat('a', 40)."\n"));
+        self::assertFalse(Repository::isCommit('--upload-pack='.str_repeat('a', 40)), 'An option Git would read.');
+        self::assertFalse(Repository::isCommit(str_repeat('a', 40).'b'));
     }
 }

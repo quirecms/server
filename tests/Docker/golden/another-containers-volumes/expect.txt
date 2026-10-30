@@ -1,0 +1,1 @@
+"volumes_from" mounts the volumes of other containers

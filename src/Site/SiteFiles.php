@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Quire\Server\Site;
 
+use Quire\Server\Docker\PolicyContext;
+use Quire\Server\Process\Durable;
 use Symfony\Component\Yaml\Tag\TaggedValue;
 use Symfony\Component\Yaml\Yaml;
 
@@ -20,8 +22,38 @@ final readonly class SiteFiles
     /** The server's PostgreSQL, on the quire-data network */
     public const string DATABASE_HOST = 'quire-database';
 
+    /**
+     * How the front door names a site's domain on quire-edge: "<domain>.quire.internal". The ".internal"
+     * domain is never public (ICANN keeps it for private use): while the site is down, its name doesn't
+     * resolve anywhere else, and visitors get the "Back in a moment" page. A site's public domain would
+     * be asked of public DNS then, which names this server: the front door again, in a loop.
+     */
+    public const string EDGE_SUFFIX = '.quire.internal';
+
+    /** What a server writes in a site's prod.env (its secrets a new site gets anew) */
+    private const array SERVERS = ['COMPOSE_FILE', 'COMPOSE_PROJECT_NAME', 'SERVER_NAME', 'APP_SECRET', 'QUIRE_DATABASE_PASSWORD', 'POSTGRES_PASSWORD'];
+
     /** The skeleton's production setup, then the server's */
     private const string COMPOSE_FILE = 'compose.yaml:compose.prod.yaml:compose.server.yaml';
+
+    /**
+     * What a site's prod.env has that its owner wrote: everything but what a server writes (or, on
+     * another server, writes anew), and what's not written as this server writes values.
+     *
+     * @return array<string, string>
+     */
+    public static function ownSettings(EnvFile $env): array
+    {
+        $own = [];
+
+        foreach ($env->values() as $name => $value) {
+            if (!\in_array($name, self::SERVERS, true) && 1 !== preg_match('/[\'\x00-\x1f\x7f]/', $value) && !str_ends_with($value, '\\')) {
+                $own[$name] = $value;
+            }
+        }
+
+        return $own;
+    }
 
     /**
      * @param array<string, string> $settings E.g. APP_SECRET, MAILER_DSN, QUIRE_DATABASE_PASSWORD
@@ -36,9 +68,10 @@ final readonly class SiteFiles
                 throw new \InvalidArgumentException(\sprintf('"%s" isn\'t a variable name.', $name));
             }
 
-            // Single quotes: taken as they are by Compose. So no quote and no line break in a value.
-            if (1 === preg_match('/[\'\x00-\x1f\x7f]/', $value)) {
-                throw new \InvalidArgumentException(\sprintf('The value of %s can\'t contain quotes or control characters.', $name));
+            // Single quotes: taken as they are by Compose. So no quote and no line break in a value, and
+            // none ending in "\" (Compose reads "\'" as an escaped quote).
+            if (1 === preg_match('/[\'\x00-\x1f\x7f]/', $value) || str_ends_with($value, '\\')) {
+                throw new \InvalidArgumentException(\sprintf('The value of %s can\'t contain quotes or control characters, or end with "\\".', $name));
             }
 
             $lines[] = \sprintf("%s='%s'", $name, $value);
@@ -48,9 +81,19 @@ final readonly class SiteFiles
     }
 
     /**
-     * @param list<Domain> $domains The primary one first
+     * The image a site's web and worker containers run, built from its folder: named in its own
+     * namespace, which no other project's can be.
      */
-    public function writeOverride(string $directory, SiteName $site, array $domains, string $databaseMode): void
+    public static function image(string $project): string
+    {
+        return PolicyContext::IMAGES.$project.'/php-prod';
+    }
+
+    /**
+     * @param list<Domain> $domains The primary one first
+     * @param string|null  $project Its Compose project (its own for an adopted site), the site's name if null
+     */
+    public function writeOverride(string $directory, SiteName $site, array $domains, string $databaseMode, ?string $project = null): void
     {
         if ([] === $domains) {
             throw new \InvalidArgumentException('A site needs at least one domain.');
@@ -60,6 +103,7 @@ final readonly class SiteFiles
         $primary = $hosts[0];
         $hardening = ['security_opt' => ['no-new-privileges:true'], 'cap_drop' => ['ALL']];
         $php = [
+            'image' => self::image($project ?? $site->value),
             // Only the front door reaches the site.
             'ports' => new TaggedValue('reset', null),
             'environment' => [
@@ -69,20 +113,28 @@ final readonly class SiteFiles
                 'SYMFONY_TRUSTED_PROXIES' => 'private_ranges',
             ],
             'labels' => ['com.quirecms.site' => 'true', 'com.quirecms.server.site' => $site->value],
-            'networks' => ['default' => null, 'quire-edge' => ['aliases' => $hosts]],
+            'networks' => ['default' => null, 'quire-edge' => ['aliases' => array_map(static fn (string $host): string => $host.self::EDGE_SUFFIX, $hosts)]],
             'mem_limit' => '1g',
             'pids_limit' => 512,
             // FrankenPHP's binary needs this one to start (a file capability, for port 80).
             'cap_add' => ['NET_BIND_SERVICE'],
         ] + $hardening;
         $worker = [
+            'image' => self::image($project ?? $site->value),
             'environment' => ['DEFAULT_URI' => 'https://'.$primary],
             'labels' => ['com.quirecms.server.site' => $site->value],
             'networks' => ['default' => null],
             'mem_limit' => '512m',
             'pids_limit' => 256,
         ] + $hardening;
-        $services = ['php' => $php, 'worker' => $worker];
+        // The site's own PostgreSQL (an adopted site's): what its entrypoint needs to own its data and
+        // become its user, and nothing else.
+        $database = [
+            'cap_add' => ['CHOWN', 'DAC_OVERRIDE', 'FOWNER', 'SETGID', 'SETUID'],
+            'mem_limit' => '1g',
+            'pids_limit' => 512,
+        ] + $hardening;
+        $services = ['php' => $php, 'worker' => $worker, 'database' => $database];
 
         $networks = ['quire-edge' => ['external' => true]];
 
@@ -96,7 +148,7 @@ final readonly class SiteFiles
             $services['worker']['environment']['DATABASE_URL'] = $url;
             // The site's own PostgreSQL doesn't run: the server's has its database.
             $services['php']['depends_on'] = new TaggedValue('reset', null);
-            $services['database'] = ['profiles' => ['own-database']];
+            $services['database']['profiles'] = ['own-database'];
         }
 
         $yaml = "# How the site \"{$site->value}\" runs on this server. Written by the Quire Server agent and written\n# again when the site changes: don't edit it, it would be replaced.\n"
@@ -119,6 +171,7 @@ final readonly class SiteFiles
             }
 
             chmod($temporary, $mode);
+            Durable::sync($temporary);
 
             if (!rename($temporary, $path)) {
                 throw new \RuntimeException(\sprintf('Couldn\'t write "%s".', $path));

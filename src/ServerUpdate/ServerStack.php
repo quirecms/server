@@ -96,9 +96,6 @@ final readonly class ServerStack
         return $this->runner->run(
             ['docker', 'compose', '--project-directory', $folder, '--env-file', $envFile, '--project-name', self::PROJECT, ...$arguments],
             [
-                // Only server.env sets the server's settings: Compose would take the updater's own (its
-                // environment, e.g. the image it runs) over the env file's.
-                ...array_fill_keys($this->inheritedSettings(), false),
                 'DOCKER_HOST' => $this->dockerHost,
                 'COMPOSE_ANSI' => 'never',
                 'COMPOSE_PROGRESS' => 'plain',
@@ -115,16 +112,5 @@ final readonly class ServerStack
             $output,
             inputFile: $inputFile,
         );
-    }
-
-    /**
-     * @return list<string> The server's settings in this process's environment (QUIRE_SERVER_*), as
-     *                      programs it runs would inherit them
-     */
-    private function inheritedSettings(): array
-    {
-        $names = array_keys([...getenv(), ...$_ENV, ...$_SERVER]);
-
-        return array_values(array_filter($names, static fn (int|string $name): bool => \is_string($name) && str_starts_with($name, 'QUIRE_SERVER_')));
     }
 }

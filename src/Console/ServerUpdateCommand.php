@@ -66,6 +66,14 @@ final readonly class ServerUpdateCommand
             return $this->undo($io, $yes);
         }
 
+        $cut = $this->updater->cutShort();
+
+        if (null !== $cut) {
+            $io->error(\sprintf('The update from %s to %s was cut short (the machine stopped in the middle): the server may run neither. "quire-server update --undo" puts it back as it was; then update again.', $cut['from'], $cut['to']));
+
+            return Command::FAILURE;
+        }
+
         $running = $this->updater->running();
 
         try {

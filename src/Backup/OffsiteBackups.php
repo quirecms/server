@@ -247,7 +247,9 @@ final readonly class OffsiteBackups
 
         try {
             $say(\sprintf('Getting its backup of %s from off the server', $chosen['time']));
-            $file = $this->restic->restoreFile($chosen['id'], $file, $into);
+            // With the rest of its database, when the backup has it (made by Quire Server 0.3.1 and later)
+            $this->restic->restorePaths($chosen['id'], [$file, ...$this->dumpOf($chosen['paths'], $file)], $into);
+            $file = is_file($into.$file) ? $into.$file : throw new BackupFailed('The snapshot doesn\'t have its backup file.');
             $this->updater->restoreBackup($name, $file, ['snapshot' => $chosen['id'], 'from' => 'off the server'], $channel, $requestedBy, $say);
         } finally {
             $this->filesystem->remove($into);
@@ -304,10 +306,13 @@ final readonly class OffsiteBackups
 
         try {
             foreach ($manifest['sites'] as $entry) {
-                $name = new SiteName($entry['name']);
-                $say(\sprintf('"%s"', $name));
+                $say(\sprintf('"%s"', SiteName::printable($entry['name'])));
+                $installedKey = false;
+                $name = null;
 
+                // Each one on its own: one the server's list gets wrong (it's from a backup) fails alone.
                 try {
+                    $name = new SiteName($entry['name']);
                     $existing = $this->registry->get($name);
 
                     if ($existing instanceof Site && Site::REMOVED !== $existing->status) {
@@ -321,14 +326,18 @@ final readonly class OffsiteBackups
 
                     if (null !== $entry['git']) {
                         $repository = new Repository($entry['git']['url'], $entry['git']['branch']);
-                        $this->restoreKey($manifest['keys'], $name);
+                        $installedKey = $this->restoreKey($manifest['keys'], $name);
                     }
 
                     $this->restoreSite($name, $chosen, $name, array_map(static fn (string $domain): Domain => new Domain($domain), $entry['domains']), $repository, $entry['git']['poll'] ?? false, $server, $channel, $requestedBy, static fn (string $step) => $say('  '.$step));
                     $this->policies->set($name, $entry['updates']);
                     $outcomes[] = ['site' => $name->value, 'outcome' => 'restored', 'detail' => 'as of '.$chosen['time']];
                 } catch (\Throwable $e) {
-                    $outcomes[] = ['site' => $name->value, 'outcome' => 'failed', 'detail' => $e->getMessage()];
+                    if ($installedKey && $name instanceof SiteName) {
+                        $this->filesystem->remove($this->paths->root.'/server/keys/'.$name->value);
+                    }
+
+                    $outcomes[] = ['site' => SiteName::printable($entry['name']), 'outcome' => 'failed', 'detail' => $e->getMessage()];
                 }
             }
         } finally {
@@ -418,7 +427,7 @@ final readonly class OffsiteBackups
 
         try {
             $say(\sprintf('Getting the backup of "%s" of %s from off the server', $source, $chosen['time']));
-            $this->restic->restorePaths($chosen['id'], $repository instanceof Repository ? [$file] : [$file, $folder], $into);
+            $this->restic->restorePaths($chosen['id'], [$file, ...$this->dumpOf($chosen['paths'], $file), ...($repository instanceof Repository ? [] : [$folder])], $into);
             $from = ['snapshot' => $chosen['id'], 'from_site' => $source->value, 'from_server' => $server ?? $this->settings->host];
             $this->sites->restoreAsNew($name, $domains, $repository ?? $into.$folder, $into.$file, $from, $channel, $requestedBy, $say, $poll);
         } finally {
@@ -430,23 +439,21 @@ final readonly class OffsiteBackups
      * A Git mode site's deploy key, from its old server's backup, where this server keeps it (unless
      * it has one already).
      */
-    private function restoreKey(string $keys, SiteName $name): void
+    private function restoreKey(string $keys, SiteName $name): bool
     {
-        $from = $keys.'/'.$name->value;
-        $to = $this->paths->root.'/server/keys/'.$name->value;
+        return RestoredKeys::install('' === $keys ? '' : $keys.'/'.$name->value, $this->paths->root.'/server/keys/'.$name->value);
+    }
 
-        if ('' === $keys || !is_dir($from) || file_exists($to)) {
-            return;
-        }
-
-        $this->filesystem->mirror($from, $to);
-        $this->filesystem->chmod($to, 0o700);
-
-        $files = glob($to.'/*');
-
-        foreach (false === $files ? [] : $files as $file) {
-            $this->filesystem->chmod($file, 0o600);
-        }
+    /**
+     * The database dump that goes with a snapshot's quire:backup file, if the snapshot has one.
+     *
+     * @param list<string> $paths
+     *
+     * @return list<string>
+     */
+    private function dumpOf(array $paths, string $file): array
+    {
+        return \in_array(SiteDatabaseDumps::of($file), $paths, true) ? [SiteDatabaseDumps::of($file)] : [];
     }
 
     /**
@@ -477,17 +484,18 @@ final readonly class OffsiteBackups
     private function backUpSite(Site $site): string
     {
         $file = $this->sites->backup($site->name, $this->sites->projectOf($site), 'off-server');
+        $dump = SiteDatabaseDumps::of($file);
         $folder = $this->paths->site($site->name);
         $git = null !== $this->repositories->of($site->name);
 
         try {
             return $this->restic->backup(
-                $git ? [$file] : [$file, $folder],
+                $git ? [$file, $dump] : [$file, $dump, $folder],
                 [self::SITE_TAG, 'site:'.$site->name->value, ...($git ? [self::GIT_TAG] : [])],
                 array_map(static fn (string $built): string => $folder.'/'.$built, self::BUILT),
             );
         } finally {
-            $this->filesystem->remove($file);
+            $this->filesystem->remove([$file, $dump]);
         }
     }
 

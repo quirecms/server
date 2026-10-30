@@ -23,12 +23,66 @@ if [ "$(id -u)" -ne 0 ]; then
 	exit 1
 fi
 
+# up and down recreate or stop the agent, which ends what it runs (a deploy in the middle of its swap
+# included): they wait for nothing to run, unless --force is given.
+force=0
+for argument in "$@"; do
+	if [ "$argument" = --force ]; then force=1; fi
+done
+quiet() {
+	if [ "$force" = 1 ]; then return 0; fi
+	if ! running=$(compose exec -T agent bin/console server:busy 2>/dev/null); then
+		if [ -n "$running" ]; then
+			echo "An operation runs ($running): it would be cut short. Try again when it's finished (\"quire-server operations\"), or add --force." >&2
+			exit 1
+		fi
+	fi
+}
+
+# Whether the front door publishes ports 80 and 443
+front_ports() {
+	compose port front 80 >/dev/null 2>&1 && compose port front 443 >/dev/null 2>&1
+}
+
+# An update of the server the machine's stop cut short: said first, whatever is asked.
+if [ -f "$root/backups/server/swap.json" ] && ! docker ps --format '{{.Names}}' | grep -qx quire-server-updater; then
+	echo "An update of the server was cut short (the machine stopped in the middle): \"quire-server update --undo\" puts it back as it was." >&2
+fi
+
 # Compose reads COMPOSE_FILE (server.env) relative to where it runs.
 cd "$root/server"
 
 case "${1:-help}" in
-	up) shift; compose up --detach --wait "$@" ;;
-	down) shift; compose down "$@" ;;
+	up)
+		shift
+		quiet
+		for argument do shift; [ "$argument" = --force ] || set -- "$@" "$argument"; done
+		compose up --detach --wait "$@"
+		# The front door has no health check: after a port was taken, it can run without its ports.
+		if ! front_ports; then
+			echo 'The front door runs without its ports: starting it again.' >&2
+			compose up --detach --wait --force-recreate front
+			if ! front_ports; then
+				echo 'The front door can'\''t publish ports 80 and 443: another program uses them ("ss -ltnp" shows which). Every site is offline until it can.' >&2
+				exit 1
+			fi
+		fi
+		;;
+	down)
+		shift
+		# Its volumes are the server's PostgreSQL (every site's database) and the front door's certificates.
+		for argument in "$@"; do
+			case "$argument" in
+				-v | --volumes | --volumes=* | --rmi | --rmi=* | -[a-z]*v*)
+					echo "quire-server down keeps the server's data: \"$argument\" would delete every site's database and the server's registry (or its images). It isn't passed on." >&2
+					exit 1
+					;;
+			esac
+		done
+		quiet
+		for argument do shift; [ "$argument" = --force ] || set -- "$@" "$argument"; done
+		compose down "$@"
+		;;
 	logs) shift; compose logs "$@" ;;
 	ps) shift; compose ps "$@" ;;
 	help|-h|--help) compose exec -T agent bin/console list server ;;
@@ -57,7 +111,13 @@ case "${1:-help}" in
 		# A terminal when there is one (questions, colours).
 		tty=-T
 		if [ -t 0 ] && [ -t 1 ]; then tty=; fi
-		exec docker compose --project-directory "$root/server" --env-file "$root/server/server.env" \
-			exec $tty -e "QUIRE_SERVER_REQUESTED_BY=${SUDO_USER:-$(id -un)}" agent bin/console "server:$command" "$@"
+		status=0
+		docker compose --project-directory "$root/server" --env-file "$root/server/server.env" \
+			exec $tty -e "QUIRE_SERVER_REQUESTED_BY=${SUDO_USER:-$(id -un)}" agent bin/console "server:$command" "$@" || status=$?
+		# Killed with the agent (a restart, "up", the machine's stop): it says nothing of it itself.
+		if [ "$status" -eq 137 ] || [ "$status" -eq 143 ]; then
+			echo "The agent stopped while it ran this: it puts back what was left half done when it starts again. \"quire-server operations\" shows what happened; then run it again." >&2
+		fi
+		exit "$status"
 		;;
 esac

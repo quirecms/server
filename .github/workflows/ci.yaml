@@ -6,6 +6,9 @@ on:
   push:
     branches:
       - main
+  # Weekly: the image's packages get known flaws while its code doesn't change
+  schedule:
+    - cron: '0 5 * * 1'
 
 permissions:
   contents: read
@@ -49,3 +52,21 @@ jobs:
       - name: ShellCheck
         # Every shell script (*.sh, and the quire-server command), as POSIX sh
         run: docker run --rm -v "$PWD:/m:ro" koalaman/shellcheck-alpine:v0.11.0 sh -c 'shellcheck -s sh -e SC2016 /m/bin/quire-server $(find /m -name "*.sh" -not -path "/m/vendor/*")'
+
+  image:
+    name: The agent's image, scanned
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build it
+        run: docker build --pull --target server -t quire-server-agent:scan .
+      - name: Known flaws its packages have a fix for (fails)
+        # The image's own system packages: fixed by building it again (apk upgrade), so none may ship.
+        run: docker run --rm -v /var/run/docker.sock:/var/run/docker.sock:ro aquasec/trivy:0.58.1 image --quiet --pkg-types os --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 quire-server-agent:scan
+      - name: Known flaws of the tools it bundles (listed)
+        # restic, cosign, Docker's CLI: fixed by new releases of theirs, which Dependabot proposes
+        run: docker run --rm -v /var/run/docker.sock:/var/run/docker.sock:ro aquasec/trivy:0.58.1 image --quiet --pkg-types library --severity HIGH,CRITICAL --ignore-unfixed --exit-code 0 quire-server-agent:scan
