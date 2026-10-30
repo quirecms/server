@@ -64,6 +64,12 @@ final class ComposePolicyTest extends TestCase
         yield 'host PID' => [['services' => ['php' => ['pid' => 'host']]], '"pid: host"'];
         yield 'host network' => [['services' => ['php' => ['network_mode' => 'host']]], '"network_mode: host"'];
         yield 'another container\'s network' => [['services' => ['php' => ['network_mode' => 'container:quire-server-agent-1']]], '"network_mode: container:quire-server-agent-1"'];
+        yield 'the docker-proxy\'s network' => [['services' => ['php' => ['network_mode' => 'quire-docker']]], '"network_mode: quire-docker"'];
+        yield 'the database\'s network, past its checks' => [['services' => ['php' => ['network_mode' => 'quire-data']]], '"network_mode: quire-data"'];
+        yield 'Docker\'s default bridge' => [['services' => ['php' => ['network_mode' => 'bridge']]], '"network_mode: bridge"'];
+        yield 'Docker\'s default network, by its other name' => [['services' => ['php' => ['network_mode' => 'default']]], '"network_mode: default"'];
+        yield 'a service the site doesn\'t have' => [['services' => ['php' => ['network_mode' => 'service:quire-server-agent']]], '"network_mode: service:quire-server-agent"'];
+        yield 'its own network, in a loop' => [['services' => ['php' => ['network_mode' => 'service:php']]], '"network_mode: service:php"'];
         yield 'host IPC' => [['services' => ['php' => ['ipc' => 'host']]], '"ipc: host"'];
         yield 'host user namespace' => [['services' => ['php' => ['userns_mode' => 'host']]], '"userns_mode: host"'];
         yield 'host cgroup' => [['services' => ['php' => ['cgroup' => 'host']]], '"cgroup: host"'];
@@ -207,7 +213,7 @@ final class ComposePolicyTest extends TestCase
 
     public function testHarmlessValuesOfForbiddenSettingsPass(): void
     {
-        $config = array_replace_recursive($this->site(), ['services' => ['php' => ['privileged' => false, 'cap_add' => ['NET_BIND_SERVICE', 'cap_net_bind_service'], 'devices' => [], 'security_opt' => ['no-new-privileges:true'], 'cap_drop' => ['ALL'], 'oom_score_adj' => 100, 'logging' => ['driver' => 'json-file'], 'x-custom' => 'anything']]]);
+        $config = array_replace_recursive($this->site(), ['services' => ['php' => ['privileged' => false, 'cap_add' => ['NET_BIND_SERVICE', 'cap_net_bind_service'], 'devices' => [], 'security_opt' => ['no-new-privileges:true'], 'cap_drop' => ['ALL'], 'oom_score_adj' => 100, 'logging' => ['driver' => 'json-file'], 'x-custom' => 'anything'], 'worker' => ['network_mode' => 'service:php']]]);
 
         self::assertSame([], $this->violations($config));
     }

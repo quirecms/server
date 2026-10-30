@@ -229,7 +229,7 @@ The agent can act on Docker, and that's root on the machine, so the server is bu
 
 - **Every site's configuration is checked before it's built or started.** The check runs on all its Compose files merged, as Docker would run them. It refuses:
   - **Privileges:** privileged containers, added capabilities, host devices;
-  - **The host itself:** the host's network, process, IPC or user namespaces, other runtimes, mounts of host paths, other projects' volumes or networks, files from outside the site's folder;
+  - **The host itself:** the host's network, process, IPC or user namespaces, any network but the site's own (`network_mode` names none but another of its services), other runtimes, mounts of host paths, other projects' volumes or networks, files from outside the site's folder;
   - **Exposure:** published ports;
   - **Names that belong to others:** another site's domain or the database's name on a shared network, fixed container names;
   - **New settings:** any Compose setting it doesn't know yet, until it's reviewed (e.g. `use_api_socket`, which hands a container the Docker socket).

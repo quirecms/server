@@ -88,7 +88,7 @@ final readonly class ComposePolicy
         $services = $this->map($config['services'] ?? []);
 
         foreach ($services as $name => $service) {
-            foreach ($this->service((string) $name, $this->map($service), $context) as $violation) {
+            foreach ($this->service((string) $name, $this->map($service), array_map(strval(...), array_keys($services)), $context) as $violation) {
                 $violations[] = \sprintf('Service "%s": %s', $name, $violation);
             }
         }
@@ -124,10 +124,11 @@ final readonly class ComposePolicy
 
     /**
      * @param array<array-key, mixed> $service
+     * @param list<string>            $services All the project's services
      *
      * @return list<string>
      */
-    private function service(string $name, array $service, PolicyContext $context): array
+    private function service(string $name, array $service, array $services, PolicyContext $context): array
     {
         $violations = [];
 
@@ -152,7 +153,16 @@ final readonly class ComposePolicy
             }
         }
 
-        foreach (['pid', 'ipc', 'uts', 'userns_mode', 'network_mode', 'cgroup'] as $namespace) {
+        // Any other value joins a Docker network by its name, past the checks of "networks" below: the
+        // host's, the default bridge, or the docker-proxy's (quire-docker), which is root on the host.
+        $network = $this->string($service['network_mode'] ?? '');
+        $sibling = str_starts_with($network, 'service:') ? substr($network, 8) : null;
+
+        if ('' !== $network && 'none' !== $network && (null === $sibling || $sibling === $name || !\in_array($sibling, $services, true))) {
+            $violations[] = \sprintf('"network_mode: %s": a service joins only its site\'s own networks, no network, or another of its services\' ("service:<name>").', $network);
+        }
+
+        foreach (['pid', 'ipc', 'uts', 'userns_mode', 'cgroup'] as $namespace) {
             $mode = $this->string($service[$namespace] ?? '');
 
             if ('host' === $mode || str_starts_with($mode, 'container:')) {

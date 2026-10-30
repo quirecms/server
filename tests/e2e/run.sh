@@ -340,6 +340,11 @@ check 'undoing a deploy runs the commit before' "[ \"\$(inside \"curl -sk $greso
 commit 'ln -sf /srv/quire/server/keys/blog/id_ed25519 public/key.txt' 'A link to its own key'
 inside 'quire-server site:deploy blog 2>&1' | sed 's/^/    /'
 check 'a symbolic link in the repository is a plain file, not the key' "inside \"curl -sk $gresolve https://blog.test/key.txt\" | grep -q '^/srv/quire/server/keys/blog/id_ed25519' && ! inside \"curl -sk $gresolve https://blog.test/key.txt\" | grep -q 'PRIVATE KEY'"
+# A commit adding a service on the docker-proxy's network (which is root on the host)
+inside "printf '%s\n' '{print} /^services:\$/ && !done {print \"  proxied:\"; print \"    image: alpine:3.22\"; print \"    network_mode: quire-docker\"; done = 1}' > /root/network.awk && docker cp /root/network.awk git-server:/tmp/network.awk"
+commit 'awk -f /tmp/network.awk compose.prod.yaml > /tmp/c && cat /tmp/c > compose.prod.yaml' 'Network'
+inside 'quire-server site:deploy blog 2>&1' | tee "$logs"/git-network.log | sed 's/^/    /'
+check 'a commit joining another network is refused, never started' "grep -q 'network_mode: quire-docker' $logs/git-network.log && grep -q 'as it was before' $logs/git-network.log && ! inside 'docker ps -a --format \"{{.Names}}\"' | grep -q '^blog-proxied'"
 # A commit giving the site's web container every privilege
 inside "printf '%s\n' '{print} /^  php:\$/ && !done {print \"    privileged: true\"; done = 1}' > /root/privileged.awk && docker cp /root/privileged.awk git-server:/tmp/privileged.awk"
 commit 'awk -f /tmp/privileged.awk compose.prod.yaml > /tmp/c && cat /tmp/c > compose.prod.yaml' 'Privileged'
