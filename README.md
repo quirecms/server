@@ -2,7 +2,7 @@
 
 Many Quire sites on one machine, each with its own Quire version, database and domains, behind one front door that holds their certificates. Add a site with one command; nothing else on the server restarts.
 
-> **Status: early.** The front door, the agent and its commands, the installer, adopting sites installed before, updating sites, and sites deployed from a Git repository. Still to come: signed releases and the server's own updates, the web console with passkeys, backups off the server, and one-click images. Until the first release of Quire Server, install it from a checkout (below).
+> **Status: early.** The front door, the agent and its commands, the installer, adopting sites installed before, updating sites, sites deployed from a Git repository, signed releases and the server's own updates, and backups off the server. Still to come: the web console with passkeys, and one-click images.
 
 ## How it works
 
@@ -31,11 +31,15 @@ sh install.sh --email=you@example.com
 To check the installer itself first (with [cosign](https://docs.sigstore.dev/cosign/system_config/installation/)):
 
 ```bash
-curl -fsSLO https://github.com/quirecms/server/releases/latest/download/install.sh.sigstore.json
+version=0.3.0   # the release you install (its tag, without the "v")
+curl -fsSLO https://github.com/quirecms/server/releases/download/v$version/install.sh
+curl -fsSLO https://github.com/quirecms/server/releases/download/v$version/install.sh.sigstore.json
 cosign verify-blob install.sh --bundle install.sh.sigstore.json \
-  --certificate-identity-regexp '^https://github\.com/quirecms/server/\.github/workflows/release\.yaml@refs/tags/v' \
+  --certificate-identity "https://github.com/quirecms/server/.github/workflows/release.yaml@refs/tags/v$version" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
+
+The identity names that version's tag: a signature of another release (an older one, with its known flaws) doesn't check out.
 
 From a checkout instead (a version not released yet, or your own changes): `git clone https://github.com/quirecms/server.git && sh server/install.sh --source=server`. The agent is then built on the machine.
 
@@ -46,7 +50,7 @@ The installer:
 3. **Puts the server in `/srv/quire/server`,** its settings and newly generated secrets in `server.env` (readable by root only), and the `quire-server` command in `/usr/local/bin`.
 4. **Starts PostgreSQL, the docker-proxy and the agent,** from images pinned by digest: the release's agent image (`ghcr.io/quirecms/server`), never built on the machine.
 5. **Adopts the Quire sites already running from `/srv/quire/sites`** (it asks first; see below).
-6. **Starts the front door,** once nothing else holds ports 80 and 443. If another web server holds them, it says which and stops there. It never stops anything it didn't start.
+6. **Starts the front door,** once nothing else holds ports 80 and 443. If another web server holds them, it says which and stops there. It never stops anything it didn't start. When the machine's firewall is ufw and it's on, 80/tcp, 443/tcp and 443/udp are allowed in it.
 7. **Turns on automatic security updates** for the operating system (Ubuntu and Debian; `--no-os-updates` leaves them as they are).
 
 Running it again is safe: it keeps the secrets it made and finishes what's left, e.g. after you've freed ports 80 and 443. `--yes` answers yes to its questions; `--help` lists its options.
@@ -252,7 +256,7 @@ The agent can act on Docker, and that's root on the machine, so the server is bu
 - **Sites build on Quire's runtime images only when they check out:** before every build, each runtime image a site's Dockerfile names (`ghcr.io/quirecms/runtime`, `RUNTIME_BUILDER` and `RUNTIME`) must be signed by quirecms/framework's runtime workflow (Sigstore), and the build gets it by the digest that was checked. One that doesn't check out stops the build (an update is rolled back). Other base images are the site's choice, built on as they are and noted in the operation's log.
 - **Updates of the server are checked before any of their code runs,** by the release that runs (see "Updating the server"). The updater is the one part with Docker itself rather than the docker-proxy, since it may replace the docker-proxy: it runs only on demand, only the installed release's code, and takes nothing but a version.
 
-What this doesn't protect against: a kernel exploit from inside a container (containers share the machine's kernel), a bug in Docker itself, and anyone who is root on the machine.
+What this doesn't protect against: a kernel exploit from inside a container (containers share the machine's kernel), a bug in Docker itself, and anyone who is root on the machine or holds `server.env`. [SECURITY.md](SECURITY.md) has the whole threat model, and how to report a vulnerability.
 
 ## Working on Quire Server
 
@@ -268,14 +272,14 @@ The end-to-end test runs the whole server in a Docker-in-Docker machine of its o
 
 ```bash
 docker build -t quire-server-agent:test .
-tests/e2e/run.sh quire-server-agent:test                 # everything, about 35 minutes
+tests/e2e/run.sh quire-server-agent:test                 # everything, one part after another (an hour or more)
 E2E_ONLY=git E2E_CACHE=1 tests/e2e/run.sh quire-server-agent:test   # one part, with a build cache
 KEEP=1 tests/e2e/run.sh quire-server-agent:test          # keep the machine, to look around
 E2E_ONLY=release tests/e2e/run.sh                        # this install.sh installs the latest release
 E2E_ONLY=update tests/e2e/run.sh quire-server-agent:test # this checkout updates itself to a release
 ```
 
-CI runs the five parts (`adopt`, `sites`, `git`, `release`, `update`) in parallel, on clean machines.
+CI runs the six parts (`adopt`, `sites`, `git`, `release`, `update`, `backups`) in parallel, on clean machines. How to contribute: [CONTRIBUTING.md](CONTRIBUTING.md).
 
 Sites are found and managed through the contract every Quire site keeps (`Quire\Runtime\ServerContract`, [docs](https://github.com/quirecms/framework/blob/main/docs/docker.md#tools-that-manage-sites)): Quire Server uses no Quire code of its own.
 

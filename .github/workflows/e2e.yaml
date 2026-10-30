@@ -4,7 +4,8 @@ name: End to end
 # The whole server in a Docker-in-Docker machine of its own: installed with install.sh over a site set
 # up by hand, a real site from Packagist added and removed, the front door's routing and refusals, the
 # sites' isolation. It takes a while, so documentation changes don't run it; it also runs on releases,
-# every night (new Docker, Caddy, PostgreSQL or Quire releases), and by hand.
+# every night (what isn't pinned changes: Quire's releases on Packagist and its runtime images,
+# Sigstore), and by hand.
 on:
   pull_request:
     paths-ignore:
