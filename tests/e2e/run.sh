@@ -179,6 +179,8 @@ check 'the agent has them' "inside 'quire-server backups jane 2>&1' | grep -q 'N
 # A table of the site's application, outside Quire's schema: its backups have it too
 orders() { inside "docker exec $1-php-1 bin/console dbal:run-sql 'SELECT count(*) FROM public.app_order'" 2>/dev/null | grep -oE '[0-9]+' | tail -1; }
 inside "docker exec jane-php-1 bin/console dbal:run-sql -q 'CREATE TABLE public.app_order (id int PRIMARY KEY)' && docker exec jane-php-1 bin/console dbal:run-sql -q 'INSERT INTO public.app_order VALUES (1), (2)'" >/dev/null
+# What an earlier backup cut short left in the site's container, where 0.3.0 always wrote it
+inside "docker exec jane-php-1 sh -c 'echo partial > /tmp/quire-off-server-backup.tar'"
 inside 'quire-server backups:now 2>&1' | tee "$logs"/now.log | sed 's/^/    /'
 check 'every site and the server are backed up off the server' "grep -q 'Backed up off the server: jane, server' $logs/now.log"
 check 'each site'\''s backups are listed on their own' "[ \"\$(inside 'quire-server backups jane' | grep -cE '^ +[0-9a-f]{8} ')\" = 1 ] && [ \"\$(inside 'quire-server backups server' | grep -cE '^ +[0-9a-f]{8} ')\" = 1 ]"

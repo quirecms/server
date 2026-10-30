@@ -369,6 +369,25 @@ final class SiteManagerTest extends RegistryTestCase
         $kept = glob($this->paths->backups($this->name).'/{,.}*', \GLOB_BRACE);
         self::assertSame([], array_filter(false === $kept ? [] : $kept, static fn (string $file): bool => !\in_array(basename($file), ['.', '..'], true)), 'Nothing of it kept.');
         self::assertSame(Site::RUNNING, $this->registry->get($this->name)?->status);
+    public function testABackupCutShortLeavesNothingThatStopsTheNext(): void
+    {
+        $manager = $this->manager();
+        $manager->add($this->request(), 'cli', 'darko', static fn (): null => null);
+        $this->commands = [];
+        $this->script['docker compose exec'] = static fn (array $command): ProcessResult => 'quire:backup' === ($command[12] ?? '')
+            ? new ProcessResult(self::strings($command), 1, '', 'No space left on device')
+            : self::ok($command, '');
+
+        try {
+            $manager->remove($this->name, true, 'cli', 'darko', static fn (): null => null);
+            self::fail('It was removed without a backup.');
+        } catch (\RuntimeException) {
+        }
+
+        $exec = array_values(array_filter($this->commands(), static fn (array $command): bool => 'exec' === ($command[8] ?? '')));
+        $file = $exec[0][13] ?? '';
+        self::assertMatchesRegularExpression('#^/tmp/quire-final-backup-[0-9a-f]{12}\.tar\z#', $file, 'A name of its own: one left by an earlier backup is never in the way.');
+        self::assertSame(['rm', '-f', $file], \array_slice($exec[1] ?? [], 11), 'Removed even though the backup failed.');
     }
 
     public function testAdoptingASiteThatRunsAlready(): void

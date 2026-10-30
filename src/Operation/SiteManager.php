@@ -569,11 +569,17 @@ final readonly class SiteManager
         $directory = $this->paths->backups($name);
         $this->filesystem->mkdir($directory, 0o700);
         $file = $directory.'/'.$kind.'-'.new \DateTimeImmutable()->format('Ymd-His').'.tar';
-        $inside = '/tmp/quire-'.$kind.'-backup.tar';
+        // A name of its own each time: one an interrupted backup left (quire:backup won't overwrite a
+        // file) never stops the next.
+        $inside = '/tmp/quire-'.$kind.'-backup-'.bin2hex(random_bytes(6)).'.tar';
 
-        $this->compose->exec($project, self::PHP, ['bin/console', 'quire:backup', $inside, '--no-interaction'], timeout: 3600)->orFail('Backing up the site');
-        $this->compose->copyFrom($project, self::PHP, $inside, $file);
-        $this->compose->exec($project, self::PHP, ['rm', '-f', $inside], timeout: 60);
+        try {
+            $this->compose->exec($project, self::PHP, ['bin/console', 'quire:backup', $inside, '--no-interaction'], timeout: 3600)->orFail('Backing up the site');
+            $this->compose->copyFrom($project, self::PHP, $inside, $file);
+        } finally {
+            $this->compose->exec($project, self::PHP, ['rm', '-f', $inside], timeout: 60);
+        }
+
         chmod($file, 0o600);
         $this->dumps->dump($project, $this->registry->get($name)->databaseMode ?? Site::SHARED_DATABASE, SiteDatabaseDumps::of($file));
 
