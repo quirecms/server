@@ -23,6 +23,7 @@ services:
             - '../src/Git/Repository.php'
             - '../src/Release/{Release,Version,ReleaseVerificationFailed,Feed}.php'
             - '../src/ServerUpdate/{ServerBackup,ServerUpdateFailed}.php'
+            - '../src/ServerDatabase/{DatabaseUpgrade,DatabaseUpgradeFailed,DatabaseCheck,PostgresImages}.php'
 
     Quire\Server\Process\ProcessRunner: '@Quire\Server\Process\SymfonyProcessRunner'
 
@@ -89,6 +90,20 @@ services:
             $wait: '%env(int:QUIRE_SERVER_UPDATE_WAIT_SECONDS)%'
 
     Quire\Server\Console\ServerUpdateCommand:
+        arguments:
+            $inUpdater: '%env(bool:QUIRE_SERVER_UPDATER)%'
+
+    Quire\Server\ServerDatabase\DatabaseContainers:
+        arguments:
+            $dockerHost: '%env(DOCKER_HOST)%'
+            $postgresPassword: '%env(QUIRE_SERVER_POSTGRES_PASSWORD)%'
+
+    Quire\Server\ServerDatabase\DatabaseUpgrader:
+        arguments:
+            $root: '%quire_server.root%'
+            $wait: '%env(int:QUIRE_SERVER_UPDATE_WAIT_SECONDS)%'
+
+    Quire\Server\Console\DatabaseUpgradeCommand:
         arguments:
             $inUpdater: '%env(bool:QUIRE_SERVER_UPDATER)%'
 

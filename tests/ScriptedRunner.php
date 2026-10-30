@@ -29,7 +29,9 @@ final class ScriptedRunner implements ProcessRunner
     {
         $this->runs[] = ['command' => $command, 'env' => $env, 'directory' => $directory, 'inputFile' => $inputFile];
         $key = self::key($command);
-        $result = ($this->script[$key] ?? throw new \LogicException('Unexpected command: '.implode(' ', $command)))($command, $directory, $inputFile);
+        // Or by the program and its first argument alone ("docker start" whatever it starts)
+        $script = $this->script[$key] ?? $this->script[$command[0].' '.($command[1] ?? '')] ?? throw new \LogicException('Unexpected command: '.implode(' ', $command));
+        $result = $script($command, $directory, $inputFile);
 
         if ($output instanceof \Closure) {
             $output($result->output.$result->errorOutput);

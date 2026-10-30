@@ -13,6 +13,7 @@ use Quire\Server\Registry\SiteLock;
 use Quire\Server\Release\GitHubReleases;
 use Quire\Server\Release\Releases;
 use Quire\Server\Release\Version;
+use Quire\Server\ServerDatabase\DatabaseUpgrade;
 use Quire\Server\ServerUpdate\ServerBackup;
 use Quire\Server\ServerUpdate\ServerFolder;
 use Quire\Server\ServerUpdate\ServerStack;
@@ -22,6 +23,7 @@ use Quire\Server\Site\EnvFile;
 use Quire\Server\Site\SiteName;
 use Quire\Server\Tests\Registry\RegistryTestCase;
 use Quire\Server\Tests\ScriptedRunner;
+use Quire\Server\Tests\ServerDatabase\PostgresImagesTest;
 use Symfony\Component\Filesystem\Filesystem;
 
 /**
@@ -34,6 +36,8 @@ final class ServerUpdaterTest extends RegistryTestCase
     private const string OLD = 'ghcr.io/quirecms/server@sha256:1111111111111111111111111111111111111111111111111111111111111111';
     private const string NEW = 'ghcr.io/quirecms/server@sha256:4444444444444444444444444444444444444444444444444444444444444444';
     private const string SECRET = 'QUIRE_SERVER_POSTGRES_PASSWORD=s3cret';
+    private const string COMPOSE_011 = "# release: 0.1.1\nservices:\n  database:\n    image: ".PostgresImagesTest::PG18."\n";
+    private const string COMPOSE_020 = "# release: 0.2.0\nservices:\n  database:\n    image: ".PostgresImagesTest::PG18."\n";
 
     private string $root;
 
@@ -59,6 +63,9 @@ final class ServerUpdaterTest extends RegistryTestCase
     private bool $composeValid = true;
     private bool $restoreFails = false;
 
+    /** The PostgreSQL major the server runs */
+    private int $postgres = 18;
+
     /** @var list<string> */
     private array $said = [];
 
@@ -74,7 +81,7 @@ final class ServerUpdaterTest extends RegistryTestCase
         $this->connection->executeStatement(\sprintf("INSERT INTO %s VALUES ('Version1'), ('Version2')", $this->migrations));
 
         $filesystem = new Filesystem();
-        $filesystem->dumpFile($this->server.'/compose.yaml', 'release: 0.1.1');
+        $filesystem->dumpFile($this->server.'/compose.yaml', self::COMPOSE_011);
         $filesystem->dumpFile($this->server.'/bin/quire-server', 'command: 0.1.1');
         $filesystem->dumpFile($this->server.'/only-in-0.1.1.txt', 'gone after the update');
         $filesystem->dumpFile($this->server.'/server.env', "# Mine\n".self::SECRET."\nCOMPOSE_FILE=compose.yaml\nQUIRE_SERVER_IMAGE=".self::OLD."\n");
@@ -84,9 +91,10 @@ final class ServerUpdaterTest extends RegistryTestCase
         $filesystem->mkdir($this->root.'/backups', 0o700);
 
         $archive = $this->archive([
-            'quire-server-0.2.0/compose.yaml' => 'release: 0.2.0',
+            'quire-server-0.2.0/compose.yaml' => self::COMPOSE_020,
             'quire-server-0.2.0/bin/quire-server' => 'command: 0.2.0',
             'quire-server-0.2.0/only-in-0.2.0.txt' => 'new',
+            'quire-server-0.2.0/database/postgres-19.yaml' => "services:\n  database:\n    image: ".PostgresImagesTest::PG19."\n",
             // A release never brings the machine's own files
             'quire-server-0.2.0/server.env' => 'QUIRE_SERVER_POSTGRES_PASSWORD=from-the-release',
             'quire-server-0.2.0/keys/blog' => 'from the release',
@@ -134,6 +142,7 @@ final class ServerUpdaterTest extends RegistryTestCase
             'docker compose exec' => fn (array $command, ?string $directory, ?string $inputFile): ProcessResult => match (true) {
                 \in_array('server:version', $command, true) => null === $this->agent ? ScriptedRunner::failed($command, 'service "agent" is not running') : ScriptedRunner::ok($command, \sprintf("Quire Server %s\nAgent: %s\n", $this->releases[$this->agent], $this->agent)),
                 \in_array('pg_dump', $command, true) => ScriptedRunner::ok($command, 'dump:'.implode(',', $this->migrationVersions())),
+                \in_array('psql', $command, true) => ScriptedRunner::ok($command, $this->postgres."0006\n"),
                 \in_array('pg_restore', $command, true) => $this->restore($command, (string) $inputFile),
                 default => throw new \LogicException('Unexpected: '.implode(' ', $command)),
             },
@@ -170,7 +179,7 @@ final class ServerUpdaterTest extends RegistryTestCase
         $this->update();
 
         self::assertSame(self::NEW, $this->agent);
-        self::assertSame('release: 0.2.0', file_get_contents($this->server.'/compose.yaml'));
+        self::assertSame(self::COMPOSE_020, file_get_contents($this->server.'/compose.yaml'));
         self::assertSame('command: 0.2.0', file_get_contents($this->server.'/bin/quire-server'));
         self::assertFileDoesNotExist($this->server.'/only-in-0.1.1.txt', 'The old release\'s files are gone.');
         self::assertFileExists($this->server.'/only-in-0.2.0.txt');
@@ -184,7 +193,7 @@ final class ServerUpdaterTest extends RegistryTestCase
         self::assertSame(0o600, fileperms($this->server.'/server.env') & 0o777);
 
         // Checked and its image got while the server runs; stopped only then, backed up, started.
-        self::assertSame(['curl -fsSL', 'curl -fsSL', 'cosign verify-blob', 'curl -fsSL', 'tar -tzf', 'tar -xzf', 'docker compose config', 'docker pull --quiet', 'docker compose stop', 'tar -cf', 'docker compose exec', 'cp -R', 'chmod -R', 'docker compose up', 'docker compose exec'], $this->runner->keys());
+        self::assertSame(['curl -fsSL', 'curl -fsSL', 'cosign verify-blob', 'curl -fsSL', 'tar -tzf', 'tar -xzf', 'docker compose exec', 'docker compose config', 'docker pull --quiet', 'docker compose stop', 'tar -cf', 'docker compose exec', 'cp -R', 'chmod -R', 'docker compose up', 'docker compose exec'], $this->runner->keys());
 
         // Its secrets never in a command's arguments
         foreach ($this->runner->runs as $run) {
@@ -211,6 +220,52 @@ final class ServerUpdaterTest extends RegistryTestCase
         self::assertNotContains('docker pull --quiet', $this->runner->keys());
         self::assertNotContains('docker compose stop', $this->runner->keys(), 'The agent never stopped.');
         self::assertSame('failed', $this->operations->latest()[0]['status']);
+    }
+
+    public function testThePostgresMajorTheServerRunsStays(): void
+    {
+        $this->postgres = 19;
+        $this->update();
+
+        self::assertSame('compose.yaml:database/postgres-19.yaml', EnvFile::read($this->server.'/server.env')->get('COMPOSE_FILE'));
+        self::assertFileExists($this->server.'/database/postgres-19.yaml');
+    }
+
+    public function testAReleaseThatNoLongerRunsTheServersPostgresChangesNothing(): void
+    {
+        $this->postgres = 17;
+        $this->failsAndRuns('/doesn\'t run PostgreSQL 17 any more.*database:upgrade/', self::OLD);
+        self::assertNotContains('docker compose stop', $this->runner->keys());
+        self::assertSame(self::COMPOSE_011, file_get_contents($this->server.'/compose.yaml'));
+    }
+
+    public function testNoUpdateWhileAnUpgradeOfPostgresWasCutShort(): void
+    {
+        new DatabaseUpgrade(DatabaseUpgrade::directory($this->root).'/20261029-180000-000000', 18, 19, DatabaseUpgrade::COPYING, [], new \DateTimeImmutable())->save();
+
+        $this->failsAndRuns('/cut short.*--recover/', self::OLD);
+        self::assertNotContains('curl -fsSL', $this->runner->keys());
+    }
+
+    public function testAnUpdateBeforeAnUpgradeOfPostgresCannotBeUndone(): void
+    {
+        $this->update();
+        $backup = $this->updater('0.2.0')->undoable();
+        self::assertInstanceOf(ServerBackup::class, $backup);
+        self::assertFalse($this->updater('0.2.0')->databaseChangedSince($backup));
+
+        // PostgreSQL upgraded after it: its server.env would start the old major's data.
+        new DatabaseUpgrade(DatabaseUpgrade::directory($this->root).'/20261029-190000-000000', 18, 19, DatabaseUpgrade::DONE, [], $backup->createdAt->modify('+1 minute'))->save();
+        self::assertTrue($this->updater('0.2.0')->databaseChangedSince($backup));
+
+        $this->expectException(ServerUpdateFailed::class);
+        $this->expectExceptionMessageIsOrContains('PostgreSQL was upgraded');
+
+        try {
+            $this->updater('0.2.0')->undo($backup, 'cli', 'darko', static function (): void {});
+        } finally {
+            self::assertSame(self::NEW, $this->image(), 'Nothing was undone.');
+        }
     }
 
     public function testComposeFilesThatDoNotWorkWithTheServersSettingsChangeNothing(): void
@@ -253,7 +308,7 @@ final class ServerUpdaterTest extends RegistryTestCase
         $error = $this->failsAndRuns('/unhealthy.*\(the server runs as it was\)/s', self::OLD);
 
         self::assertTrue($error->restored);
-        self::assertSame('release: 0.1.1', file_get_contents($this->server.'/compose.yaml'));
+        self::assertSame(self::COMPOSE_011, file_get_contents($this->server.'/compose.yaml'));
         self::assertFileExists($this->server.'/only-in-0.1.1.txt');
         self::assertFileDoesNotExist($this->server.'/only-in-0.2.0.txt');
         self::assertSame(self::OLD, $this->image());
@@ -322,7 +377,7 @@ final class ServerUpdaterTest extends RegistryTestCase
         $updated->undo($backup, 'cli', 'darko', static function (): void {});
 
         self::assertSame(self::OLD, $this->agent);
-        self::assertSame('release: 0.1.1', file_get_contents($this->server.'/compose.yaml'));
+        self::assertSame(self::COMPOSE_011, file_get_contents($this->server.'/compose.yaml'));
         self::assertFileDoesNotExist($this->server.'/only-in-0.2.0.txt');
         self::assertSame(self::OLD, $this->image());
         self::assertSame(['Version1', 'Version2'], $this->migrationVersions());
@@ -350,7 +405,7 @@ final class ServerUpdaterTest extends RegistryTestCase
         }
 
         self::assertSame(self::NEW, $this->agent);
-        self::assertSame('release: 0.2.0', file_get_contents($this->server.'/compose.yaml'));
+        self::assertSame(self::COMPOSE_020, file_get_contents($this->server.'/compose.yaml'));
         self::assertInstanceOf(ServerBackup::class, $updated->undoable(), 'It can still be undone.');
     }
 

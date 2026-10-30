@@ -11,6 +11,8 @@
 #   E2E_ONLY=update tests/e2e/run.sh … the server, installed from this checkout, updates itself to the
 #                                             published release (E2E_UPDATE_TO, else the oldest: 0.1.0)
 #   E2E_ONLY=backups tests/e2e/run.sh … backups off the server (restic, on an S3 service of its own)
+#   E2E_ONLY=database tests/e2e/run.sh … the server's PostgreSQL upgraded to the next major
+#                                             (E2E_POSTGRES_NEXT, else 19rc1-alpine), undone, cleaned
 #   E2E_CACHE=1 tests/e2e/run.sh …     keeps the machine's images and build cache between runs
 #                                             (in the volume quire-server-e2e-cache; one run at a time)
 #
@@ -44,14 +46,22 @@ want() { [ -z "${E2E_ONLY:-}" ] || [ "$E2E_ONLY" = "$1" ]; }
 release() { [ "${E2E_ONLY:-}" = release ]; }
 updating() { [ "${E2E_ONLY:-}" = update ]; }
 backingup() { [ "${E2E_ONLY:-}" = backups ]; }
+upgrading() { [ "${E2E_ONLY:-}" = database ]; }
 cache=''
 if [ "${E2E_CACHE:-}" = 1 ]; then cache='-v quire-server-e2e-cache:/var/lib/docker'; fi
 # shellcheck disable=SC2086 # $cache is empty or two words
-docker run -d --privileged --name "$dind" $cache -e DOCKER_TLS_CERTDIR= docker:29.9.2-dind >/dev/null
+# Docker Hub refuses anonymous pulls now and then (CI's runners are anonymous): the machine's image, and
+# what Docker pulls inside it from Docker Hub, come through Google's mirror of it (Docker falls back to
+# Docker Hub itself). Pinned by digest: the same image from either.
+docker run -d --privileged --name "$dind" $cache -e DOCKER_TLS_CERTDIR= \
+	mirror.gcr.io/library/docker:29.9.2-dind@sha256:9e79b879b177fbd72c34376a3dd3d91747da5db49e1f560f76aea59561471977 \
+	--registry-mirror=https://mirror.gcr.io >/dev/null
 until inside 'docker info' >/dev/null 2>&1; do sleep 1; done
 # With the cache, what an earlier run left but its images and build cache
 # (Its containers restart with the cached Docker: removed, and the folders their mounts left behind.)
-if [ -n "$cache" ]; then inside 'docker rm -f $(docker ps -aq) >/dev/null 2>&1; docker volume prune -af >/dev/null; docker network prune -f >/dev/null; rm -rf /srv/quire /root/blog; true'; fi
+# The agent's image too: install.sh builds it only when there's none, so a cached one would be an
+# earlier checkout's (its build layers stay cached).
+if [ -n "$cache" ]; then inside 'docker rm -f $(docker ps -aq) >/dev/null 2>&1; docker rmi -f quire-server-agent >/dev/null 2>&1; docker volume prune -af >/dev/null; docker network prune -f >/dev/null; rm -rf /srv/quire /root/blog; true'; fi
 inside 'apk add -q --no-cache curl openssl'
 # (Nothing else: install.sh needs only what a fresh machine has.)
 
@@ -115,6 +125,9 @@ fi
 server_env=$(inside 'sha256sum /srv/quire/server/server.env')
 inside "$install" > "$logs"/install-again.log || true
 check 'running the installer again changes nothing' "grep -q 'installed in /srv/quire/server already' $logs/install-again.log && grep -q 'Quire Server runs' $logs/install-again.log && [ \"\$(inside 'sha256sum /srv/quire/server/server.env')\" = \"$server_env\" ]"
+# As PostgreSQL's superuser, in its container (local connections need the password too: SCRAM only)
+postgres_password=$(inside "sed -n 's/^QUIRE_SERVER_POSTGRES_PASSWORD=//p' /srv/quire/server/server.env" | tr -d "'")
+pg() { inside "docker exec -e PGPASSWORD=$postgres_password quire-server-database-1 psql -U postgres -Atc \"$1\""; }
 
 if updating; then
 to=${E2E_UPDATE_TO:-0.1.0}
@@ -228,6 +241,83 @@ check 'every site of the old server is restored, with its name and domains' "gre
 check 'with its application'\''s own tables' "[ \"\$(orders jane)\" = 2 ]"
 check 'with its update policy' "inside 'quire-server site:updates jane' | grep -q 'fix a known vulnerability'"
 check 'a server with no backups is refused' "inside 'quire-server backups:restore-server --from-server=no-such-server --yes 2>&1' | grep -q 'no backup of the server'"
+fi
+
+if upgrading; then
+next=${E2E_POSTGRES_NEXT:-19rc1-alpine}
+major=${next%%[!0-9]*}
+echo "== The server's PostgreSQL upgraded to $major ($next)"
+# The agent's nightly updates and backups off on this machine: nothing else runs meanwhile.
+inside "printf 'QUIRE_SERVER_UPDATE_HOUR=off\\nQUIRE_SERVER_BACKUP_HOUR=off\\n' >> /srv/quire/server/server.env && quire-server up >/dev/null 2>&1"
+inside 'quire-server site:add jane --domain=jane.test --admin-email=jane@example.com --title="Jane" 2>&1' > "$logs"/add.log || sed 's/^/    /' "$logs"/add.log
+inside "docker exec jane-php-1 bin/console quire:settings:set site.title 'Jane before'" >/dev/null
+title() { inside "curl -sk $resolve https://jane.test/" | grep -q "$1"; }
+check 'a site runs on the server'\''s PostgreSQL 18' "title 'Jane before' && pg 'SHOW server_version' | grep -q '^18\\.'"
+check 'this release runs only 18: there is nothing to upgrade to' "inside 'quire-server database:upgrade --check' | grep -q 'newest this release runs'"
+
+# The next major, as a release would name it: pinned by digest
+inside "docker pull -q postgres:$next >/dev/null"
+digest=$(inside "docker image inspect postgres:$next --format '{{index .RepoDigests 0}}'" | sed 's/^postgres@//')
+inside "printf 'services:\\n  database:\\n    image: postgres:%s@%s\\n' '$next' '$digest' > /srv/quire/server/database/postgres-$major.yaml"
+check "the release runs $major too, and says so" "inside 'quire-server database:upgrade --check' | grep -q -- '--to=$major'"
+
+check "a site whose runtime has older PostgreSQL tools isn't upgraded from (its backups would fail)" "inside 'quire-server database:upgrade --yes 2>&1' | tr -s ' \\n' ' ' | grep -q 'their backups would fail' && pg 'SHOW server_version' | grep -q '^18\\.'"
+# Quire's runtime ships PostgreSQL 18's tools today: from here on, the site stands for one built on a
+# runtime with $major's (only what it says its version is changes; nothing below backs it up on $major)
+printf '#!/bin/sh\n[ "$1" = --version ] && echo "pg_dump (PostgreSQL) %s.0" && exit 0\nexec /usr/local/bin/pg_dump.real "$@"\n' "$major" > "$logs"/pg_dump
+docker cp "$logs"/pg_dump "$dind:/root/pg_dump"
+# Written from inside, as root: the site's containers drop every capability, so root changes only
+# files it owns (a file put there by "docker cp" keeps its owner from outside).
+inside 'docker exec -u root jane-php-1 mv /usr/local/bin/pg_dump /usr/local/bin/pg_dump.real && docker exec -i -u root jane-php-1 sh -c "cat > /usr/local/bin/pg_dump && chmod 755 /usr/local/bin/pg_dump" < /root/pg_dump'
+check "a site built on a runtime with $major's tools says so" "inside 'docker exec jane-php-1 pg_dump --version' | grep -q \"PostgreSQL) $major\""
+
+pg 'CREATE TABLE stray (id int)' >/dev/null
+check 'a table in PostgreSQL'\''s own database is refused, nothing changed' "inside 'quire-server database:upgrade --yes 2>&1' | grep -q 'holds tables' && title 'Jane before' && pg 'SHOW server_version' | grep -q '^18\\.'"
+pg 'DROP TABLE stray' >/dev/null
+
+# Something holding a connection the copy wouldn't see the writes of: from inside PostgreSQL's container
+inside "docker exec -d -e PGPASSWORD=$postgres_password quire-server-database-1 psql -U postgres -c 'SELECT pg_sleep(900)'"
+sleep 2
+inside 'quire-server database:upgrade --yes 2>&1' > "$logs"/upgrade-busy.log || true
+sed 's/^/    /' "$logs"/upgrade-busy.log
+check 'an upgrade that fails is rolled back by itself' "grep -q 'Something still uses' $logs/upgrade-busy.log && grep -q 'the server runs as it was' $logs/upgrade-busy.log"
+check 'the server and the site run as before, on 18' "pg 'SHOW server_version' | grep -q '^18\\.' && title 'Jane before' && inside 'quire-server site:list' | grep -q 'jane .*running' && inside 'quire-server ps --format \"{{.Service}} {{.Health}}\"' | grep -q 'agent healthy'"
+check 'its unfinished copy is gone' "[ \"\$(inside 'docker run --rm -v quire-server_database_data:/v alpine ls /v')\" = 18 ] && ! inside 'docker ps -a --format {{.Names}}' | grep -q database-upgrade"
+pg "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE query LIKE '%pg_sleep(900)%' AND pid <> pg_backend_pid()" >/dev/null
+
+inside "quire-server database:upgrade --to=$major --yes 2>&1" > "$logs"/upgrade.log || true
+sed 's/^/    /' "$logs"/upgrade.log
+check "it runs PostgreSQL $major" "pg 'SHOW server_version' | grep -q '^$major' && inside 'grep -q postgres-$major.yaml /srv/quire/server/server.env'"
+check 'the copy was checked against the original' "grep -Eq 'The same in both: the roles and their rights, [0-9]+ databases' $logs/upgrade.log"
+check 'the site runs with its data' "title 'Jane before' && inside 'quire-server site:list' | grep -q 'jane .*running'"
+inside "docker exec jane-php-1 bin/console quire:settings:set site.title 'Jane after'" >/dev/null
+check 'and writes to it' "title 'Jane after'"
+docker cp "$here/tests/e2e/try-databases.php" "$dind:/root/try-databases.php"
+inside 'docker cp /root/try-databases.php jane-php-1:/app/var/try-databases.php'
+check 'its role is still refused the server'\''s databases' "[ \"\$(inside 'docker exec jane-php-1 php /app/var/try-databases.php' | grep -c ': denied')\" = 3 ]"
+check 'the agent runs, with its registry' "inside 'quire-server ps --format \"{{.Service}} {{.Health}}\"' | grep -q 'agent healthy' && inside 'quire-server operations' | grep -q 'server.database-upgrade.*succeeded'"
+check "18's data stays, beside $major's" "[ \"\$(inside 'docker run --rm -v quire-server_database_data:/v alpine ls /v' | tr '\\n' ' ')\" = \"18 $major \" ]"
+check 'its record is root'\''s only' "[ \"\$(inside 'stat -c %a /srv/quire/backups/database/*/upgrade.json' | sort -u)\" = 600 ]"
+check 'its secrets never reached its log' "! grep -q \"\$(inside 'sed -n s/^QUIRE_SERVER_POSTGRES_PASSWORD=//p /srv/quire/server/server.env' | tr -d \"'\")\" $logs/upgrade.log"
+inside 'quire-server down >/dev/null 2>&1 && quire-server up >/dev/null 2>&1'
+check "the server starts on $major again" "pg 'SHOW server_version' | grep -q '^$major' && title 'Jane after'"
+# As if the machine had stopped right after the switch: its record says "switched", the agent didn't
+# start, the site ran (it starts by itself) and wrote to the new major
+inside "sed -i 's/\"state\": \"done\"/\"state\": \"switched\"/' /srv/quire/backups/database/*/upgrade.json && docker stop quire-server-agent-1 >/dev/null"
+inside "docker exec jane-php-1 bin/console quire:settings:set site.title 'Jane meanwhile'" >/dev/null
+inside 'quire-server database:upgrade --recover 2>&1' > "$logs"/recover.log || true
+sed 's/^/    /' "$logs"/recover.log
+check "an upgrade cut short after the switch is finished on $major, with what the site wrote since" "grep -q 'The upgrade is finished' $logs/recover.log && pg 'SHOW server_version' | grep -q '^$major' && title 'Jane meanwhile' && inside 'quire-server ps --format \"{{.Service}} {{.Health}}\"' | grep -q 'agent healthy' && [ \"\$(inside 'docker run --rm -v quire-server_database_data:/v alpine ls /v' | tr '\\n' ' ')\" = \"18 $major \" ]"
+inside "docker exec jane-php-1 bin/console quire:settings:set site.title 'Jane after'" >/dev/null
+
+inside 'quire-server database:upgrade --undo --yes 2>&1' > "$logs"/undo.log || true
+sed 's/^/    /' "$logs"/undo.log
+check 'undoing it runs 18 again, with its data as the upgrade left it' "pg 'SHOW server_version' | grep -q '^18\\.' && title 'Jane before' && inside 'quire-server site:list' | grep -q 'jane .*running'"
+inside "quire-server database:upgrade --to=$major --yes 2>&1" > "$logs"/upgrade-again.log || true
+check 'upgrading again starts from a fresh copy, the earlier one kept aside' "grep -q 'from an earlier upgrade is kept as' $logs/upgrade-again.log && pg 'SHOW server_version' | grep -q '^$major' && title 'Jane before' && inside 'docker run --rm -v quire-server_database_data:/v alpine ls /v' | grep -q \"^$major\\.before-\""
+inside 'quire-server database:upgrade --clean --yes 2>&1' | sed 's/^/    /'
+check "cleaning removes 18's data, and what was kept aside" "[ \"\$(inside 'docker run --rm -v quire-server_database_data:/v alpine ls /v')\" = $major ]"
+check 'after that, it can'\''t be undone' "inside 'quire-server database:upgrade --undo --yes 2>&1' | grep -q 'data isn.t there any more' && pg 'SHOW server_version' | grep -q '^$major'"
 fi
 
 if want sites; then
@@ -422,7 +512,7 @@ check 'its folder is archived, not deleted' "inside 'ls -d /srv/quire/sites/.rem
 # (Caddy keeps a certificate it already has in its cache: the handshake may still succeed, but nothing is served.)
 check 'it is no longer served (421)' "[ \"\$(inside \"curl -sk $resolve -o /dev/null -w '%{http_code}' https://jane.test/\")\" = 421 ]"
 check 'its containers are gone' "! inside 'docker ps -a --format \"{{.Names}}\"' | grep -q '^jane-'"
-check 'its database is gone' "! inside 'docker exec quire-server-database-1 psql -U postgres -Atc \"SELECT 1 FROM pg_database WHERE datname = '\''site_jane'\''\"' | grep -q 1"
+check 'its database is gone' "pg \"SELECT count(*) FROM pg_database WHERE datname = 'site_jane'\" | grep -qx 0"
 
 fi
 
