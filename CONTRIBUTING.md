@@ -47,9 +47,11 @@ It is fail-closed: a service setting it doesn't know is refused. Each setting is
 - `CHECKED_SERVICE_KEYS`: allowed, with its value checked in `service()` or a method of its own;
 - `FORBIDDEN_SERVICE_KEYS`: refused whenever it asks for anything, with the reason shown to the owner.
 
+Below a service's settings it's fail-closed too: `NESTED_KEYS` lists, level by level, what's allowed in a build, `deploy`, a mount, a network a service joins, a top-level volume or network and its IPAM, and so on. A setting at any level that isn't listed is refused. Booleans are read however they're written (`true`, `"true"`, `"yes"`, `1`).
+
 To add a rule:
 
 1. Find the setting's shape in Compose's output (it's often not what you write): `docker compose config --format json --no-env-resolution` on a scratch file.
-2. Move the setting to the right list, and check its value where the others are checked.
+2. Move the setting to the right list (or add it to its level in `NESTED_KEYS`), and check its value where the others are checked.
 3. Add hostile cases to `ComposePolicyTest::hostile()` (each a change to a valid site and the words of the refusal), and harmless values to `testHarmlessValuesOfForbiddenSettingsPass()`.
 4. Say it in the README's "Security" section.

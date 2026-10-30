@@ -58,6 +58,24 @@ final class ComposePolicyTest extends TestCase
     public static function hostile(): iterable
     {
         yield 'privileged' => [['services' => ['php' => ['privileged' => true]]], '"privileged" runs privileged'];
+        yield 'privileged, as a string' => [['services' => ['php' => ['privileged' => 'yes']]], '"privileged" runs privileged'];
+        // Below a service's settings, fail-closed at every level: a new setting there may have host powers.
+        yield 'a setting the server doesn\'t know, in a build' => [['services' => ['php' => ['build' => ['some_future_key' => true]]]], '"build.some_future_key" isn\'t a setting the server allows (yet)'];
+        yield '… in deploy' => [['services' => ['php' => ['deploy' => ['some_future_key' => true]]]], '"deploy.some_future_key" isn\'t a setting'];
+        yield '… in deploy\'s resources' => [['services' => ['php' => ['deploy' => ['resources' => ['limits' => ['some_future_key' => 1]]]]]], '"deploy.resources.limits.some_future_key" isn\'t a setting'];
+        yield '… in a mount' => [['services' => ['php' => ['volumes' => [0 => ['some_future_key' => true]]]]], '"volumes.some_future_key" isn\'t a setting'];
+        yield '… in a mount\'s volume options' => [['services' => ['php' => ['volumes' => [0 => ['volume' => ['some_future_key' => true]]]]]], '"volumes.volume.some_future_key" isn\'t a setting'];
+        yield '… in a network it joins' => [['services' => ['php' => ['networks' => ['quire-edge' => ['some_future_key' => true]]]]], 'on the network "quire-edge", "some_future_key" isn\'t a setting'];
+        yield '… in logging' => [['services' => ['php' => ['logging' => ['driver' => 'json-file', 'some_future_key' => true]]]], '"logging.some_future_key" isn\'t a setting'];
+        yield '… in a hook' => [['services' => ['php' => ['post_start' => [['command' => ['id'], 'some_future_key' => true]]]]], '"post_start.some_future_key" isn\'t a setting'];
+        yield '… in a secret it uses' => [['services' => ['php' => ['secrets' => [['source' => 'key', 'some_future_key' => true]]]]], '"secrets.some_future_key" isn\'t a setting'];
+        yield '… in a volume' => [['volumes' => ['caddy_data' => ['some_future_key' => true]]], 'Volume "caddy_data": "some_future_key" isn\'t a setting'];
+        yield '… in a network' => [['networks' => ['default' => ['some_future_key' => true]]], 'Network "default": "some_future_key" isn\'t a setting'];
+        yield '… in a network\'s IPAM' => [['networks' => ['default' => ['ipam' => ['some_future_key' => true]]]], '"ipam.some_future_key" isn\'t a setting'];
+        yield '… in a top-level secret' => [['secrets' => ['key' => ['file' => '/x', 'some_future_key' => true]]], 'Secret "key": "some_future_key" isn\'t a setting'];
+        yield 'an IPAM plugin' => [['networks' => ['default' => ['ipam' => ['driver' => 'evil-plugin']]]], 'the IPAM driver "evil-plugin" isn\'t allowed'];
+        yield 'oom_kill_disable, as a string' => [['services' => ['php' => ['oom_kill_disable' => 'true']]], '"oom_kill_disable" lets the container take the host\'s memory'];
+        yield 'a privileged hook, as a string' => [['services' => ['php' => ['post_start' => [['command' => ['id'], 'privileged' => 'yes']]]]], '"post_start" runs a privileged command'];
         yield 'capabilities' => [['services' => ['php' => ['cap_add' => ['NET_BIND_SERVICE', 'SYS_ADMIN']]]], '"cap_add: SYS_ADMIN" adds a Linux capability'];
         yield 'capabilities, spelled CAP_' => [['services' => ['php' => ['cap_add' => ['CAP_SYS_PTRACE']]]], '"cap_add: CAP_SYS_PTRACE"'];
         yield 'all capabilities' => [['services' => ['php' => ['cap_add' => ['ALL']]]], '"cap_add: ALL"'];
@@ -225,7 +243,7 @@ final class ComposePolicyTest extends TestCase
 
     public function testHarmlessValuesOfForbiddenSettingsPass(): void
     {
-        $config = array_replace_recursive($this->site(), ['services' => ['php' => ['privileged' => false, 'cap_add' => ['NET_BIND_SERVICE', 'cap_net_bind_service', 'CHOWN', 'SETUID'], 'scale' => 1, 'devices' => [], 'security_opt' => ['no-new-privileges:true'], 'cap_drop' => ['ALL'], 'oom_score_adj' => 100, 'logging' => ['driver' => 'json-file'], 'x-custom' => 'anything', 'build' => ['tags' => ['quire-sites/jane/php-prod:before-update']]], 'worker' => ['network_mode' => 'service:php']]]);
+        $config = array_replace_recursive($this->site(), ['services' => ['php' => ['privileged' => false, 'gpus' => 'false', 'oom_kill_disable' => 'false', 'deploy' => ['resources' => ['limits' => ['cpus' => '1.5', 'memory' => '1g', 'pids' => 512]], 'restart_policy' => ['condition' => 'on-failure']], 'cap_add' => ['NET_BIND_SERVICE', 'cap_net_bind_service', 'CHOWN', 'SETUID'], 'scale' => 1, 'devices' => [], 'security_opt' => ['no-new-privileges:true'], 'cap_drop' => ['ALL'], 'oom_score_adj' => 100, 'logging' => ['driver' => 'json-file'], 'x-custom' => 'anything', 'build' => ['tags' => ['quire-sites/jane/php-prod:before-update']]], 'worker' => ['network_mode' => 'service:php']]]);
 
         self::assertSame([], $this->violations($config));
     }
