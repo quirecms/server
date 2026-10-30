@@ -17,7 +17,9 @@ FROM php:8.5-cli-alpine@sha256:e899a75c775804e5466dbd9c96b31f8b6c6ae2ddb053a8466
 SHELL ["/bin/ash", "-euo", "pipefail", "-c"]
 
 COPY --from=php_extension_installer /usr/bin/install-php-extensions /usr/local/bin/
-RUN install-php-extensions intl pcntl pdo_pgsql opcache \
+# The base image's packages with their fixes (it's rebuilt less often than Alpine fixes them)
+RUN apk upgrade --no-cache \
+    && install-php-extensions intl pcntl pdo_pgsql opcache \
     && apk add --no-cache ca-certificates curl git openssh-client openssh-keygen tar tini \
     && rm /usr/local/bin/install-php-extensions
 
