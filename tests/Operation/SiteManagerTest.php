@@ -184,6 +184,12 @@ final class SiteManagerTest extends RegistryTestCase
         $env = (string) file_get_contents($directory.'/prod.env');
         self::assertStringNotContainsString('the-old-secret', $env);
         self::assertStringNotContainsString('the-old-password', $env);
+        self::assertStringContainsString("COMPOSE_FILE='compose.yaml:compose.prod.yaml:compose.server.yaml'", $env, 'The server\'s.');
+        self::assertStringNotContainsString('elsewhere', $env);
+        // Its owner's own settings, as they were
+        self::assertStringContainsString("QUIRE_STORAGE_BUCKET='jane-files'", $env);
+        self::assertStringContainsString("MAILER_DSN='smtp://mail.example.com:587'", $env, 'Its own, over the server\'s default.');
+        self::assertStringNotContainsString('smtp://mailer:25', $env);
         self::assertMatchesRegularExpression("/^APP_SECRET='[0-9a-f]{64}'\$/m", $env);
         self::assertStringNotContainsString('old-site', (string) file_get_contents($directory.'/compose.server.yaml'));
         self::assertTrue($this->databases->exists($this->name));
@@ -645,7 +651,7 @@ final class SiteManagerTest extends RegistryTestCase
             'composer.json' => '{"require": {"quire/core": "^0.1"}}',
             'composer.lock' => '{"packages": []}',
             'src/Kernel.php' => '<?php // the site\'s own code',
-            'prod.env' => "APP_SECRET='the-old-secret'\nQUIRE_DATABASE_PASSWORD='the-old-password'\n",
+            'prod.env' => "COMPOSE_FILE='compose.yaml:../elsewhere.yaml'\nAPP_SECRET='the-old-secret'\nQUIRE_DATABASE_PASSWORD='the-old-password'\n# Its owner's own\nMAILER_DSN='smtp://mail.example.com:587'\nQUIRE_STORAGE_BUCKET='jane-files'\n",
             'prod.env.before-server' => "APP_SECRET='the-old-secret'\n",
             'compose.server.yaml' => '# old-site',
         ] as $path => $content) {

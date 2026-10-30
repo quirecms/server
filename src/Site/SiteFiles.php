@@ -29,8 +29,30 @@ final readonly class SiteFiles
      */
     public const string EDGE_SUFFIX = '.quire.internal';
 
+    /** What a server writes in a site's prod.env (its secrets a new site gets anew) */
+    private const array SERVERS = ['COMPOSE_FILE', 'COMPOSE_PROJECT_NAME', 'SERVER_NAME', 'APP_SECRET', 'QUIRE_DATABASE_PASSWORD', 'POSTGRES_PASSWORD'];
+
     /** The skeleton's production setup, then the server's */
     private const string COMPOSE_FILE = 'compose.yaml:compose.prod.yaml:compose.server.yaml';
+
+    /**
+     * What a site's prod.env has that its owner wrote: everything but what a server writes (or, on
+     * another server, writes anew), and what's not written as this server writes values.
+     *
+     * @return array<string, string>
+     */
+    public static function ownSettings(EnvFile $env): array
+    {
+        $own = [];
+
+        foreach ($env->values() as $name => $value) {
+            if (!\in_array($name, self::SERVERS, true) && 1 !== preg_match('/[\'\x00-\x1f\x7f]/', $value) && !str_ends_with($value, '\\')) {
+                $own[$name] = $value;
+            }
+        }
+
+        return $own;
+    }
 
     /**
      * @param array<string, string> $settings E.g. APP_SECRET, MAILER_DSN, QUIRE_DATABASE_PASSWORD

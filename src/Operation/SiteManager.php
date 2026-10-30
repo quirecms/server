@@ -208,10 +208,19 @@ final readonly class SiteManager
                 $undo[] = fn () => $this->registry->setStatus($name, Site::REMOVED);
                 $undo[] = fn () => $this->archive($name, $directory);
 
+                $own = [];
+
                 if (\is_string($code)) {
                     $step('Putting its code in place, as the backup has it');
                     $this->filesystem->mirror($code, $directory);
-                    // Its settings are this server's to write: none of the backed-up site's are kept.
+                    // Its owner's own settings (e.g. a storage disk, an SMTP server): its server's are
+                    // this server's to write, its secrets new.
+                    $own = is_file($directory.'/'.SiteFiles::ENV_FILE) ? SiteFiles::ownSettings(EnvFile::read($directory.'/'.SiteFiles::ENV_FILE)) : [];
+
+                    foreach ($own as $value) {
+                        $operation->secret($value);
+                    }
+
                     $this->filesystem->remove(array_map(static fn (string $file): string => $directory.'/'.$file, [SiteFiles::ENV_FILE, SiteFiles::ENV_FILE.'.before-server', SiteFiles::OVERRIDE]));
                 } else {
                     $this->repositories->follow($name, $code, $poll);
@@ -229,10 +238,11 @@ final readonly class SiteManager
                 $secret = bin2hex(random_bytes(32));
                 $operation->secret($secret);
                 $this->files->writeEnv($directory, $name, $domains[0], array_filter([
+                    'MAILER_DSN' => $this->mailerDsn,
+                    ...$own,
                     'APP_SECRET' => $secret,
                     'QUIRE_DATABASE_PASSWORD' => $databasePassword,
                     'POSTGRES_PASSWORD' => bin2hex(random_bytes(24)),
-                    'MAILER_DSN' => $this->mailerDsn,
                 ], static fn (string $value): bool => '' !== $value));
                 $this->files->writeOverride($directory, $name, $domains, Site::SHARED_DATABASE);
                 $project = $this->project($name, $domains, $name->value, Site::SHARED_DATABASE);
