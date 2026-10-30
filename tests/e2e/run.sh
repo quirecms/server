@@ -261,7 +261,9 @@ check "a site whose runtime has older PostgreSQL tools isn't upgraded from (its 
 # runtime with $major's (only what it says its version is changes; nothing below backs it up on $major)
 printf '#!/bin/sh\n[ "$1" = --version ] && echo "pg_dump (PostgreSQL) %s.0" && exit 0\nexec /usr/local/bin/pg_dump.real "$@"\n' "$major" > "$logs"/pg_dump
 docker cp "$logs"/pg_dump "$dind:/root/pg_dump"
-inside 'docker exec -u root jane-php-1 mv /usr/local/bin/pg_dump /usr/local/bin/pg_dump.real && docker cp /root/pg_dump jane-php-1:/usr/local/bin/pg_dump && docker exec -u root jane-php-1 chmod 755 /usr/local/bin/pg_dump'
+# Written from inside, as root: the site's containers drop every capability, so root changes only
+# files it owns (a file put there by "docker cp" keeps its owner from outside).
+inside 'docker exec -u root jane-php-1 mv /usr/local/bin/pg_dump /usr/local/bin/pg_dump.real && docker exec -i -u root jane-php-1 sh -c "cat > /usr/local/bin/pg_dump && chmod 755 /usr/local/bin/pg_dump" < /root/pg_dump'
 check "a site built on a runtime with $major's tools says so" "inside 'docker exec jane-php-1 pg_dump --version' | grep -q \"PostgreSQL) $major\""
 
 pg 'CREATE TABLE stray (id int)' >/dev/null
