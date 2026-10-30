@@ -72,6 +72,9 @@ final class SiteUpdaterTest extends RegistryTestCase
     /** The image the site's containers run */
     private string $running = self::OLD;
 
+    /** Whether a release's intent was there while it built */
+    private bool $intentAtBuild = false;
+
     /** What the release's intent says while it starts the new version ('' to read it) */
     private ?string $intentDuringUp = null;
 
@@ -112,6 +115,8 @@ final class SiteUpdaterTest extends RegistryTestCase
         $this->runner = new ScriptedRunner([
             'docker compose config' => fn (array $command): ProcessResult => ScriptedRunner::ok($command, json_encode($this->config(), \JSON_THROW_ON_ERROR)),
             'docker compose build' => function (array $command): ProcessResult {
+                $this->intentAtBuild = is_file($this->intentFile());
+
                 if ($this->buildFails) {
                     return ScriptedRunner::failed($command, "composer install: your requirements could not be resolved\n");
                 }
@@ -335,6 +340,37 @@ final class SiteUpdaterTest extends RegistryTestCase
         self::assertStringContainsString('/backups/jane/update-', $intent['backup']);
         self::assertSame(['composer.json', 'composer.lock'], \array_slice($intent['put_back']['paths'], 0, 2));
         self::assertFileDoesNotExist($this->intentFile(), 'Over: gone.');
+    }
+
+    public function testItsIntentIsThereWhileItBuilds(): void
+    {
+        $this->updater()->update($this->plan(), false, 'cli', 'darko', static fn (): null => null);
+
+        self::assertTrue($this->intentAtBuild, 'A crash while it builds leaves its files put back too.');
+    }
+
+    public function testAFailedBuildLeavesNoIntent(): void
+    {
+        $this->buildFails = true;
+
+        try {
+            $this->updater()->update($this->plan(), false, 'cli', 'darko', static fn (): null => null);
+        } catch (UpdateFailed) {
+        }
+
+        self::assertFileDoesNotExist($this->intentFile(), 'Put back already: nothing for the agent\'s start.');
+    }
+
+    public function testWithNoSavedCopyItsFilesAreLeftAsTheyAre(): void
+    {
+        // Cut short before its files were saved: they hadn't changed
+        $site = $this->paths->site($this->name);
+        new Filesystem()->dumpFile($this->intentFile(), (string) json_encode(['operation' => 'o', 'what' => 'update', 'image' => 'quire-sites/jane/php-prod', 'image_before' => self::OLD, 'backup' => null, 'put_back' => ['files' => $this->paths->backups($this->name).'/update-never/files', 'paths' => ['composer.json', 'composer.lock']]]));
+
+        $this->updater()->recoverInterrupted(static fn (): null => null);
+
+        self::assertFileExists($site.'/composer.json');
+        self::assertFileExists($site.'/composer.lock');
     }
 
     public function testItGoesBackToTheImageItRanNotToWhatItsTagNames(): void

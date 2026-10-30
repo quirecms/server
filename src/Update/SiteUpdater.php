@@ -222,7 +222,8 @@ final readonly class SiteUpdater
                         if (\is_string($putBack['commit'] ?? null)) {
                             $git = $this->repositories->of($site->name) ?? throw new \DomainException('The site doesn\'t follow a Git repository any more.');
                             $this->git->moveTo($git['repository'], $site->name, $directory, $putBack['commit']);
-                        } elseif (\is_string($putBack['files'] ?? null) && \is_array($putBack['paths'] ?? null)) {
+                        } elseif (\is_string($putBack['files'] ?? null) && \is_array($putBack['paths'] ?? null) && is_dir($putBack['files'])) {
+                            // Saved whole (or not at all): no saved copy means its files hadn't changed.
                             SkeletonFiles::restore($directory, array_values(array_filter($putBack['paths'], \is_string(...))), $putBack['files']);
                         }
 
@@ -447,8 +448,10 @@ final readonly class SiteUpdater
             'update',
             function () use ($step, $saved, $directory, $paths, $plan): void {
                 $step('Keeping its files as they are, to put them back');
-                $this->filesystem->mkdir($saved, 0o700);
-                SkeletonFiles::save($directory, $paths, $saved);
+                // Whole or not at all: a saved copy that's there is a complete one.
+                $this->filesystem->mkdir($saved.'.partial', 0o700);
+                SkeletonFiles::save($directory, $paths, $saved.'.partial');
+                $this->filesystem->rename($saved.'.partial', $saved);
 
                 $step('Changing its files');
                 $this->filesystem->dumpFile($directory.'/composer.json', $plan->composerJson);
@@ -497,12 +500,15 @@ final readonly class SiteUpdater
         // The image it runs: its tag may name another (a build a crash cut short, never run).
         $before = $this->images->ofContainer($project->name().'-'.self::PHP.'-1') ?? $this->images->id($image);
         $changed = false;
+        $intent = ['operation' => $operation->id, 'what' => $what, 'image' => $image, 'image_before' => $before, 'backup' => null, 'put_back' => $putBack];
 
         try {
             if (null === $before) {
                 throw new \RuntimeException(\sprintf('The site\'s image "%s" isn\'t there: it can\'t be rolled back to.', $image));
             }
 
+            // Before its files change: a crash while it builds leaves them put back too.
+            $this->writeIntent($site->name, $intent);
             $changed = true;
             $change();
 
@@ -518,6 +524,7 @@ final readonly class SiteUpdater
                 $this->images->tag($before, $image);
             }
 
+            $this->filesystem->remove($this->paths->backups($site->name).'/'.self::INTENT);
             $operation->fail(\sprintf('The %s was stopped before the site was touched: %s', $what, $e->getMessage()));
 
             throw new UpdateFailed($operation->id, true, $e->getMessage(), $e);
@@ -529,9 +536,6 @@ final readonly class SiteUpdater
         $backup = null;
         $migrationsBefore = null;
         $migrationsAfter = null;
-        $intent = ['operation' => $operation->id, 'what' => $what, 'image' => $image, 'image_before' => $before, 'backup' => null, 'put_back' => $putBack];
-        $this->writeIntent($site->name, $intent);
-
         try {
             try {
                 $step('Backing it up');
