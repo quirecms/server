@@ -72,8 +72,22 @@ final class RuntimeImagesTest extends TestCase
     {
         unset($this->signed['ghcr.io/quirecms/runtime:8.5']);
         $this->expectException(RuntimeImageNotTrusted::class);
-        $this->expectExceptionMessageIsOrContains('ghcr.io/quirecms/runtime:8.5 didn\'t check out');
+        $this->expectExceptionMessageIsOrContains('ghcr.io/quirecms/runtime:8.5 didn\'t check out (it must be signed by https://github.com/quirecms/framework/.github/workflows/runtime.yaml@refs/heads/main): not building on it. cosign: Error: no matching signatures');
         $this->pinned();
+    }
+
+    public function testARegistryThatDoesntAnswerIsNoAlarm(): void
+    {
+        $this->runner->script['cosign verify'] = static fn (): ProcessResult => new ProcessResult([], 1, '', "Error: GET https://ghcr.io/v2/quirecms/runtime/manifests/8.5: dial tcp: lookup ghcr.io: no such host\n");
+
+        try {
+            $this->pinned();
+            self::fail('It was built on.');
+        } catch (RuntimeImageNotTrusted) {
+            self::fail('Reported as a signature that didn\'t check out.');
+        } catch (\RuntimeException $e) {
+            self::assertStringContainsString('couldn\'t be checked: the registry or Sigstore didn\'t answer (Error: GET https://ghcr.io/v2/quirecms/runtime/manifests/8.5: dial tcp: lookup ghcr.io: no such host)', $e->getMessage());
+        }
     }
 
     public function testAPinnedDigestMustBeTheOneChecked(): void
