@@ -44,6 +44,11 @@ front_ports() {
 	compose port front 80 >/dev/null 2>&1 && compose port front 443 >/dev/null 2>&1
 }
 
+# An update of the server the machine's stop cut short: said first, whatever is asked.
+if [ -f "$root/backups/server/swap.json" ] && ! docker ps --format '{{.Names}}' | grep -qx quire-server-updater; then
+	echo "An update of the server was cut short (the machine stopped in the middle): \"quire-server update --undo\" puts it back as it was." >&2
+fi
+
 # Compose reads COMPOSE_FILE (server.env) relative to where it runs.
 cd "$root/server"
 

@@ -189,6 +189,10 @@ final readonly class ServerUpdater
         }
 
         $log('Stopping the agent (sites keep running)');
+        // Until it's over, either way: what the machine's next start (and "quire-server") finds when
+        // it stopped in the middle.
+        $this->filesystem->mkdir(\dirname($this->swapRecord()), 0o700);
+        ServerFolder::writeSecret($this->swapRecord(), json_encode(['from' => $backup->from, 'to' => $expected, 'started_at' => new \DateTimeImmutable()->format(\DATE_ATOM)], \JSON_THROW_ON_ERROR)."\n");
 
         try {
             $this->stack->stopAgent($this->folder);
@@ -197,6 +201,7 @@ final readonly class ServerUpdater
             $log('Backed up to '.$backup->directory);
         } catch (\Throwable $e) {
             $this->restart($log);
+            $this->filesystem->remove($this->swapRecord());
 
             throw $e;
         }
@@ -232,6 +237,7 @@ final readonly class ServerUpdater
 
             throw new ServerUpdateFailed($e->getMessage().' (the server runs as it was)', restored: true, backup: $backup->directory, previous: $e);
         } finally {
+            $this->filesystem->remove($this->swapRecord());
             $this->unlock();
         }
     }
@@ -302,6 +308,25 @@ final readonly class ServerUpdater
     private function migrations(): ?array
     {
         return $this->retrying(fn (): array => array_map(static fn (mixed $version): string => \is_scalar($version) ? (string) $version : '', $this->connection->fetchFirstColumn(\sprintf('SELECT version FROM %s ORDER BY version', $this->migrationsTable))), 15);
+    }
+
+    /**
+     * An update (or undo) of the server that was cut short (the machine stopped in the middle): from
+     * which release to which; null when none was.
+     *
+     * @return array{from: string, to: string}|null
+     */
+    public function cutShort(): ?array
+    {
+        $record = @file_get_contents($this->swapRecord());
+        $swap = false === $record ? null : json_decode($record, true);
+
+        return \is_array($swap) && \is_string($swap['from'] ?? null) && \is_string($swap['to'] ?? null) ? ['from' => $swap['from'], 'to' => $swap['to']] : null;
+    }
+
+    private function swapRecord(): string
+    {
+        return $this->root.'/backups/server/swap.json';
     }
 
     private function backupDirectory(): string

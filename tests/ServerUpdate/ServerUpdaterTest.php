@@ -36,6 +36,9 @@ final class ServerUpdaterTest extends RegistryTestCase
     private const string SECRET = 'QUIRE_SERVER_POSTGRES_PASSWORD=s3cret';
 
     private string $root;
+
+    /** Whether the swap was written down while the new release started */
+    private bool $swapRecorded = false;
     private string $server;
     private ScriptedRunner $runner;
     private OperationLog $operations;
@@ -120,6 +123,7 @@ final class ServerUpdaterTest extends RegistryTestCase
             'docker compose up' => function (array $command, ?string $directory): ProcessResult {
                 $image = $this->image();
                 $this->agent = $image;
+                $this->swapRecorded = is_file($this->root.'/backups/server/swap.json');
 
                 foreach ($this->migratesTo[$image] ?? [] as $version) {
                     $this->connection->executeStatement(\sprintf('INSERT INTO %s VALUES (?) ON CONFLICT DO NOTHING', $this->migrations), [$version]);
@@ -141,6 +145,22 @@ final class ServerUpdaterTest extends RegistryTestCase
     {
         new Filesystem()->remove($this->root);
         parent::tearDown();
+    }
+
+    public function testAnUpdateIsWrittenDownWhileItSwaps(): void
+    {
+        $this->update();
+
+        self::assertTrue($this->swapRecorded, 'While it swapped: what the machine\'s stop would leave.');
+        self::assertFileDoesNotExist($this->root.'/backups/server/swap.json', 'Over: gone.');
+        self::assertNull($this->updater('0.1.1')->cutShort());
+    }
+
+    public function testAnUpdateCutShortIsSaid(): void
+    {
+        new Filesystem()->dumpFile($this->root.'/backups/server/swap.json', '{"from": "0.1.1", "to": "0.2.0", "started_at": "2026-10-30T21:00:00+00:00"}');
+
+        self::assertSame(['from' => '0.1.1', 'to' => '0.2.0'], $this->updater('0.1.1')->cutShort());
     }
 
     public function testUpdatingTheServer(): void
