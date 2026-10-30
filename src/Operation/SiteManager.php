@@ -495,6 +495,7 @@ final readonly class SiteManager
 
                 if ($project instanceof SiteProject && is_file($directory.'/'.SiteFiles::ENV_FILE)) {
                     $this->compose->down($project, volumes: true, output: $operation->output(...));
+                    $this->compose->removeBuilders($project);
                 }
 
                 if (Site::SHARED_DATABASE === $site->databaseMode) {

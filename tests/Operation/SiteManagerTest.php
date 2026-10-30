@@ -38,6 +38,9 @@ use Symfony\Component\Filesystem\Filesystem;
  */
 final class SiteManagerTest extends RegistryTestCase
 {
+    /** @var list<string> The BuildKit builders there are (Compose::builder()) */
+    private array $builders = [];
+
     private string $root;
     private SiteName $name;
     private ServerPaths $paths;
@@ -89,6 +92,20 @@ final class SiteManagerTest extends RegistryTestCase
                 return self::ok($command, '');
             },
             'docker compose down' => static fn (array $command): ProcessResult => self::ok($command, "Removed\n"),
+            // Each site's own BuildKit (Compose::builder())
+            'docker buildx inspect' => fn (array $command): ProcessResult => \in_array(self::argument($command, 3), $this->builders, true) ? self::ok($command, '') : new ProcessResult(self::strings($command), 1, '', 'ERROR: no builder "'.self::argument($command, 3).'" found'),
+            'docker buildx create' => function (array $command): ProcessResult {
+                $this->builders[] = self::argument($command, 4);
+
+                return self::ok($command, '');
+            },
+            'docker container ls' => fn (array $command): ProcessResult => self::ok($command, implode("\n", array_map(static fn (string $builder): string => 'buildx_buildkit_'.$builder.'0', $this->builders))."\n"),
+            'docker container rm' => function (array $command): ProcessResult {
+                $this->builders = array_values(array_filter($this->builders, static fn (string $builder): bool => 'buildx_buildkit_'.$builder.'0' !== $command[5]));
+
+                return self::ok($command, '');
+            },
+            'docker volume rm' => static fn (array $command): ProcessResult => self::ok($command, ''),
             // The server's PostgreSQL, where a site's database is dumped and restored (SiteDatabaseDumps)
             'docker ps --quiet' => static fn (array $command): ProcessResult => self::ok($command, "abcdef123456\n"),
             'docker exec -e' => static fn (array $command): ProcessResult => self::ok($command, ''),
@@ -125,7 +142,7 @@ final class SiteManagerTest extends RegistryTestCase
 
         // Composer never runs the skeleton's code; the policy is checked before building and starting.
         self::assertSame(['composer', 'create-project', 'quire/skeleton', $this->paths->site($this->name), '^0.1', '--no-install', '--no-scripts', '--no-plugins', '--no-interaction', '--no-progress', '--no-ansi'], $this->commands[0]);
-        self::assertSame(['config', 'build', 'config', 'up', 'exec', 'exec', 'cp'], array_map(static fn (array $command): string => $command[8], \array_slice($this->commands, 1)));
+        self::assertSame(['config', 'build', 'config', 'up', 'exec', 'exec', 'cp'], array_map(static fn (array $command): string => $command[8], $this->commands()));
         self::assertFileExists($this->paths->site($this->name).'/composer.lock', 'The versions its image was built with, recorded in its folder.');
 
         $env = (string) file_get_contents($this->paths->site($this->name).'/prod.env');
@@ -302,6 +319,30 @@ final class SiteManagerTest extends RegistryTestCase
         self::assertNull($this->registry->get($this->name));
     }
 
+    public function testEachSiteIsBuiltByAPinnedBuilderOfItsOwnThatGoesWithIt(): void
+    {
+        $prefix = 'quire-'.$this->name->value.'-';
+        $current = $prefix.substr(hash('sha256', Compose::BUILDKIT), 0, 12);
+        // One of an older BuildKit, and another site's whose name starts with this one's
+        $this->builders = [$prefix.'0123456789ab', 'quire-'.$this->name->value.'-blog-'.substr(hash('sha256', Compose::BUILDKIT), 0, 12)];
+        $manager = $this->manager();
+        $manager->add($this->request(), 'cli', 'darko', static fn (): null => null);
+
+        $create = array_first(array_filter($this->dockerCommands(), static fn (array $command): bool => 'create' === ($command[2] ?? null))) ?? [];
+        self::assertSame(['docker', 'buildx', 'create', '--name', $current, '--driver', 'docker-container', '--driver-opt', 'image='.Compose::BUILDKIT, '--bootstrap'], $create);
+        self::assertMatchesRegularExpression('/^moby\/buildkit:v[0-9.]+@sha256:[0-9a-f]{64}\z/', Compose::BUILDKIT, 'Pinned by digest.');
+        $build = array_first(array_filter($this->commands(), static fn (array $command): bool => 'build' === ($command[8] ?? null))) ?? [];
+        $at = array_search('--builder', $build, true);
+        self::assertIsInt($at);
+        self::assertSame($current, $build[$at + 1] ?? null);
+        self::assertSame([$prefix.'0123456789ab'], array_values(array_diff([$prefix.'0123456789ab', 'quire-'.$this->name->value.'-blog-'.substr(hash('sha256', Compose::BUILDKIT), 0, 12)], $this->builders)), 'The older one goes; the other site\'s stays.');
+
+        $manager->remove($this->name, false, 'cli', 'darko', static fn (): null => null);
+
+        self::assertSame(['quire-'.$this->name->value.'-blog-'.substr(hash('sha256', Compose::BUILDKIT), 0, 12)], $this->builders, 'Its own goes with it, with its cache.');
+        self::assertContains(['docker', 'volume', 'rm', '--force', 'buildx_buildkit_'.$current.'0_state'], $this->dockerCommands());
+    }
+
     public function testRemovingASiteBacksItUpFirstAndKeepsItsFolder(): void
     {
         $manager = $this->manager();
@@ -435,7 +476,7 @@ final class SiteManagerTest extends RegistryTestCase
         self::assertSame(['jane.example', 'www.jane.example'], array_map(static fn (Domain $domain): string => $domain->value, $site->domains), 'From its SERVER_NAME.');
         self::assertSame(['Recording the site', 'Backing it up, as it is', 'Changing its settings (a copy of them is kept)', 'Checking and building it (a few minutes; it keeps running meanwhile)', 'Moving it behind the front door (a few seconds offline)', 'Opening it to visitors'], $said);
         // Backed up before anything changes; built before it's stopped; the policy checked before both.
-        self::assertSame(['exec', 'cp', 'exec', 'exec', 'cp', 'exec', 'config', 'build', 'config', 'up', 'cp'], array_map(static fn (array $command): string => $command[8] ?? '', $this->commands));
+        self::assertSame(['exec', 'cp', 'exec', 'exec', 'cp', 'exec', 'config', 'build', 'config', 'up', 'cp'], array_map(static fn (array $command): string => $command[8] ?? '', $this->commands()));
         self::assertFileExists($this->paths->site($this->name).'/composer.lock', 'Its versions recorded.');
         $backups = glob($this->paths->backups($this->name).'/before-server-*.tar');
         self::assertCount(1, false === $backups ? [] : $backups, 'Backed up as it was.');

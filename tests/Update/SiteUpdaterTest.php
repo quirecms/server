@@ -114,6 +114,8 @@ final class SiteUpdaterTest extends RegistryTestCase
 
         $this->runner = new ScriptedRunner([
             'docker compose config' => fn (array $command): ProcessResult => ScriptedRunner::ok($command, json_encode($this->config(), \JSON_THROW_ON_ERROR)),
+            'docker buildx inspect' => static fn (array $command): ProcessResult => ScriptedRunner::ok($command),
+            'docker container ls' => static fn (array $command): ProcessResult => ScriptedRunner::ok($command),
             'docker compose build' => function (array $command): ProcessResult {
                 $this->intentAtBuild = is_file($this->intentFile());
 

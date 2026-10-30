@@ -13,9 +13,16 @@ use Symfony\Component\Filesystem\Filesystem;
  * Docker Compose for sites, through the docker-proxy. Building and starting always check the site's
  * whole configuration against the policy first: there's no way to start a site without it. Building
  * checks Quire's runtime images it's built on too (RuntimeImages).
+ *
+ * Each site is built by a BuildKit of its own (a privileged container, as BuildKit's are), from an image
+ * pinned by digest: a site's build cache ("RUN --mount=type=cache") can't be read or poisoned by
+ * another site's build, and nothing that runs privileged is a tag someone could move.
  */
 final readonly class Compose
 {
+    /** BuildKit, by digest: Dependabot can't see it here, so it's bumped by hand with Docker's CLI */
+    public const string BUILDKIT = 'moby/buildkit:v0.34.1@sha256:99368f3e46177c6405b9740e4461d91cee004128daeecca78d4ceac50ec1da5c';
+
     public function __construct(
         private ProcessRunner $runner,
         private ComposePolicy $policy,
@@ -78,7 +85,8 @@ final readonly class Compose
             $arguments[] = $name.'='.$image;
         }
 
-        $this->compose($project, ['build', '--pull', ...$arguments], timeout: 1800, output: $output)->orFail('Building the site');
+        $builder = $this->builder($project, $output);
+        $this->compose($project, ['build', '--pull', '--builder', $builder, ...$arguments], timeout: 1800, output: $output)->orFail('Building the site');
         // What it's built on now: a newer runtime is built on at night.
         $this->builds->record($project->name(), $pinned);
     }
@@ -113,6 +121,26 @@ final readonly class Compose
     public function down(SiteProject $project, bool $volumes, ?\Closure $output = null): void
     {
         $this->compose($project, ['down', '--remove-orphans', ...($volumes ? ['--volumes'] : [])], timeout: 300, output: $output)->orFail('Stopping the site');
+    }
+
+    /**
+     * Removes the site's builders (its BuildKit containers and their caches): with the site, or those
+     * of an older BuildKit than BUILDKIT.
+     */
+    public function removeBuilders(SiteProject $project, ?string $except = null): void
+    {
+        $containers = $this->docker(['container', 'ls', '--all', '--filter', 'name=^buildx_buildkit_'.$this->builderPrefix($project), '--format', '{{.Names}}'], 60)->orFail('Listing the site\'s builders');
+
+        foreach (explode("\n", trim($containers->output)) as $container) {
+            // The filter is a prefix: another site's ("jane-blog" for "jane") isn't this one's.
+            if (1 !== preg_match('/^buildx_buildkit_'.preg_quote($this->builderPrefix($project), '/').'[0-9a-f]{12}0\z/', $container) || (null !== $except && 'buildx_buildkit_'.$except.'0' === $container)) {
+                continue;
+            }
+
+            $this->docker(['container', 'rm', '--force', '--volumes', $container], 120)->orFail('Removing the site\'s builder');
+            // Its cache: the volume buildx names after the container
+            $this->docker(['volume', 'rm', '--force', $container.'_state'], 60)->orFail('Removing the site\'s build cache');
+        }
     }
 
     /**
@@ -194,6 +222,39 @@ final readonly class Compose
         }
 
         return $containers;
+    }
+
+    /**
+     * The site's builder for BUILDKIT, created when it isn't there yet: its name says the image, so a
+     * new BuildKit makes new builders (and the older one goes).
+     *
+     * @param (\Closure(string): void)|null $output
+     */
+    private function builder(SiteProject $project, ?\Closure $output): string
+    {
+        $name = $this->builderPrefix($project).substr(hash('sha256', self::BUILDKIT), 0, 12);
+
+        if (!$this->docker(['buildx', 'inspect', $name], 60)->successful()) {
+            $this->docker(['buildx', 'create', '--name', $name, '--driver', 'docker-container', '--driver-opt', 'image='.self::BUILDKIT, '--bootstrap'], 600, $output)->orFail('Starting the site\'s builder');
+        }
+
+        $this->removeBuilders($project, except: $name);
+
+        return $name;
+    }
+
+    private function builderPrefix(SiteProject $project): string
+    {
+        return 'quire-'.$project->name().'-';
+    }
+
+    /**
+     * @param list<string>                  $arguments
+     * @param (\Closure(string): void)|null $output
+     */
+    private function docker(array $arguments, float $timeout, ?\Closure $output = null): ProcessResult
+    {
+        return $this->runner->run(['docker', ...$arguments], ['DOCKER_HOST' => $this->dockerHost], timeout: $timeout, output: $output);
     }
 
     /**

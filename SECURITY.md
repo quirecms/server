@@ -47,6 +47,7 @@ What Quire Server is built to hold, so you can tell a vulnerability from a limit
 **Defended in depth, not by design:**
 
 - The docker-proxy gives the agent what Docker gives it: whatever reaches it can start a privileged container. Sites have no route to it, and Composer runs where it can't reach it either; the agent itself is root-equivalent.
+- A site is built by a BuildKit of its own, which runs privileged (as BuildKit does), from an image pinned by digest: a site's Dockerfile runs in BuildKit's sandbox, and its build cache is its own. A flaw in BuildKit's sandbox is a flaw in this boundary.
 - An enabled extension of a site runs with that site's full trust: it's the site's code.
 
 **Out of scope:** a kernel exploit from inside a container (containers share the machine's kernel), a flaw in Docker itself, and anyone who is root on the machine or holds `server.env` (it holds the server's secrets and the backups' keys).
