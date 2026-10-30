@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Quire\Server\Site;
 
+use Quire\Server\Docker\PolicyContext;
 use Symfony\Component\Yaml\Tag\TaggedValue;
 use Symfony\Component\Yaml\Yaml;
 
@@ -48,9 +49,19 @@ final readonly class SiteFiles
     }
 
     /**
-     * @param list<Domain> $domains The primary one first
+     * The image a site's web and worker containers run, built from its folder: named in its own
+     * namespace, which no other project's can be.
      */
-    public function writeOverride(string $directory, SiteName $site, array $domains, string $databaseMode): void
+    public static function image(string $project): string
+    {
+        return PolicyContext::IMAGES.$project.'/php-prod';
+    }
+
+    /**
+     * @param list<Domain> $domains The primary one first
+     * @param string|null  $project Its Compose project (its own for an adopted site), the site's name if null
+     */
+    public function writeOverride(string $directory, SiteName $site, array $domains, string $databaseMode, ?string $project = null): void
     {
         if ([] === $domains) {
             throw new \InvalidArgumentException('A site needs at least one domain.');
@@ -60,6 +71,7 @@ final readonly class SiteFiles
         $primary = $hosts[0];
         $hardening = ['security_opt' => ['no-new-privileges:true'], 'cap_drop' => ['ALL']];
         $php = [
+            'image' => self::image($project ?? $site->value),
             // Only the front door reaches the site.
             'ports' => new TaggedValue('reset', null),
             'environment' => [
@@ -76,6 +88,7 @@ final readonly class SiteFiles
             'cap_add' => ['NET_BIND_SERVICE'],
         ] + $hardening;
         $worker = [
+            'image' => self::image($project ?? $site->value),
             'environment' => ['DEFAULT_URI' => 'https://'.$primary],
             'labels' => ['com.quirecms.server.site' => $site->value],
             'networks' => ['default' => null],

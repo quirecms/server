@@ -10,6 +10,9 @@ namespace Quire\Server\Docker;
  */
 final readonly class PolicyContext
 {
+    /** Where sites' images are named: "quire-sites/<project>/<name>" */
+    public const string IMAGES = 'quire-sites/';
+
     public string $directory;
 
     /**

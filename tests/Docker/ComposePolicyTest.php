@@ -70,6 +70,10 @@ final class ComposePolicyTest extends TestCase
         yield 'Docker\'s default network, by its other name' => [['services' => ['php' => ['network_mode' => 'default']]], '"network_mode: default"'];
         yield 'a service the site doesn\'t have' => [['services' => ['php' => ['network_mode' => 'service:quire-server-agent']]], '"network_mode: service:quire-server-agent"'];
         yield 'its own network, in a loop' => [['services' => ['php' => ['network_mode' => 'service:php']]], '"network_mode: service:php"'];
+        yield 'another site\'s image, built' => [['services' => ['php' => ['image' => 'quire-sites/blog/php-prod']]], 'the image it builds is named "quire-sites/blog/php-prod"'];
+        yield 'an image whose name a site prefix could share' => [['services' => ['php' => ['image' => 'jane-php-prod']]], 'a site\'s images are named "quire-sites/jane/<name>"'];
+        yield 'another site\'s image, as a build tag' => [['services' => ['php' => ['build' => ['tags' => ['quire-sites/blog/php-prod:latest']]]]], 'its build is tagged "quire-sites/blog/php-prod:latest"'];
+        yield 'another site\'s image, run' => [['services' => ['worker' => ['build' => null, 'image' => 'quire-sites/blog/php-prod']]], '"image: quire-sites/blog/php-prod" is another site\'s'];
         yield 'host IPC' => [['services' => ['php' => ['ipc' => 'host']]], '"ipc: host"'];
         yield 'host user namespace' => [['services' => ['php' => ['userns_mode' => 'host']]], '"userns_mode: host"'];
         yield 'host cgroup' => [['services' => ['php' => ['cgroup' => 'host']]], '"cgroup: host"'];
@@ -213,7 +217,7 @@ final class ComposePolicyTest extends TestCase
 
     public function testHarmlessValuesOfForbiddenSettingsPass(): void
     {
-        $config = array_replace_recursive($this->site(), ['services' => ['php' => ['privileged' => false, 'cap_add' => ['NET_BIND_SERVICE', 'cap_net_bind_service'], 'devices' => [], 'security_opt' => ['no-new-privileges:true'], 'cap_drop' => ['ALL'], 'oom_score_adj' => 100, 'logging' => ['driver' => 'json-file'], 'x-custom' => 'anything'], 'worker' => ['network_mode' => 'service:php']]]);
+        $config = array_replace_recursive($this->site(), ['services' => ['php' => ['privileged' => false, 'cap_add' => ['NET_BIND_SERVICE', 'cap_net_bind_service'], 'devices' => [], 'security_opt' => ['no-new-privileges:true'], 'cap_drop' => ['ALL'], 'oom_score_adj' => 100, 'logging' => ['driver' => 'json-file'], 'x-custom' => 'anything', 'build' => ['tags' => ['quire-sites/jane/php-prod:before-update']]], 'worker' => ['network_mode' => 'service:php']]]);
 
         self::assertSame([], $this->violations($config));
     }
@@ -251,7 +255,7 @@ final class ComposePolicyTest extends TestCase
             'services' => [
                 'php' => [
                     'build' => $build,
-                    'image' => 'jane-php-prod',
+                    'image' => 'quire-sites/jane/php-prod',
                     'command' => null,
                     'entrypoint' => null,
                     'environment' => ['SERVER_NAME' => 'http://jane.example, http://www.jane.example, php:80', 'APP_SECRET' => 'x'],
@@ -270,7 +274,7 @@ final class ComposePolicyTest extends TestCase
                 ],
                 'worker' => [
                     'build' => $build,
-                    'image' => 'jane-php-prod',
+                    'image' => 'quire-sites/jane/php-prod',
                     'command' => ['php', 'bin/console', 'messenger:consume', 'quire'],
                     'depends_on' => ['php' => ['condition' => 'service_healthy', 'required' => true]],
                     'healthcheck' => ['test' => ['CMD', 'php', '-r', 'exit(0);']],

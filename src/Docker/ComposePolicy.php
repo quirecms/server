@@ -251,7 +251,42 @@ final readonly class ComposePolicy
             array_push($violations, ...$this->build($this->map($service['build']), $context));
         }
 
+        array_push($violations, ...$this->images($service, $context));
+
         array_push($violations, ...$this->attachments($name, $this->map($service['networks'] ?? []), $context));
+
+        return $violations;
+    }
+
+    /**
+     * The names of the images a service builds are the site's own: "quire-sites/<project>/…", which no
+     * other project's can be (project names have no "/"). Another site's name would have its next start
+     * (an undo, a rollback, a new domain) run this site's code with its secrets and domains. And no
+     * service runs an image of another site's.
+     *
+     * @param array<array-key, mixed> $service
+     *
+     * @return list<string>
+     */
+    private function images(array $service, PolicyContext $context): array
+    {
+        $violations = [];
+        $image = $this->string($service['image'] ?? '');
+        $own = '#^'.preg_quote(PolicyContext::IMAGES.$context->project.'/', '#').'[a-z0-9]([a-z0-9._-]{0,126})(:[A-Za-z0-9_][A-Za-z0-9._-]{0,127})?\z#';
+
+        if (isset($service['build'])) {
+            if (1 !== preg_match($own, $image)) {
+                $violations[] = \sprintf('the image it builds is named "%s": a site\'s images are named "%s%s/<name>".', $image, PolicyContext::IMAGES, $context->project);
+            }
+
+            foreach ($this->list($this->map($service['build'])['tags'] ?? []) as $tag) {
+                if (1 !== preg_match($own, $this->string($tag))) {
+                    $violations[] = \sprintf('its build is tagged "%s": a site\'s images are named "%s%s/<name>".', $this->string($tag), PolicyContext::IMAGES, $context->project);
+                }
+            }
+        } elseif (str_starts_with($image, PolicyContext::IMAGES) && 1 !== preg_match($own, $image)) {
+            $violations[] = \sprintf('"image: %s" is another site\'s.', $image);
+        }
 
         return $violations;
     }

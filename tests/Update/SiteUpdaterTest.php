@@ -66,7 +66,7 @@ final class SiteUpdaterTest extends RegistryTestCase
     private string $remote = self::COMMIT_2;
 
     /** @var array<string, string> Image name => ID */
-    private array $tags = ['jane-php-prod' => self::OLD];
+    private array $tags = ['quire-sites/jane/php-prod' => self::OLD];
 
     /** The image the site's containers run */
     private string $running = self::OLD;
@@ -112,7 +112,7 @@ final class SiteUpdaterTest extends RegistryTestCase
                     return ScriptedRunner::failed($command, "composer install: your requirements could not be resolved\n");
                 }
 
-                $this->tags['jane-php-prod'] = self::NEW;
+                $this->tags['quire-sites/jane/php-prod'] = self::NEW;
 
                 return ScriptedRunner::ok($command);
             },
@@ -121,7 +121,7 @@ final class SiteUpdaterTest extends RegistryTestCase
                     return ScriptedRunner::failed($command, "container jane-php-1 is unhealthy\n");
                 }
 
-                $this->running = $this->tags['jane-php-prod'];
+                $this->running = $this->tags['quire-sites/jane/php-prod'];
                 // Migrations run as it starts.
                 $this->executed = max($this->executed, $this->migrations[$this->running]);
 
@@ -184,7 +184,7 @@ final class SiteUpdaterTest extends RegistryTestCase
 
         self::assertSame(['Keeping its files as they are, to put them back', 'Changing its files', 'Checking and building the new version (a few minutes; it keeps running meanwhile)', 'Backing it up', 'Starting the new version (a few seconds offline)', 'Checking it'], $said);
         self::assertSame(self::NEW, $this->running);
-        self::assertSame(self::OLD, $this->tags['jane-php-prod:before-update'], 'The image it ran keeps a name: nothing prunes it while the update can be undone.');
+        self::assertSame(self::OLD, $this->tags['quire-sites/jane/php-prod:before-update'], 'The image it ran keeps a name: nothing prunes it while the update can be undone.');
         $site = $this->paths->site($this->name);
         self::assertStringContainsString('v0.1.1', (string) file_get_contents($site.'/composer.lock'));
         self::assertSame('FROM 0.1.1', file_get_contents($site.'/Dockerfile'));
@@ -244,7 +244,7 @@ final class SiteUpdaterTest extends RegistryTestCase
         }
 
         self::assertSame($before, [(string) file_get_contents($site.'/composer.lock'), (string) file_get_contents($site.'/Dockerfile')], 'Its files as they were.');
-        self::assertSame(self::OLD, $this->tags['jane-php-prod']);
+        self::assertSame(self::OLD, $this->tags['quire-sites/jane/php-prod']);
         self::assertNotContains('docker compose up', $this->runner->keys(), 'Never stopped.');
         self::assertNotContains('docker compose cp', $this->runner->keys());
         self::assertNull($this->updates->undoable($this->name));
@@ -566,8 +566,8 @@ final class SiteUpdaterTest extends RegistryTestCase
             'name' => 'jane',
             'networks' => ['default' => ['name' => 'jane_default'], 'quire-edge' => ['name' => 'quire-edge', 'external' => true], 'quire-data' => ['name' => 'quire-data', 'external' => true]],
             'services' => [
-                'php' => ['image' => 'jane-php-prod', 'build' => $build, 'networks' => ['default' => null, 'quire-edge' => ['aliases' => ['jane.example']], 'quire-data' => null]],
-                'worker' => ['image' => 'jane-php-prod', 'build' => $build, 'networks' => ['default' => null, 'quire-data' => null]],
+                'php' => ['image' => 'quire-sites/jane/php-prod', 'build' => $build, 'networks' => ['default' => null, 'quire-edge' => ['aliases' => ['jane.example']], 'quire-data' => null]],
+                'worker' => ['image' => 'quire-sites/jane/php-prod', 'build' => $build, 'networks' => ['default' => null, 'quire-data' => null]],
             ],
         ];
     }

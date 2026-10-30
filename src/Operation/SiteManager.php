@@ -361,7 +361,7 @@ final readonly class SiteManager
                 $step('Changing its settings (a copy of them is kept)');
                 $this->files->write($before, $env->content(), 0o600);
                 $files = $env->get('COMPOSE_FILE') ?? 'compose.yaml:compose.prod.yaml';
-                $this->files->writeOverride($directory, $name, $domains, Site::OWN_DATABASE);
+                $this->files->writeOverride($directory, $name, $domains, Site::OWN_DATABASE, $project);
                 $this->files->write($envPath, $env->with([
                     'COMPOSE_FILE' => str_contains($files, SiteFiles::OVERRIDE) ? $files : $files.':'.SiteFiles::OVERRIDE,
                     'COMPOSE_PROJECT_NAME' => $project,
