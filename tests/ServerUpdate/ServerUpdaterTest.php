@@ -261,6 +261,17 @@ final class ServerUpdaterTest extends RegistryTestCase
         self::assertNotContains('pg_restore', array_merge(...array_map(static fn (array $run): array => $run['command'], $this->runner->runs)), 'Its migrations didn\'t run: the database stays.');
         self::assertSame('failed', $this->operations->latest()[0]['status']);
         self::assertContains('It runs as it was (0.1.1)', $this->operations->lines($this->operations->latest()[0]['id']));
+        $other = $this->otherConnection();
+
+        try {
+            $ran = false;
+            new SiteLock($other)->run(new SiteName('jane'), static function () use (&$ran): void {
+                $ran = true;
+            });
+            self::assertTrue($ran, 'The server\'s lock is let go: sites can be worked on again.');
+        } finally {
+            $other->close();
+        }
         self::assertNull($this->updater('0.1.1')->undoable(), 'Nothing to undo.');
         self::assertSame([], glob($this->root.'/backups/server/*'), 'Its backup was the server as it runs: not kept.');
     }

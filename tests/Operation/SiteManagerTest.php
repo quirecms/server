@@ -161,11 +161,36 @@ final class SiteManagerTest extends RegistryTestCase
         self::assertStringNotContainsString('Sup3rSecretAdminPw', $log, 'The admin\'s password never reaches the log.');
         self::assertStringContainsString('[secret]', $log);
         self::assertStringNotContainsString($this->envValue($env, 'QUIRE_DATABASE_PASSWORD'), $log);
+        self::assertStringNotContainsString($this->envValue($env, 'APP_SECRET'), $log);
+    }
+
+    public function testAFailedInstallUndoesEverything(): void
+    {
+        $this->script['docker compose exec'] = static fn (array $command): ProcessResult => 'quire:install' === ($command[12] ?? '')
+            ? new ProcessResult(self::strings($command), 1, '', "The database refused the connection.\n")
+            : self::ok($command, '{"contract": 1}');
+
+        try {
+            $this->manager()->add($this->request(), 'cli', 'darko', static fn (): null => null);
+            self::fail('A site that didn\'t install was added.');
+        } catch (\RuntimeException $e) {
+            self::assertStringContainsString('The database refused the connection', $e->getMessage());
+        }
+
+        $this->assertNothingLeft();
+        self::assertSame('failed', $this->operations->latest()[0]['status']);
     }
 
     public function testAFailedBuildUndoesEverything(): void
     {
         $this->script['docker compose build'] = static fn (array $command): ProcessResult => new ProcessResult(self::strings($command), 1, '', "no space left on device\n");
+        // Undone last first: its containers stopped while its folder (their Compose files) and database are there
+        $at = [];
+        $this->script['docker compose down'] = function (array $command) use (&$at): ProcessResult {
+            $at = [is_file($this->paths->site($this->name).'/compose.yaml'), $this->databases->exists($this->name)];
+
+            return self::ok($command, '');
+        };
 
         try {
             $this->manager()->add($this->request(), 'cli', 'darko', static fn (): null => null);
@@ -176,6 +201,7 @@ final class SiteManagerTest extends RegistryTestCase
 
         $this->assertNothingLeft();
         self::assertContains('down', array_map(static fn (array $command): string => $command[8] ?? '', $this->commands), 'Its containers and volumes removed.');
+        self::assertSame([true, true], $at, 'Last first: stopped before its folder and database went.');
         self::assertSame('failed', $this->operations->latest()[0]['status']);
 
         // Its name and domains are free to try again.
@@ -218,6 +244,9 @@ final class SiteManagerTest extends RegistryTestCase
         self::assertNotContains('quire:install', $consoles);
         self::assertSame([$this->name->value, $this->name->value], array_values($this->frontDoor->all()));
         self::assertSame(['site.restore_as_new', 'succeeded'], [$this->operations->latest()[0]['action'], $this->operations->latest()[0]['status']]);
+        // Checked, built and started with the server's override, like any site
+        self::assertSame(['config', 'build', 'config', 'up'], \array_slice(array_values(array_filter(array_map(static fn (array $command): string => $command[8] ?? '', $this->commands()), static fn (string $sub): bool => \in_array($sub, ['config', 'build', 'up'], true))), 0, 4));
+        self::assertStringContainsString('quire-edge', (string) file_get_contents($directory.'/compose.server.yaml'));
     }
 
     public function testARestoreAsANewSiteThatFailsUndoesEverything(): void
@@ -260,6 +289,16 @@ final class SiteManagerTest extends RegistryTestCase
         $git = new SiteGit($this->connection, $this->schema)->of($this->name);
         self::assertSame(['https://example.com/jane.git', 'main', $commit, true], [$git['repository']->url ?? null, $git['repository']->branch ?? null, $git['deployed'] ?? null, $git['poll'] ?? null]);
         self::assertContains('quire:restore', array_map(static fn (array $command): string => $command[12] ?? '', $this->commands));
+
+        // Removed, its deploy key (which reads its repository) and its Git settings go with it.
+        new Filesystem()->dumpFile($this->paths->keys($this->name).'/id_ed25519', 'its key');
+        $this->manager()->remove($this->name, false, 'cli', 'darko', static fn (): null => null);
+        self::assertDirectoryDoesNotExist($this->paths->keys($this->name));
+        self::assertNull(new SiteGit($this->connection, $this->schema)->of($this->name));
+        self::assertSame(['site.remove', 'succeeded'], [$this->operations->latest()[0]['action'], $this->operations->latest()[0]['status']]);
+
+        $this->expectExceptionMessageIsOrContains('There\'s no site named');
+        $this->manager()->remove($this->name, false, 'cli', 'darko', static fn (): null => null);
     }
 
     public function testOnlyASitesFolderIsRestoredAsOne(): void

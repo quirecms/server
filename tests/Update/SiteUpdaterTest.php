@@ -121,6 +121,9 @@ final class SiteUpdaterTest extends RegistryTestCase
                 $this->intentAtBuild = is_file($this->intentFile());
 
                 if ($this->buildFails) {
+                    // As a build can: the image's name moved to what it got done before it failed
+                    $this->tags['quire-sites/jane/php-prod'] = 'sha256:5555555555555555555555555555555555555555555555555555555555555555';
+
                     return ScriptedRunner::failed($command, "composer install: your requirements could not be resolved\n");
                 }
 
@@ -215,6 +218,7 @@ final class SiteUpdaterTest extends RegistryTestCase
         $site = $this->paths->site($this->name);
         self::assertStringContainsString('v0.1.1', (string) file_get_contents($site.'/composer.lock'));
         self::assertSame('FROM 0.1.1', file_get_contents($site.'/Dockerfile'));
+        self::assertSame('{"require": {"quire/core": "^0.1.1"}}', file_get_contents($site.'/composer.json'), 'Its composer.json goes with its lock.');
 
         // Built while the old version runs; backed up just before it's stopped; checked after.
         $order = array_values(array_filter($this->runner->keys(), static fn (string $key): bool => \in_array($key, ['docker compose build', 'docker compose up', 'docker compose cp'], true)));
@@ -271,7 +275,8 @@ final class SiteUpdaterTest extends RegistryTestCase
         }
 
         self::assertSame($before, [(string) file_get_contents($site.'/composer.lock'), (string) file_get_contents($site.'/Dockerfile')], 'Its files as they were.');
-        self::assertSame(self::OLD, $this->tags['quire-sites/jane/php-prod']);
+        self::assertSame(self::OLD, $this->tags['quire-sites/jane/php-prod'], 'Its image\'s name back on the image it runs: its next start isn\'t what the failed build left.');
+        self::assertSame('{"require": {"quire/core": "^0.1"}}', file_get_contents($site.'/composer.json'));
         self::assertNotContains('docker compose up', $this->runner->keys(), 'Never stopped.');
         self::assertNotContains('docker compose cp', $this->runner->keys());
         self::assertNull($this->updates->undoable($this->name));
@@ -291,6 +296,9 @@ final class SiteUpdaterTest extends RegistryTestCase
         }
 
         self::assertSame(self::OLD, $this->running, 'The image it had runs again.');
+        $ups = array_keys(array_filter($this->runner->keys(), static fn (string $key): bool => 'docker compose up' === $key));
+        $checks = array_keys(array_filter($this->runner->runs, static fn (array $run): bool => \in_array('-r', $run['command'], true)));
+        self::assertGreaterThan(end($ups), end($checks), 'And it\'s checked once rolled back.');
         self::assertCount(1, $this->restored, 'Its database as before the update: the new migrations ran.');
         self::assertStringContainsString('/backups/jane/update-', $this->restored[0]);
         self::assertSame('FROM 0.1.0', file_get_contents($this->paths->site($this->name).'/Dockerfile'));
@@ -445,6 +453,9 @@ final class SiteUpdaterTest extends RegistryTestCase
         self::assertSame([], $this->restored, 'Code only: nothing lost.');
         self::assertSame('FROM 0.1.0', file_get_contents($this->paths->site($this->name).'/Dockerfile'));
         self::assertStringContainsString('v0.1.0', (string) file_get_contents($this->paths->site($this->name).'/composer.lock'));
+        self::assertSame('{"require": {"quire/core": "^0.1"}}', file_get_contents($this->paths->site($this->name).'/composer.json'), 'With its lock, as it was.');
+        $keys = $this->runner->keys();
+        self::assertSame('docker compose exec', array_last($keys), 'Checked after it started again.');
         self::assertNull($this->updates->undoable($this->name), 'Undone once.');
         self::assertSame(['site.undo', 'succeeded'], [$this->operations->latest()[0]['action'], $this->operations->latest()[0]['status']]);
     }
