@@ -92,6 +92,24 @@ final readonly class DatabaseContainers
     }
 
     /**
+     * The major of the PostgreSQL tools in each site's web container (its runtime's pg_dump, which
+     * quire:backup runs), by container name: null when it has none.
+     *
+     * @return array<string, ?int>
+     */
+    public function siteTools(): array
+    {
+        $tools = [];
+
+        foreach ($this->lines($this->docker(['ps', '--format', '{{.Names}}', '--filter', 'network='.self::NETWORK, '--filter', 'label=com.docker.compose.service=php'])->orFail('Listing the sites that use the server\'s PostgreSQL')) as $name) {
+            $version = $this->docker(['exec', $name, 'pg_dump', '--version'], 60);
+            $tools[$name] = $version->successful() && 1 === preg_match('/\(PostgreSQL\) (\d+)/', $version->output, $match) ? (int) $match[1] : null;
+        }
+
+        return $tools;
+    }
+
+    /**
      * @param list<string> $containers
      */
     public function stop(array $containers): void

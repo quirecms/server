@@ -183,9 +183,9 @@ quire-server database:upgrade             # to the newest one this release runs 
 
 It runs in the updater, and:
 
-1. **Checks first, changing nothing:** this release runs the new major (its image pinned by digest, like every other), there's room on the server for a copy, and every database can be copied (PostgreSQL's own `postgres` database must be empty). It gets the new major's image.
+1. **Checks first, changing nothing:** this release runs the new major (its image pinned by digest, like every other), there's room on the server for a copy, and every database can be copied (PostgreSQL's own `postgres` database must be empty), and every site's runtime has PostgreSQL tools of the new major at least: sites back up with their runtime's `pg_dump`, which refuses a newer server, so their backups would fail after it. It gets the new major's image.
 2. **Backs every site and the server up off the server**, when that's set up (`--no-backup` to skip it).
-3. **Waits for operations on sites to finish, stops the agent and every container that uses the server's PostgreSQL.** Visitors get the front door's "back in a moment" page. Nothing else may be connected, or it stops there: what it wrote would be lost.
+3. **Waits for operations on sites to finish, stops the agent and every container that uses the server's PostgreSQL.** Visitors get the front door's "back in a moment" page. Nothing else may be connected, or it stops there: what it wrote would be lost. Then the databases are **closed to everyone but PostgreSQL's superuser** until it's done (their connection limit: 0), so no site writes to the old major while it's copied.
 4. **Starts the new major beside the old one,** on the same volume, in a folder of its own (`/var/lib/postgresql/19`; the old one's data is never touched), and **copies the roles** (with their passwords' hashes, so sites keep theirs) **and every database** into it with the new major's own `pg_dump` and `pg_restore`.
 5. **Checks the copy against the original:** the same roles, rights and settings; in each database the same tables (with their exact row counts), indexes, sequences, functions, constraints, triggers and policies. Anything different stops it.
 6. **Switches:** `server.env` names the new major (`COMPOSE_FILE` gets `database/postgres-19.yaml`), PostgreSQL starts on it, then the sites and the agent.

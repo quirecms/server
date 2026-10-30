@@ -30,6 +30,9 @@ use Quire\Server\ServerUpdate\ServerStack;
  */
 final readonly class DatabaseUpgrader
 {
+    /** The connection limit that marks a database closed for the upgrade */
+    private const int FENCED = 0;
+
     private const int ROLLBACK_WAIT = 300;
 
     /** Room for the copy beside the old data: its size, a quarter more, and a GiB for its write-ahead log */
@@ -165,6 +168,13 @@ final readonly class DatabaseUpgrader
 
             $image = $images->image($to);
             $plan = $this->plan();
+            // pg_dump refuses a newer server than itself: every site's backup would fail after it.
+            $older = array_filter($this->containers->siteTools(), static fn (?int $major): bool => null !== $major && $major < $to);
+
+            if ([] !== $older) {
+                throw new \DomainException(\sprintf('Sites back up with the PostgreSQL tools of their runtime, which are older than %d in %s: their backups would fail after the upgrade. Upgrade once Quire\'s runtime ships PostgreSQL %1$d\'s tools and the sites are built on it (their automatic updates rebuild them).', $to, implode(', ', array_map(static fn (string $site, ?int $major): string => \sprintf('%s (%d)', $site, $major), array_keys($older), $older))));
+            }
+
             $log(\sprintf('PostgreSQL %s runs; upgrading it to %d (%d databases, %s)', $version, $to, \count($plan['databases']), $this->bytes($plan['bytes'])));
             $log(\sprintf('Getting PostgreSQL %d', $to));
             $this->stack->pull($image);
@@ -210,6 +220,8 @@ final readonly class DatabaseUpgrader
             $log(\sprintf('Stopping the sites that use it (%d containers): visitors see "unavailable" until they\'re back', \count($upgrade->stopped)));
             $this->containers->stop($upgrade->stopped);
             $this->checkQuiet();
+            $log('Closing its databases to the sites until it\'s done');
+            $this->fence($plan['databases']);
 
             if (\in_array($to, $this->containers->majorsOnVolume($image, $volume), true)) {
                 $log(\sprintf('Removing PostgreSQL %d\'s data from an earlier attempt', $to));
@@ -448,6 +460,36 @@ final readonly class DatabaseUpgrader
     /**
      * @throws \RuntimeException When anything but this updater is still connected to the old major
      */
+    /**
+     * Nothing but PostgreSQL's superuser (the copy) connects to the databases while they're copied: a
+     * site the upgrade didn't stop would write to the old major, and its writes be lost (counting rows
+     * can't see an update). A database's connection limit doesn't apply to superusers; 0 marks it
+     * closed, and what's connected already is ended.
+     *
+     * @param list<string> $databases
+     */
+    private function fence(array $databases): void
+    {
+        foreach ($databases as $database) {
+            $this->query('postgres', \sprintf('ALTER DATABASE %s CONNECTION LIMIT %d', $database, self::FENCED));
+        }
+
+        $this->query('postgres', "SELECT count(pg_terminate_backend(a.pid)) FROM pg_stat_activity a JOIN pg_roles r ON r.rolname = a.usename WHERE a.backend_type = 'client backend' AND NOT r.rolsuper");
+    }
+
+    /**
+     * Opens the databases of the major that runs again (those an upgrade closed): when it's done, put
+     * back, or undone, whichever major runs then.
+     */
+    private function unfence(): void
+    {
+        foreach (explode("\n", $this->query('postgres', \sprintf("SELECT datname FROM pg_database WHERE datconnlimit = %d AND datname <> 'postgres'", self::FENCED))) as $database) {
+            if (1 === preg_match('/^[a-z_][a-z0-9_]{0,62}\z/', trim($database))) {
+                $this->query('postgres', \sprintf('ALTER DATABASE %s CONNECTION LIMIT -1', trim($database)));
+            }
+        }
+    }
+
     private function checkQuiet(): void
     {
         // This updater's own connection, which holds the server's lock
@@ -521,6 +563,7 @@ final readonly class DatabaseUpgrader
      */
     private function restart(DatabaseUpgrade $upgrade, \Closure $log): void
     {
+        $this->unfence();
         $log('Starting the sites again');
         $this->containers->start($upgrade->stopped);
         $log('Starting the agent');

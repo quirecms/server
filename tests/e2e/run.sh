@@ -256,6 +256,14 @@ digest=$(inside "docker image inspect postgres:$next --format '{{index .RepoDige
 inside "printf 'services:\\n  database:\\n    image: postgres:%s@%s\\n' '$next' '$digest' > /srv/quire/server/database/postgres-$major.yaml"
 check "the release runs $major too, and says so" "inside 'quire-server database:upgrade --check' | grep -q -- '--to=$major'"
 
+check "a site whose runtime has older PostgreSQL tools isn't upgraded from (its backups would fail)" "inside 'quire-server database:upgrade --yes 2>&1' | tr -s ' \\n' ' ' | grep -q 'their backups would fail' && pg 'SHOW server_version' | grep -q '^18\\.'"
+# Quire's runtime ships PostgreSQL 18's tools today: from here on, the site stands for one built on a
+# runtime with $major's (only what it says its version is changes; nothing below backs it up on $major)
+printf '#!/bin/sh\n[ "$1" = --version ] && echo "pg_dump (PostgreSQL) %s.0" && exit 0\nexec /usr/local/bin/pg_dump.real "$@"\n' "$major" > "$logs"/pg_dump
+docker cp "$logs"/pg_dump "$dind:/root/pg_dump"
+inside 'docker exec -u root jane-php-1 mv /usr/local/bin/pg_dump /usr/local/bin/pg_dump.real && docker cp /root/pg_dump jane-php-1:/usr/local/bin/pg_dump && docker exec -u root jane-php-1 chmod 755 /usr/local/bin/pg_dump'
+check "a site built on a runtime with $major's tools says so" "inside 'docker exec jane-php-1 pg_dump --version' | grep -q \"PostgreSQL) $major\""
+
 pg 'CREATE TABLE stray (id int)' >/dev/null
 check 'a table in PostgreSQL'\''s own database is refused, nothing changed' "inside 'quire-server database:upgrade --yes 2>&1' | grep -q 'holds tables' && title 'Jane before' && pg 'SHOW server_version' | grep -q '^18\\.'"
 pg 'DROP TABLE stray' >/dev/null

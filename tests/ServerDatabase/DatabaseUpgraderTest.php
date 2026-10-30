@@ -48,6 +48,12 @@ final class DatabaseUpgraderTest extends RegistryTestCase
     /** @var array<string, bool> Sites' containers on PostgreSQL's network, and whether each runs */
     private array $sites = [self::JANE_PHP => true, self::JANE_WORKER => true];
 
+    /** The major of the PostgreSQL tools in the sites' runtime */
+    private int $siteTools = 19;
+
+    /** @var array<string, true> The databases closed to all but superusers */
+    private array $closed = [];
+
     /** The major started beside the server's, if any */
     private ?int $beside = null;
 
@@ -105,6 +111,9 @@ final class DatabaseUpgraderTest extends RegistryTestCase
                 default => throw new \LogicException('Unexpected: '.implode(' ', $command)),
             },
             'docker ps --all' => static fn (array $command): ProcessResult => ScriptedRunner::ok($command, "dddddddddddd\n"),
+            // The sites' web containers, and their runtime's pg_dump
+            'docker ps --format' => static fn (array $command): ProcessResult => ScriptedRunner::ok($command, "jane-php-1\n"),
+            'docker exec jane-php-1' => fn (array $command): ProcessResult => ScriptedRunner::ok($command, \sprintf("pg_dump (PostgreSQL) %d.2\n", $this->siteTools)),
             'docker ps --filter' => fn (array $command): ProcessResult => ScriptedRunner::ok($command, implode('', array_map(
                 static fn (string $id): string => $id.' jane-'.(self::JANE_PHP === $id ? 'php' : 'worker')."-1 jane\n",
                 array_keys(array_filter($this->sites)),
@@ -155,6 +164,7 @@ final class DatabaseUpgraderTest extends RegistryTestCase
             },
             'docker exec --interactive' => function (array $command): ProcessResult {
                 self::assertSame([DatabaseContainers::BESIDE, 'sh', '-s', '--', 'quire_server', 'site_jane'], \array_slice($command, 3));
+                self::assertSame(['quire_server', 'site_jane'], array_keys($this->closed), 'No site connects while it\'s copied.');
                 $this->copied = true;
 
                 return ScriptedRunner::ok($command, "Copying the roles\nCopying quire_server\nCopying site_jane\n");
@@ -206,6 +216,7 @@ final class DatabaseUpgraderTest extends RegistryTestCase
         $operation = $this->operations->latest()[0];
         self::assertSame(['server.database-upgrade', 'succeeded', 'darko'], [$operation['action'], $operation['status'], $operation['requested_by']]);
         self::assertSame($this->said, $this->operations->lines($operation['id']));
+        self::assertSame([], $this->closed, 'Open to the sites again.');
     }
 
     public function testEverySiteIsBackedUpOffTheServerFirstWhenThatIsSetUp(): void
@@ -360,6 +371,21 @@ final class DatabaseUpgraderTest extends RegistryTestCase
 
         self::assertSame(19, $this->postgres);
         self::assertSame(DatabaseUpgrade::DONE, $this->upgrader()->latest()?->state);
+    }
+
+    public function testSitesWhoseToolsAreOlderAreNotUpgradedFrom(): void
+    {
+        $this->siteTools = 18;
+
+        try {
+            $this->upgrader()->upgrade(19, 'cli', 'darko', $this->say(...));
+            self::fail('It upgraded.');
+        } catch (\DomainException $e) {
+            self::assertStringContainsString('older than 19 in jane-php-1 (18): their backups would fail', $e->getMessage());
+        }
+
+        self::assertSame(18, $this->postgres, 'Nothing changed.');
+        self::assertSame([self::JANE_PHP => true, self::JANE_WORKER => true], $this->sites);
     }
 
     public function testAnUpgradeCutShortIsPutBack(): void
@@ -531,6 +557,22 @@ final class DatabaseUpgraderTest extends RegistryTestCase
     /**
      * What the server's PostgreSQL answers.
      */
+    /**
+     * "ALTER DATABASE <name> CONNECTION LIMIT <n>": 0 closes it to all but superusers.
+     */
+    private function connectionLimit(string $sql): string
+    {
+        [, , $database, , , $limit] = explode(' ', $sql) + [5 => ''];
+
+        if ('0' === $limit) {
+            $this->closed[$database] = true;
+        } else {
+            unset($this->closed[$database]);
+        }
+
+        return "ALTER DATABASE\n";
+    }
+
     private function server(string $sql): string
     {
         return match (true) {
@@ -538,6 +580,9 @@ final class DatabaseUpgraderTest extends RegistryTestCase
             DatabaseCheck::DATABASES === $sql => "quire_server|true\nsite_jane|true\n",
             DatabaseCheck::POSTGRES_DATABASE === $sql => $this->postgresTables."\n",
             DatabaseCheck::SIZE === $sql => "73400320\n",
+            str_starts_with($sql, 'ALTER DATABASE') => $this->connectionLimit($sql),
+            str_contains($sql, 'pg_terminate_backend') => "0\n",
+            str_contains($sql, 'datconnlimit') => implode("\n", array_keys($this->closed))."\n",
             str_contains($sql, 'pg_stat_activity') => $this->stillConnected."\n",
             default => throw new \LogicException('Unexpected query: '.$sql),
         };
