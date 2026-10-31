@@ -341,8 +341,13 @@ final readonly class SiteManager
             $env = EnvFile::read($envPath);
             $project = $env->get('COMPOSE_PROJECT_NAME') ?? $name->value;
 
-            if (1 !== preg_match('/^[a-z0-9][a-z0-9_-]{0,62}\z/', $project)) {
-                throw new \DomainException(\sprintf('Its Compose project name "%s" isn\'t one this server can manage.', SiteName::printable($project)));
+            // Docker's objects are the project's by its name and label: a site's project follows a site
+            // name's rules (no "_", nothing of the server's, e.g. "quire-server", whose containers
+            // and PostgreSQL's data it would own), and is no other site's.
+            try {
+                new SiteName($project);
+            } catch (\InvalidArgumentException $e) {
+                throw new \DomainException(\sprintf('Its Compose project name (COMPOSE_PROJECT_NAME in prod.env) isn\'t one this server can manage: %s', $e->getMessage()), $e->getCode(), previous: $e);
             }
 
             $domains = [] === $domains ? self::domainsOf($env->get('SERVER_NAME') ?? '') : $domains;

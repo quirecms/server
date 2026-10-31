@@ -79,6 +79,8 @@ A site installed from the skeleton on its own (as in [the production docs](https
 
 If anything fails, it's put back as it was, ports included. Its domains are those of its `SERVER_NAME`, or pass them: `--domain=jane.example --domain=www.jane.example`.
 
+Its Compose project (its `COMPOSE_PROJECT_NAME`, or its folder's name) must follow the rules of a site's name (lowercase letters, digits and single dashes, nothing starting with `quire`) and be no other site's: Docker's containers, volumes and networks belong to a project by its name. Any other is refused before anything changes; such a site's project must be renamed first (its volumes carry the project's name, so their data has to be copied to the new ones).
+
 ## Commands
 
 ```bash
@@ -262,7 +264,7 @@ The agent can act on Docker, and that's root on the machine, so the server is bu
   - **Privileges:** privileged containers, added capabilities, host devices;
   - **The host itself:** the host's network, process, IPC or user namespaces, any network but the site's own (`network_mode` names none but another of its services), other runtimes, mounts of host paths, other projects' volumes or networks, files from outside the site's folder;
   - **Exposure:** published ports;
-  - **Names that belong to others:** another site's domain or the database's name on a shared network, fixed container names;
+  - **Names that belong to others:** another site's domain or the database's name on a shared network, fixed container names, service names with a `-` (lowercase letters, digits and `_` only: Docker names a container `<site>-<service>-1`, so site `jane`'s service `blog-php` would take site `jane-blog`'s `php` container);
   - **New settings:** any Compose setting it doesn't know yet, until it's reviewed (e.g. `use_api_socket`, which hands a container the Docker socket).
 
   Docker's own authorization plugins have been bypassed (CVE-2024-41110, CVE-2026-34040), so this check is the boundary.

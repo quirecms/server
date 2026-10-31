@@ -601,6 +601,10 @@ final class SiteManagerTest extends RegistryTestCase
             'adopted already' => [static fn (string $directory): int|false => file_put_contents($directory.'/compose.server.yaml', ''), 'has a compose.server.yaml already'],
             'no domains' => [static fn (string $directory): int|false => file_put_contents($directory.'/prod.env', "APP_SECRET=x\n"), 'pass them with --domain'],
             'a foreign project' => [static fn (string $directory): int|false => file_put_contents($directory.'/prod.env', "SERVER_NAME=jane.example\nCOMPOSE_PROJECT_NAME='Jane Site'\n"), 'isn\'t one this server can manage'],
+            // It would own the server's containers, and PostgreSQL's data with every site's database.
+            'the server\'s own project' => [static fn (string $directory): int|false => file_put_contents($directory.'/prod.env', "SERVER_NAME=jane.example\nCOMPOSE_PROJECT_NAME=quire-server\n"), 'is reserved for the server itself'],
+            // "jane_" would be the start of its names and of project "jane_db"'s
+            'a project with "_"' => [static fn (string $directory): int|false => file_put_contents($directory.'/prod.env', "SERVER_NAME=jane.example\nCOMPOSE_PROJECT_NAME=jane_db\n"), 'isn\'t a site name'],
         ] as $case => [$change, $message]) {
             new Filesystem()->remove($this->paths->site($this->name));
             $this->siteInstalledByHand();

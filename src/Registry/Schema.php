@@ -186,4 +186,19 @@ final class Schema
                 SQL,
         ];
     }
+
+    /**
+     * A Compose project belongs to one site at most (removed ones aside): Docker's objects are a
+     * project's by its name.
+     *
+     * @return list<string>
+     */
+    public static function version7(string $schema = self::NAME): array
+    {
+        $s = '"'.str_replace('"', '""', $schema).'"';
+
+        return [
+            "CREATE UNIQUE INDEX site_project ON {$s}.site (project) WHERE status <> 'removed'",
+        ];
+    }
 }
