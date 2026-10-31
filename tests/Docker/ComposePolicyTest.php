@@ -58,6 +58,9 @@ final class ComposePolicyTest extends TestCase
     public static function hostile(): iterable
     {
         yield 'privileged' => [['services' => ['php' => ['privileged' => true]]], '"privileged" runs privileged'];
+        // Its container would be "jane-blog-php-1": site "jane-blog"'s php container.
+        yield 'a service name with a dash' => [['services' => ['blog-php' => ['image' => 'alpine:3.22']]], 'Service "blog-php": a service\'s name is lowercase letters, digits and "_"'];
+        yield 'a service name in capitals' => [['services' => ['PHP' => ['image' => 'alpine:3.22']]], 'Service "PHP": a service\'s name is lowercase letters'];
         yield 'privileged, as a string' => [['services' => ['php' => ['privileged' => 'yes']]], '"privileged" runs privileged'];
         // Below a service's settings, fail-closed at every level: a new setting there may have host powers.
         yield 'a setting the server doesn\'t know, in a build' => [['services' => ['php' => ['build' => ['some_future_key' => true]]]], '"build.some_future_key" isn\'t a setting the server allows (yet)'];

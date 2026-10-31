@@ -48,6 +48,13 @@ final readonly class ComposePolicy
      */
     private const array ALLOWED_CAPABILITIES = ['NET_BIND_SERVICE', 'CHOWN', 'DAC_OVERRIDE', 'FOWNER', 'SETGID', 'SETUID'];
 
+    /**
+     * A service's name: no dash. Docker names its container "<project>-<service>-1", and a site's name
+     * may have dashes: site "jane" with a service "blog-php" would take "jane-blog-php-1", the container
+     * of site "jane-blog"'s "php", and one of the two sites couldn't start.
+     */
+    private const string SERVICE_NAME = '/^[a-z0-9][a-z0-9_]{0,62}\z/';
+
     /** The most processes a container may run */
     private const int MAX_PIDS = 4096;
 
@@ -169,6 +176,10 @@ final readonly class ComposePolicy
     private function service(string $name, array $service, array $services, PolicyContext $context): array
     {
         $violations = [];
+
+        if (1 !== preg_match(self::SERVICE_NAME, $name)) {
+            $violations[] = 'a service\'s name is lowercase letters, digits and "_" (no "-": its container\'s name could be another site\'s).';
+        }
 
         foreach ($service as $key => $value) {
             $key = (string) $key;

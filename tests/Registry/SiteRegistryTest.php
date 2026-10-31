@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Quire\Server\Tests\Registry;
 
+use Doctrine\DBAL\Exception\UniqueConstraintViolationException;
 use Quire\Server\Registry\SiteLock;
 use Quire\Server\Registry\SiteRegistry;
 use Quire\Server\Site\Domain;
@@ -46,6 +47,34 @@ final class SiteRegistryTest extends RegistryTestCase
         }
 
         self::assertNull($registry->get(new SiteName('kim')), 'All or nothing: kim isn\'t half added.');
+    }
+
+    public function testAComposeProjectIsOneSitesUntilItsRemoved(): void
+    {
+        $registry = new SiteRegistry($this->connection, $this->schema);
+        // An adopted site keeps its own project's name: here, another site's name.
+        $registry->add(new SiteName('blog'), [new Domain('blog.example')], Site::OWN_DATABASE, 'jane');
+
+        try {
+            $registry->add(new SiteName('jane'), [new Domain('jane.example')], Site::SHARED_DATABASE, 'jane');
+            self::fail('The project was taken twice.');
+        } catch (\DomainException $e) {
+            self::assertSame('The Compose project "jane" belongs to the site "blog".', $e->getMessage());
+        }
+
+        self::assertNull($registry->get(new SiteName('jane')));
+
+        $registry->setStatus(new SiteName('blog'), Site::REMOVED);
+        self::assertSame(Site::CREATING, $registry->add(new SiteName('jane'), [new Domain('jane.example')], Site::SHARED_DATABASE, 'jane')->status);
+    }
+
+    public function testTheDatabaseHoldsAProjectToOneSite(): void
+    {
+        // What two agents adding sites at once could get past the check above
+        $this->connection->insert($this->schema.'.site', ['name' => 'blog', 'status' => Site::RUNNING, 'database_mode' => Site::OWN_DATABASE, 'project' => 'jane']);
+
+        $this->expectException(UniqueConstraintViolationException::class);
+        $this->connection->insert($this->schema.'.site', ['name' => 'jane', 'status' => Site::CREATING, 'database_mode' => Site::SHARED_DATABASE, 'project' => 'jane']);
     }
 
     public function testARemovedSitesNameAndDomainsAreFreeAgainAndItsHistoryStays(): void

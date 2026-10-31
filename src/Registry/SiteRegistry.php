@@ -24,8 +24,8 @@ final readonly class SiteRegistry
     }
 
     /**
-     * Records a new site, its domains (the first is the primary one). Fails when the name is taken by a
-     * site that isn't removed, or a domain belongs to another site.
+     * Records a new site, its domains (the first is the primary one). Fails when the name or the Compose
+     * project is taken by a site that isn't removed, or a domain belongs to another site.
      *
      * @param list<Domain> $domains
      */
@@ -42,14 +42,26 @@ final readonly class SiteRegistry
                 throw new \DomainException(\sprintf('There\'s already a site named "%s".', $name));
             }
 
-            if (false === $existing) {
-                $this->connection->insert($this->table('site'), ['name' => $name->value, 'status' => Site::CREATING, 'database_mode' => $databaseMode, 'project' => $project]);
-            } else {
-                // A removed site's name, used again: a new site, with the old one's history kept.
-                $this->connection->executeStatement(
-                    \sprintf('UPDATE %s.site SET status = ?, database_mode = ?, project = ?, removed_at = NULL, created_at = now(), updated_at = now() WHERE name = ?', $this->schema()),
-                    [Site::CREATING, $databaseMode, $project, $name->value],
-                );
+            // Docker's objects are a project's by its name: two sites with one project would share them.
+            $owner = $this->connection->fetchOne(\sprintf('SELECT name FROM %s.site WHERE project = ? AND name <> ? AND status <> ?', $this->schema()), [$project, $name->value, Site::REMOVED]);
+
+            if (false !== $owner) {
+                throw new \DomainException(\sprintf('The Compose project "%s" belongs to the site "%s".', $project, \is_scalar($owner) ? (string) $owner : '?'));
+            }
+
+            try {
+                if (false === $existing) {
+                    $this->connection->insert($this->table('site'), ['name' => $name->value, 'status' => Site::CREATING, 'database_mode' => $databaseMode, 'project' => $project]);
+                } else {
+                    // A removed site's name, used again: a new site, with the old one's history kept.
+                    $this->connection->executeStatement(
+                        \sprintf('UPDATE %s.site SET status = ?, database_mode = ?, project = ?, removed_at = NULL, created_at = now(), updated_at = now() WHERE name = ?', $this->schema()),
+                        [Site::CREATING, $databaseMode, $project, $name->value],
+                    );
+                }
+            } catch (UniqueConstraintViolationException $e) {
+                // Taken meanwhile by another site being added.
+                throw new \DomainException(\sprintf('The name "%s" or the Compose project "%s" was just taken by another site.', $name, $project), $e->getCode(), previous: $e);
             }
 
             $values = array_map(static fn (Domain $domain): string => $domain->value, $domains);

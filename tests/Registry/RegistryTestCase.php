@@ -25,7 +25,7 @@ abstract class RegistryTestCase extends KernelTestCase
         $this->connection = $connection;
         $this->schema = 'server_test_'.bin2hex(random_bytes(4));
 
-        foreach ([...Schema::version1($this->schema), ...Schema::version2($this->schema), ...Schema::version3($this->schema), ...Schema::version4($this->schema), ...Schema::version5($this->schema), ...Schema::version6($this->schema)] as $statement) {
+        foreach ([...Schema::version1($this->schema), ...Schema::version2($this->schema), ...Schema::version3($this->schema), ...Schema::version4($this->schema), ...Schema::version5($this->schema), ...Schema::version6($this->schema), ...Schema::version7($this->schema)] as $statement) {
             // The index names are per schema in PostgreSQL: no clash between test runs.
             $this->connection->executeStatement($statement);
         }
