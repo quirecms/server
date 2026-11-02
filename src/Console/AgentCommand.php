@@ -6,11 +6,14 @@ namespace Quire\Server\Console;
 
 use Quire\Server\Backup\LocalBackups;
 use Quire\Server\Backup\OffsiteBackups;
+use Quire\Server\Docker\Builders;
+use Quire\Server\Docker\Gate;
 use Quire\Server\FrontDoor\DomainDirectory;
 use Quire\Server\Git\GitPoller;
 use Quire\Server\Operation\OperationLog;
 use Quire\Server\Operation\SiteManager;
 use Quire\Server\Registry\SiteRegistry;
+use Quire\Server\Site\ServerPaths;
 use Quire\Server\Update\AutomaticUpdates;
 use Quire\Server\Update\SiteUpdater;
 use Symfony\Component\Console\Attribute\AsCommand;
@@ -22,8 +25,10 @@ use Symfony\Component\Console\Style\SymfonyStyle;
     name: 'server:agent',
     description: 'The agent\'s own work: keeps the front door in line with the registry',
     help: <<<'HELP'
-        Runs as the agent container's main process. When it starts, operations a crash or a restart
-        interrupted are marked failed. Then, every minute, the front door's list of domains is made to
+        Runs as the agent container's main process. When it starts, it waits for the Docker gate, removes
+        what releases before the gate left (the docker-proxy, privileged builders) and gives each site its
+        scope on the gate (and no other site one); operations a crash or a restart interrupted are marked
+        failed. Then, every minute, the front door's list of domains is made to
         match the sites that run, new commits of Git mode sites that poll are deployed, the nightly
         backups off the server are made when due, sites due for their nightly automatic updates get them, and a heartbeat file says the agent is alive (for
         Docker's health check; also at each step of a long deploy or update).
@@ -45,6 +50,9 @@ final class AgentCommand
         private readonly SiteUpdater $sites,
         private readonly LocalBackups $local,
         private readonly SiteManager $manager,
+        private readonly Gate $gate,
+        private readonly Builders $builders,
+        private readonly ServerPaths $paths,
     ) {
     }
 
@@ -64,6 +72,7 @@ final class AgentCommand
         // A wrong setting stops the agent at once, rather than every night.
         $hour = $this->updates->hour();
         $io->writeln(null === $hour ? 'Automatic updates: off on this server' : \sprintf('Automatic updates: every night from %02d:00 UTC', $hour));
+        $this->gate($io);
         $abandoned = $this->operations->abandonRunning();
 
         if ($abandoned > 0) {
@@ -104,6 +113,47 @@ final class AgentCommand
         } while (!$once && !$this->stopping);
 
         return Command::SUCCESS;
+    }
+
+    /**
+     * The Docker gate, before anything acts on Docker: its socket open, what earlier releases left
+     * removed, and each site's scope as the registry says (and no other: a scope left by a site that's
+     * gone would keep a socket that acts as it).
+     */
+    private function gate(SymfonyStyle $io): void
+    {
+        $this->gate->waitForTrusted();
+
+        if ($this->gate->removeDockerProxy()) {
+            $io->writeln('Docker: removed the docker-proxy of an earlier release (the gate replaces it)');
+        }
+
+        foreach ($this->builders->removeLegacy() as $builder) {
+            $io->writeln(\sprintf('Docker: removed the privileged builder of an earlier release (%s)', $builder));
+        }
+
+        $projects = [];
+
+        foreach ($this->registry->all() as $site) {
+            // A site whose add was cut short may have no folder yet: it has no scope until it does.
+            if (is_dir($this->paths->site($site->name))) {
+                try {
+                    $projects[] = $this->manager->projectOf($site);
+                } catch (\Throwable $e) {
+                    $io->warning(\sprintf('Docker: "%s" has no scope on the gate: %s', $site->name, $e->getMessage()));
+                }
+            }
+        }
+
+        $scopes = $this->gate->reconcile($projects);
+
+        foreach ($scopes['removed'] as $removed) {
+            $io->writeln(\sprintf('Docker: closed the gate\'s socket of "%s" (no such site)', $removed));
+        }
+
+        foreach ($scopes['failed'] as $site => $why) {
+            $io->warning(\sprintf('Docker: nothing can act as the site of project "%s" until this is fixed: %s', $site, $why));
+        }
     }
 
     /**

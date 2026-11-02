@@ -30,15 +30,27 @@ services:
     Quire\Server\Site\ServerPaths:
         arguments: ['%quire_server.root%']
 
-    Quire\Server\Docker\Compose:
+    # The Docker gate: the agent's own operations on its trusted socket (DOCKER_HOST), each site's on a
+    # socket of the site's own (compose.yaml mounts them)
+    Quire\Server\Docker\Gate:
+        arguments:
+            $dockerHost: '%env(DOCKER_HOST)%'
+            $scopes: /run/quire-gate/scopes
+            $sockets: /run/quire-gate/sites
+            # Sites' Docker configurations: the agent's own (its /tmp is its own, in memory)
+            $configs: /tmp/quire-server-docker
+
+    Quire\Server\Docker\Builders:
+        arguments:
+            $dockerHost: '%env(DOCKER_HOST)%'
+            # Written by the host-setup service (gate/host-setup.sh)
+            $facts: /run/quire-host/builder-apparmor
+
+    Quire\Server\Docker\SandboxNetwork:
         arguments:
             $dockerHost: '%env(DOCKER_HOST)%'
 
     Quire\Server\Docker\RuntimeImages:
-        arguments:
-            $dockerHost: '%env(DOCKER_HOST)%'
-
-    Quire\Server\Docker\Images:
         arguments:
             $dockerHost: '%env(DOCKER_HOST)%'
 

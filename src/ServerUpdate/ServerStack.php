@@ -8,8 +8,8 @@ use Quire\Server\Process\ProcessResult;
 use Quire\Server\Process\ProcessRunner;
 
 /**
- * The server's own Compose project (quire-server: front door, agent, docker-proxy, PostgreSQL), as the
- * updater acts on it: on Docker itself, since it may have to replace the docker-proxy.
+ * The server's own Compose project (quire-server: front door, agent, Docker gate, PostgreSQL), as the
+ * updater acts on it: on Docker itself, since it may have to replace the gate.
  */
 final readonly class ServerStack
 {
@@ -52,14 +52,16 @@ final readonly class ServerStack
     }
 
     /**
-     * Starts what changed (of these services, or all) and waits until each is healthy.
+     * Starts what changed (of these services, or all) and waits until each is healthy. A service the
+     * release doesn't have any more goes (e.g. going back to a release before the Docker gate: the
+     * gate, which holds Docker's socket); the updater, a one-off container, isn't one of those.
      *
      * @param (\Closure(string): void)|null $output
      * @param list<string>                  $services
      */
     public function up(ServerFolder $folder, int $wait, ?\Closure $output = null, array $services = []): void
     {
-        $this->in($folder, ['up', '--detach', '--no-build', '--wait', '--wait-timeout', (string) $wait, ...$services], $wait + 600, $output)->orFail('Starting the server');
+        $this->in($folder, ['up', '--detach', '--no-build', '--remove-orphans', '--wait', '--wait-timeout', (string) $wait, ...$services], $wait + 600, $output)->orFail('Starting the server');
     }
 
     /**

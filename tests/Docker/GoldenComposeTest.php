@@ -15,6 +15,7 @@ use Quire\Server\Docker\SiteProject;
 use Quire\Server\Process\SymfonyProcessRunner;
 use Quire\Server\Registry\RuntimeBuilds;
 use Quire\Server\Registry\RuntimeFloors;
+use Quire\Server\Tests\GateFixture;
 use Quire\Server\Tests\Registry\RegistryTestCase;
 use Symfony\Component\Filesystem\Filesystem;
 
@@ -97,7 +98,7 @@ final class GoldenComposeTest extends RegistryTestCase
     {
         $runner = new SymfonyProcessRunner();
 
-        // Nothing here reaches Docker: "config" reads files only.
-        return new Compose($runner, new ComposePolicy(), new ComposeFiles(), new RuntimeImages($runner, new RuntimeFloors($this->connection, $this->schema)), new RuntimeBuilds($this->connection, $this->schema), 'tcp://127.0.0.1:9');
+        // Nothing here reaches Docker: "config" reads files only (on jane's socket, which nothing serves).
+        return new Compose($runner, new ComposePolicy(), new ComposeFiles(), new RuntimeImages($runner, new RuntimeFloors($this->connection, $this->schema)), new RuntimeBuilds($this->connection, $this->schema), GateFixture::gate($runner, $this->root, 'jane'), GateFixture::builders($runner, $this->root));
     }
 }

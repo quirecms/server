@@ -6,6 +6,7 @@ namespace Quire\Server\Tests\Operation;
 
 use Quire\Server\Backup\SiteDatabaseDumps;
 use Quire\Server\Database\SiteDatabases;
+use Quire\Server\Docker\Builders;
 use Quire\Server\Docker\Compose;
 use Quire\Server\Docker\ComposeFiles;
 use Quire\Server\Docker\ComposePolicy;
@@ -30,6 +31,7 @@ use Quire\Server\Site\Domain;
 use Quire\Server\Site\ServerPaths;
 use Quire\Server\Site\Site;
 use Quire\Server\Site\SiteName;
+use Quire\Server\Tests\GateFixture;
 use Quire\Server\Tests\Registry\RegistryTestCase;
 use Symfony\Component\Filesystem\Filesystem;
 
@@ -39,8 +41,11 @@ use Symfony\Component\Filesystem\Filesystem;
  */
 final class SiteManagerTest extends RegistryTestCase
 {
-    /** @var list<string> The BuildKit builders there are (Compose::builder()) */
+    /** @var array<string, string> The BuildKit builders' containers there are, and the BuildKit each was created with (Builders) */
     private array $builders = [];
+
+    /** @var list<string> The builders registered in the site's Docker configuration */
+    private array $registered = [];
 
     private string $root;
     private SiteName $name;
@@ -93,16 +98,23 @@ final class SiteManagerTest extends RegistryTestCase
                 return self::ok($command, '');
             },
             'docker compose down' => static fn (array $command): ProcessResult => self::ok($command, "Removed\n"),
-            // Each site's own BuildKit (Compose::builder())
-            'docker buildx inspect' => fn (array $command): ProcessResult => \in_array(self::argument($command, 3), $this->builders, true) ? self::ok($command, '') : new ProcessResult(self::strings($command), 1, '', 'ERROR: no builder "'.self::argument($command, 3).'" found'),
-            'docker buildx create' => function (array $command): ProcessResult {
-                $this->builders[] = self::argument($command, 4);
+            // Each site's own BuildKit (Builders), created on the gate's trusted socket
+            'docker container inspect' => fn (array $command): ProcessResult => isset($this->builders[self::argument($command, 5)]) ? self::ok($command, $this->builders[self::argument($command, 5)].' true') : new ProcessResult(self::strings($command), 1, '', 'Error: No such container'),
+            'docker container run' => function (array $command): ProcessResult {
+                $this->builders[self::argument($command, 5)] = Builders::BUILDKIT;
+
+                return self::ok($command, "abc123\n");
+            },
+            'docker container rm' => function (array $command): ProcessResult {
+                unset($this->builders[self::argument($command, 4)]);
 
                 return self::ok($command, '');
             },
-            'docker container ls' => fn (array $command): ProcessResult => self::ok($command, implode("\n", array_map(static fn (string $builder): string => 'buildx_buildkit_'.$builder.'0', $this->builders))."\n"),
-            'docker container rm' => function (array $command): ProcessResult {
-                $this->builders = array_values(array_filter($this->builders, static fn (string $builder): bool => 'buildx_buildkit_'.$builder.'0' !== $command[5]));
+            'docker network inspect' => static fn (array $command): ProcessResult => self::ok($command, ''),
+            // Registered in the site's Docker configuration (its socket)
+            'docker buildx inspect' => fn (array $command): ProcessResult => '--bootstrap' === self::argument($command, 3) || \in_array(self::argument($command, 3), $this->registered, true) ? self::ok($command, '') : new ProcessResult(self::strings($command), 1, '', 'ERROR: no builder found'),
+            'docker buildx create' => function (array $command): ProcessResult {
+                $this->registered[] = self::argument($command, 4);
 
                 return self::ok($command, '');
             },
@@ -359,28 +371,37 @@ final class SiteManagerTest extends RegistryTestCase
         self::assertNull($this->registry->get($this->name));
     }
 
-    public function testEachSiteIsBuiltByAPinnedBuilderOfItsOwnThatGoesWithIt(): void
+    public function testEachSiteIsBuiltByARootlessBuilderOfItsOwnThatGoesWithIt(): void
     {
-        $prefix = 'quire-'.$this->name->value.'-';
-        $current = $prefix.substr(hash('sha256', Compose::BUILDKIT), 0, 12);
+        $container = 'quire-buildkit-'.$this->name->value;
         // One of an older BuildKit, and another site's whose name starts with this one's
-        $this->builders = [$prefix.'0123456789ab', 'quire-'.$this->name->value.'-blog-'.substr(hash('sha256', Compose::BUILDKIT), 0, 12)];
+        $this->builders = [$container => 'moby/buildkit:v0.33.0-rootless@sha256:'.str_repeat('0', 64), $container.'-blog' => Builders::BUILDKIT];
         $manager = $this->manager();
         $manager->add($this->request(), 'cli', 'darko', static fn (): null => null);
 
-        $create = array_first(array_filter($this->dockerCommands(), static fn (array $command): bool => 'create' === ($command[2] ?? null))) ?? [];
-        self::assertSame(['docker', 'buildx', 'create', '--name', $current, '--driver', 'docker-container', '--driver-opt', 'image='.Compose::BUILDKIT, '--bootstrap'], $create);
-        self::assertMatchesRegularExpression('/^moby\/buildkit:v[0-9.]+@sha256:[0-9a-f]{64}\z/', Compose::BUILDKIT, 'Pinned by digest.');
+        self::assertContains(['docker', 'container', 'rm', '--force', $container], $this->dockerCommands(), 'The older one goes.');
+        $run = array_first(array_filter($this->dockerCommands(), static fn (array $command): bool => 'run' === ($command[2] ?? null))) ?? [];
+        self::assertSame([
+            'docker', 'container', 'run', '--detach', '--name', $container, '--label', Builders::LABEL.'='.$this->name->value, '--label', 'com.quirecms.server.buildkit='.Builders::BUILDKIT,
+            '--network', 'quire-sandbox',
+            '--security-opt', 'seccomp=unconfined', '--security-opt', 'systempaths=unconfined',
+            '--pids-limit', '4096',
+            '--volume', $container.'-state:/home/user/.local/share/buildkit',
+            Builders::BUILDKIT,
+        ], $run, 'Not privileged, no capabilities, no host paths or ports; no AppArmor option on a host without it.');
+        self::assertMatchesRegularExpression('/^moby\/buildkit:v[0-9.]+-rootless@sha256:[0-9a-f]{64}\z/', Builders::BUILDKIT, 'Rootless, pinned by digest.');
+        self::assertContains(['docker', 'buildx', 'create', '--name', 'site', '--driver', 'remote', 'docker-container://'.$container.'?context=quire'], $this->dockerCommands(), 'Reached through the site\'s own socket.');
         $build = array_first(array_filter($this->commands(), static fn (array $command): bool => 'build' === ($command[8] ?? null))) ?? [];
         $at = array_search('--builder', $build, true);
         self::assertIsInt($at);
-        self::assertSame($current, $build[$at + 1] ?? null);
-        self::assertSame([$prefix.'0123456789ab'], array_values(array_diff([$prefix.'0123456789ab', 'quire-'.$this->name->value.'-blog-'.substr(hash('sha256', Compose::BUILDKIT), 0, 12)], $this->builders)), 'The older one goes; the other site\'s stays.');
+        self::assertSame('site', $build[$at + 1] ?? null);
+        self::assertEqualsCanonicalizing([$container => Builders::BUILDKIT, $container.'-blog' => Builders::BUILDKIT], $this->builders, 'The other site\'s stays.');
 
         $manager->remove($this->name, false, 'cli', 'darko', static fn (): null => null);
 
-        self::assertSame(['quire-'.$this->name->value.'-blog-'.substr(hash('sha256', Compose::BUILDKIT), 0, 12)], $this->builders, 'Its own goes with it, with its cache.');
-        self::assertContains(['docker', 'volume', 'rm', '--force', 'buildx_buildkit_'.$current.'0_state'], $this->dockerCommands());
+        self::assertSame([$container.'-blog' => Builders::BUILDKIT], $this->builders, 'Its own goes with it, with its cache.');
+        self::assertContains(['docker', 'volume', 'rm', '--force', $container.'-state'], $this->dockerCommands());
+        self::assertFileDoesNotExist($this->root.'/gate/scopes/'.$this->name->value.'.json', 'Its socket on the gate goes too.');
     }
 
     public function testRemovingASiteBacksItUpFirstAndKeepsItsFolder(): void
@@ -701,13 +722,13 @@ final class SiteManagerTest extends RegistryTestCase
             new SkeletonInstaller($runner),
             $this->databases,
             new \Quire\Server\Site\SiteFiles(),
-            $compose = new Compose($runner, new ComposePolicy(), new ComposeFiles(), new RuntimeImages($runner, new RuntimeFloors($this->connection, $this->schema)), new RuntimeBuilds($this->connection, $this->schema), 'tcp://docker-proxy:2375'),
+            $compose = new Compose($runner, new ComposePolicy(), new ComposeFiles(), new RuntimeImages($runner, new RuntimeFloors($this->connection, $this->schema)), new RuntimeBuilds($this->connection, $this->schema), GateFixture::gate($runner, $this->root, $this->name->value, 'kim', 'old-site'), GateFixture::builders($runner, $this->root)),
             $this->frontDoor,
             $this->paths,
             new Git($runner, $keys = new DeployKeys($runner, $this->paths)),
             new SiteGit($this->connection, $this->schema),
             $keys,
-            new SiteDatabaseDumps($runner, $compose, 'tcp://docker-proxy:2375'),
+            new SiteDatabaseDumps($runner, $compose, GateFixture::TRUSTED),
             'smtp://mailer:25',
         );
     }
@@ -722,9 +743,11 @@ final class SiteManagerTest extends RegistryTestCase
     {
         $this->commands[] = $command;
 
-        // Every Docker command goes through the proxy.
+        // Every Docker command goes through the gate: a site's on its own socket (but putting an adopted
+        // site back as it was), the agent's own on the trusted one.
         if ('docker' === $command[0]) {
-            self::assertSame('tcp://docker-proxy:2375', $env['DOCKER_HOST'] ?? null);
+            $site = ('compose' === $command[1] && !str_ends_with($command[5], '.before-server')) || 'buildx' === $command[1];
+            self::assertTrue($site ? GateFixture::isSite($env, $this->root, $this->name->value) : GateFixture::TRUSTED === ($env['DOCKER_HOST'] ?? null), implode(' ', $command));
         }
 
         // Compose's, with nothing inherited choosing its files.

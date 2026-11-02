@@ -61,6 +61,10 @@ final class ComposePolicyTest extends TestCase
         // Its container would be "jane-blog-php-1": site "jane-blog"'s php container.
         yield 'a service name with a dash' => [['services' => ['blog-php' => ['image' => 'alpine:3.22']]], 'Service "blog-php": a service\'s name is lowercase letters, digits and "_"'];
         yield 'a service name in capitals' => [['services' => ['PHP' => ['image' => 'alpine:3.22']]], 'Service "PHP": a service\'s name is lowercase letters'];
+        yield 'more memory than the gate allows' => [['services' => ['php' => ['mem_limit' => (string) (65 << 30)]]], '"mem_limit: 69793218560": at most 64 GiB.'];
+        yield 'more memory than the gate allows, under deploy' => [['services' => ['php' => ['deploy' => ['resources' => ['limits' => ['memory' => (string) (65 << 30)]]]]]], '"deploy.resources.limits.memory: 69793218560": at most 64 GiB.'];
+        yield 'real-time priority' => [['services' => ['php' => ['ulimits' => ['rtprio' => 99]]]], '"ulimits: rtprio": only nofile, nproc, core, stack may be set.'];
+        yield 'locked memory' => [['services' => ['php' => ['ulimits' => ['memlock' => -1]]]], '"ulimits: memlock"'];
         yield 'privileged, as a string' => [['services' => ['php' => ['privileged' => 'yes']]], '"privileged" runs privileged'];
         // Below a service's settings, fail-closed at every level: a new setting there may have host powers.
         yield 'a setting the server doesn\'t know, in a build' => [['services' => ['php' => ['build' => ['some_future_key' => true]]]], '"build.some_future_key" isn\'t a setting the server allows (yet)'];
@@ -258,7 +262,7 @@ final class ComposePolicyTest extends TestCase
 
     public function testHarmlessValuesOfForbiddenSettingsPass(): void
     {
-        $config = array_replace_recursive($this->site(), ['services' => ['php' => ['privileged' => false, 'gpus' => 'false', 'blkio_config' => ['weight' => 300], 'post_start' => [['command' => ['id'], 'privileged' => false]], 'isolation' => 'default', 'oom_kill_disable' => 'false', 'deploy' => ['resources' => ['limits' => ['cpus' => '1.5', 'memory' => '1g', 'pids' => 512]], 'restart_policy' => ['condition' => 'on-failure']], 'cap_add' => ['NET_BIND_SERVICE', 'cap_net_bind_service', 'CHOWN', 'SETUID'], 'scale' => 1, 'devices' => [], 'security_opt' => ['no-new-privileges:true'], 'cap_drop' => ['ALL'], 'oom_score_adj' => 0, 'logging' => ['driver' => 'json-file'], 'x-custom' => 'anything', 'build' => ['tags' => ['quire-sites/jane/php-prod:before-update']]], 'worker' => ['network_mode' => 'service:php']]]);
+        $config = array_replace_recursive($this->site(), ['services' => ['php' => ['privileged' => false, 'gpus' => 'false', 'blkio_config' => ['weight' => 300], 'post_start' => [['command' => ['id'], 'privileged' => false]], 'isolation' => 'default', 'oom_kill_disable' => 'false', 'deploy' => ['resources' => ['limits' => ['cpus' => '1.5', 'memory' => '1073741824', 'pids' => 512]], 'restart_policy' => ['condition' => 'on-failure']], 'cap_add' => ['NET_BIND_SERVICE', 'cap_net_bind_service', 'CHOWN', 'SETUID'], 'scale' => 1, 'devices' => [], 'security_opt' => ['no-new-privileges:true'], 'cap_drop' => ['ALL'], 'oom_score_adj' => 0, 'logging' => ['driver' => 'json-file'], 'x-custom' => 'anything', 'build' => ['tags' => ['quire-sites/jane/php-prod:before-update']]], 'worker' => ['network_mode' => 'service:php']]]);
 
         self::assertSame([], $this->violations($config));
     }

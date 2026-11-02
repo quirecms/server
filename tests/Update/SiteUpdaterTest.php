@@ -6,6 +6,7 @@ namespace Quire\Server\Tests\Update;
 
 use Quire\Server\Backup\SiteDatabaseDumps;
 use Quire\Server\Database\SiteDatabases;
+use Quire\Server\Docker\Builders;
 use Quire\Server\Docker\Compose;
 use Quire\Server\Docker\ComposeFiles;
 use Quire\Server\Docker\ComposePolicy;
@@ -31,6 +32,7 @@ use Quire\Server\Site\ServerPaths;
 use Quire\Server\Site\Site;
 use Quire\Server\Site\SiteFiles;
 use Quire\Server\Site\SiteName;
+use Quire\Server\Tests\GateFixture;
 use Quire\Server\Tests\Registry\RegistryTestCase;
 use Quire\Server\Tests\ScriptedRunner;
 use Quire\Server\Update\SiteUpdater;
@@ -131,7 +133,8 @@ final class SiteUpdaterTest extends RegistryTestCase
 
                 return ScriptedRunner::ok($command);
             },
-            'docker container inspect' => fn (array $command): ProcessResult => ScriptedRunner::ok($command, $this->running."\n"),
+            // A site's container (the image it runs), or its builder (Builders: the BuildKit it was made with)
+            'docker container inspect' => fn (array $command): ProcessResult => ScriptedRunner::ok($command, (str_starts_with($command[5], 'quire-buildkit-') ? Builders::BUILDKIT.' true' : $this->running)."\n"),
             'docker compose up' => function (array $command): ProcessResult {
                 if (null !== $this->intentDuringUp && is_file($this->intentFile())) {
                     $this->intentDuringUp = (string) file_get_contents($this->intentFile());
@@ -684,7 +687,7 @@ final class SiteUpdaterTest extends RegistryTestCase
 
     private function updater(): SiteUpdater
     {
-        $compose = new Compose($this->runner, new ComposePolicy(), new ComposeFiles(), new RuntimeImages($this->runner, new RuntimeFloors($this->connection, $this->schema)), new RuntimeBuilds($this->connection, $this->schema), 'tcp://docker-proxy:2375');
+        $compose = new Compose($this->runner, new ComposePolicy(), new ComposeFiles(), new RuntimeImages($this->runner, new RuntimeFloors($this->connection, $this->schema)), new RuntimeBuilds($this->connection, $this->schema), GateFixture::gate($this->runner, $this->root, 'jane'), GateFixture::builders($this->runner, $this->root));
         $sites = new SiteManager(
             $this->registry,
             $this->operations,
@@ -698,11 +701,11 @@ final class SiteUpdaterTest extends RegistryTestCase
             $this->git,
             $this->repositories,
             $this->keys,
-            new SiteDatabaseDumps($this->runner, $compose, 'tcp://docker-proxy:2375'),
+            new SiteDatabaseDumps($this->runner, $compose, GateFixture::TRUSTED),
             '',
         );
 
-        return new SiteUpdater($this->registry, $this->updates, $this->repositories, $this->operations, new SiteLock($this->connection, $this->schema), $sites, $compose, new Images($this->runner, 'tcp://docker-proxy:2375'), $this->git, $this->paths);
+        return new SiteUpdater($this->registry, $this->updates, $this->repositories, $this->operations, new SiteLock($this->connection, $this->schema), $sites, $compose, new Images($this->runner, GateFixture::gate($this->runner, $this->root, 'jane')), $this->git, $this->paths);
     }
 
     /**

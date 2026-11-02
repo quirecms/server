@@ -43,4 +43,21 @@ final readonly class SiteProject
     {
         return $this->policy->project;
     }
+
+    /**
+     * A project the server acts for on the Docker gate: a site's name's rules, as adopted sites' projects
+     * follow since 0.3.2. Never one of the server's own names, which all start with "quire" (on the
+     * gate, a project owns whatever carries its label), and only names Docker's DNS takes as aliases
+     * ("<project>-php-1"): an older adopted project with "_" has to be adopted again under a new one.
+     *
+     * @throws \InvalidArgumentException When it isn't a project the server acts for
+     */
+    public static function checked(string $project): string
+    {
+        try {
+            return new SiteName($project)->value;
+        } catch (\InvalidArgumentException $e) {
+            throw new \InvalidArgumentException(\sprintf('The Compose project "%s" can\'t be given a scope on the Docker gate (%s). Adopt the site again with COMPOSE_PROJECT_NAME set to its name.', SiteName::printable($project), $e->getMessage()), $e->getCode(), previous: $e);
+        }
+    }
 }

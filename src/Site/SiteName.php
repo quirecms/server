@@ -15,7 +15,7 @@ final readonly class SiteName implements \Stringable
     private const string PATTERN = '/^[a-z](?:[a-z0-9]|-(?=[a-z0-9])){1,29}\z/';
 
     /** Names of the server's own parts, and names easy to confuse with them */
-    private const array RESERVED = ['agent', 'backups', 'console', 'database', 'default', 'docker', 'docker-proxy', 'front', 'localhost', 'none', 'root', 'server', 'sites'];
+    private const array RESERVED = ['agent', 'backups', 'console', 'database', 'default', 'docker', 'docker-proxy', 'front', 'gate', 'host-setup', 'localhost', 'none', 'root', 'server', 'sites'];
 
     public string $value;
 

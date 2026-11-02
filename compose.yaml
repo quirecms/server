@@ -1,4 +1,4 @@
-# Quire Server: the front door, the agent, the docker-proxy and PostgreSQL. Sites are Compose projects
+# Quire Server: the front door, the agent, the Docker gate and PostgreSQL. Sites are Compose projects
 # of their own, in /srv/quire/sites, joined to these networks. Every image is pinned by digest.
 # Run it with "quire-server", or:
 #
@@ -37,8 +37,8 @@ services:
     mem_limit: 512m
     pids_limit: 1024
 
-  # The only part that can act on Docker (through the docker-proxy): adds and removes sites, keeps the
-  # front door's domains in line. It has no network listener.
+  # The only part that can act on Docker (through the gate): adds and removes sites, keeps the front
+  # door's domains in line. It has no network listener.
   agent:
     # A release's image, by digest (written to server.env by install.sh, after checking its signature),
     # or one built from this folder (compose.build.yaml, for installs from a checkout).
@@ -46,7 +46,8 @@ services:
     restart: unless-stopped
     depends_on:
       database: {condition: service_healthy}
-      docker-proxy: {condition: service_started}
+      gate: {condition: service_started}
+      host-setup: {condition: service_completed_successfully}
     environment: &agent-environment
       APP_SECRET: ${QUIRE_SERVER_APP_SECRET:?Set QUIRE_SERVER_APP_SECRET in server.env}
       DATABASE_URL: postgresql://quire_server:${QUIRE_SERVER_DATABASE_PASSWORD:?Set QUIRE_SERVER_DATABASE_PASSWORD in server.env}@quire-database:5432/quire_server?serverVersion=18&charset=utf8
@@ -69,8 +70,16 @@ services:
       QUIRE_SERVER_BACKUP_HOST: ${QUIRE_SERVER_BACKUP_HOST:-quire-server}
       QUIRE_SERVER_BACKUP_HOUR: ${QUIRE_SERVER_BACKUP_HOUR:-2}
       QUIRE_SERVER_BACKUP_KEEP: ${QUIRE_SERVER_BACKUP_KEEP:-7 daily, 4 weekly, 6 monthly}
-      DOCKER_HOST: tcp://docker-proxy:2375
+      # The gate's listener for the agent's own operations; each site's Compose runs on the site's
+      # own socket (/run/quire-gate/sites/<project>.sock), for the scope the agent writes
+      DOCKER_HOST: unix:///run/quire-gate/trusted/trusted.sock
     volumes:
+      # The gate's sockets (read-only: the gate makes them), and the sites' scope files it reads
+      - gate_trusted:/run/quire-gate/trusted:ro
+      - gate_sites:/run/quire-gate/sites:ro
+      - gate_scopes:/run/quire-gate/scopes
+      # What host-setup found (the AppArmor profile sites' builders run under)
+      - host_facts:/run/quire-host:ro
       # The same paths inside as on the host: Compose resolves sites' paths for the Docker daemon.
       - ${QUIRE_SERVER_ROOT:-/srv/quire}/sites:${QUIRE_SERVER_ROOT:-/srv/quire}/sites
       - ${QUIRE_SERVER_ROOT:-/srv/quire}/backups:${QUIRE_SERVER_ROOT:-/srv/quire}/backups
@@ -82,7 +91,6 @@ services:
       - ${QUIRE_SERVER_ROOT:-/srv/quire}/server/work:${QUIRE_SERVER_ROOT:-/srv/quire}/server/work
     networks:
       - quire-data
-      - quire-docker
     tmpfs: [/tmp]
     cap_drop: [ALL]
     cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]
@@ -92,7 +100,7 @@ services:
 
   # Updates the server itself ("quire-server update"): only run on demand, never by "up". It is the
   # release that runs now (it checks the new one before using any of it), and it replaces the server's
-  # files and containers, the docker-proxy's too: so it gets Docker itself and the server's folder.
+  # files and containers, the gate's too: so it gets Docker itself and the server's folder.
   # It runs only this release's code and takes no input but a version; it ends with its update.
   updater:
     image: ${QUIRE_SERVER_IMAGE:-quire-server-agent}
@@ -121,36 +129,46 @@ services:
     mem_limit: 1g
     pids_limit: 1024
 
-  # The Docker API, limited to what the agent needs: no swarm, secrets, configs, plugins, nodes,
-  # services, auth or distribution. Only the agent can reach it, on a network without a way out.
-  docker-proxy:
-    image: tecnativa/docker-socket-proxy:v0.5.0@sha256:1f5038b54f06c3e18422902cf00ba21803d1c97805aae032e5e6673d532d3459
+  # The Docker gate (YorvoGate): the only way to Docker but the updater's. It reads each request's body
+  # and checks it before Docker gets it: the agent's own operations on one socket, each site's Compose
+  # on a socket of its own, scoped to the site (gate/yorvogate.yaml says what each may do). It has no
+  # network at all: only the agent mounts its sockets. Root without capabilities, as Docker's socket
+  # is root's (whoever holds that socket is root on the host anyway).
+  gate:
+    image: ghcr.io/yorvolabs/yorvogate:0.2.0@sha256:88d20a16a2a6f3f840b0ea9596971babf626d53d1bea788d3388e18747f08529
     restart: unless-stopped
-    environment:
-      CONTAINERS: 1
-      IMAGES: 1
-      NETWORKS: 1
-      VOLUMES: 1
-      EXEC: 1
-      BUILD: 1
-      SESSION: 1
-      GRPC: 1
-      INFO: 1
-      VERSION: 1
-      EVENTS: 1
-      PING: 1
-      POST: 1
-      ALLOW_START: 1
-      ALLOW_STOP: 1
-      ALLOW_RESTARTS: 1
+    user: "0:0"
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-    networks:
-      - quire-docker
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./gate/yorvogate.yaml:/etc/yorvogate/yorvogate.yaml:ro
+      - gate_scopes:/etc/yorvogate/sites:ro
+      - gate_trusted:/run/yorvogate/trusted
+      - gate_sites:/run/yorvogate/sites
+      # Where it keeps an image a site's build loads while it checks the image's names (on disk, not
+      # in memory: a site's image is hundreds of megabytes)
+      - gate_spool:/tmp
+    network_mode: none
     read_only: true
-    tmpfs: [/run, /tmp]
+    cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
-    mem_limit: 128m
+    mem_limit: 256m
+    pids_limit: 256
+
+  # What the host needs for sites' builds (gate/host-setup.sh): the AppArmor profile their rootless
+  # BuildKit runs under, loaded with the host's own tools. It runs at each start of the server, before
+  # the agent, and ends: privileged, in the host's root, with no network. What it found goes to the
+  # agent (host_facts).
+  host-setup:
+    image: ${QUIRE_SERVER_IMAGE:-quire-server-agent}
+    restart: "no"
+    entrypoint: [/bin/sh, -euc]
+    command:
+      - chroot /host /bin/sh -s </opt/quire-server/gate/host-setup.sh >/facts/builder-apparmor.new && mv /facts/builder-apparmor.new /facts/builder-apparmor
+    privileged: true
+    network_mode: none
+    volumes:
+      - /:/host
+      - host_facts:/facts
 
   # The server's PostgreSQL: the registry's database, and a database per site.
   database:
@@ -188,12 +206,13 @@ networks:
   # PostgreSQL, sites and the agent
   quire-data:
     name: quire-data
-  # The agent and the docker-proxy, without a route out
-  quire-docker:
-    name: quire-docker
-    internal: true
 
 volumes:
   front_data:
   front_config:
   database_data:
+  gate_trusted:
+  gate_sites:
+  gate_scopes:
+  gate_spool:
+  host_facts:

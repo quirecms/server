@@ -11,7 +11,7 @@
 #      workflow for that very version), its archive's checksum and its image's signature; nothing is
 #      run that doesn't check out. Puts the server in /srv/quire/server, its settings and new secrets
 #      in server.env (root only), and the "quire-server" command in /usr/local/bin.
-#   3. Starts the server without its front door (PostgreSQL, docker-proxy, agent), with the release's
+#   3. Starts the server without its front door (PostgreSQL, the Docker gate, agent), with the release's
 #      images, by digest (or the agent built from --source).
 #   4. Adopts the Quire sites already running from /srv/quire/sites (asks first): they're backed up
 #      and moved behind the front door, a few seconds offline each.
@@ -281,7 +281,13 @@ start_core() {
 	# nothing started that would take a port.
 	compose create --quiet-pull >/dev/null
 	compose up --detach --wait --wait-timeout 300 agent >/dev/null || die 'The server didn'\''t start: see "quire-server logs".'
-	note 'PostgreSQL, docker-proxy and the agent run'
+	note 'PostgreSQL, the Docker gate and the agent run'
+	builders=$(compose exec -T agent cat /run/quire-host/builder-apparmor 2>/dev/null || true)
+	case "$builders" in
+		yorvogate-buildkit-rootless) note 'Sites build rootless, under the AppArmor profile yorvogate-buildkit-rootless' ;;
+		unconfined) note 'Sites build rootless (this AppArmor has no restriction on user namespaces to lift)' ;;
+		*) note 'Sites build rootless (no AppArmor on this machine)' ;;
+	esac
 }
 
 adopt_sites() {

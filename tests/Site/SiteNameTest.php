@@ -57,7 +57,7 @@ final class SiteNameTest extends TestCase
      */
     public static function reserved(): iterable
     {
-        foreach (['server', 'agent', 'front', 'database', 'docker-proxy', 'console', 'sites', 'backups', 'quire', 'quire-server', 'quire-edge', 'quiredata'] as $name) {
+        foreach (['server', 'agent', 'front', 'gate', 'host-setup', 'database', 'docker-proxy', 'console', 'sites', 'backups', 'quire', 'quire-server', 'quire-edge', 'quiredata'] as $name) {
             yield $name => [$name];
         }
     }

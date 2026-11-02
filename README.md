@@ -9,9 +9,11 @@ Many Quire sites on one machine, each with its own Quire version, database and d
 ```
 internet ── 80/443 ──► front      Caddy: a certificate per domain, at its first visit; each request to the
                                    site whose domain it names. Static: nothing to reload when sites change.
-                        agent      The only part that acts on Docker, through docker-proxy. Adds and removes
+                        agent      The only part that acts on Docker, through the gate. Adds and removes
                                    sites, keeps the front door's list of domains. No network listener.
-                        docker-proxy  The Docker API, limited to what the agent needs.
+                        gate       YorvoGate: reads every request to Docker before Docker gets it. The
+                                   agent's own on one socket, each site's on a socket of its own, held to
+                                   what the site is allowed. No network at all.
                         database   PostgreSQL: the server's registry, and a database per site.
                         sites      /srv/quire/sites/<site>: a Quire project each (from quire/skeleton), its
                                    own containers, joined to the front door and PostgreSQL.
@@ -48,7 +50,7 @@ The installer:
 1. **Checks the machine,** and installs Docker from Docker's own repository if it's missing (it asks first, and checks Docker's signing key).
 2. **Gets the release and checks it before running anything:** its signature (Sigstore: made by this repository's release workflow, for that very version), its archive's checksum, and its image's signature. Anything that doesn't check out stops the installation.
 3. **Puts the server in `/srv/quire/server`,** its settings and newly generated secrets in `server.env` (readable by root only), and the `quire-server` command in `/usr/local/bin`.
-4. **Starts PostgreSQL, the docker-proxy and the agent,** from images pinned by digest: the release's agent image (`ghcr.io/quirecms/server`), never built on the machine.
+4. **Starts PostgreSQL, the Docker gate and the agent,** from images pinned by digest: the release's agent image (`ghcr.io/quirecms/server`), never built on the machine. Before the agent, `host-setup` prepares the machine for sites' builds: where AppArmor restricts user namespaces (Ubuntu 23.10 and later), it loads a profile that grants one only to sites' rootless BuildKit (`/etc/apparmor.d/yorvogate-buildkit-rootless`), rather than lifting the restriction for the whole machine. It runs at every start of the server and changes nothing else.
 5. **Adopts the Quire sites already running from `/srv/quire/sites`** (it asks first; see below).
 6. **Starts the front door,** once nothing else holds ports 80 and 443. If another web server holds them, it says which and stops there. It never stops anything it didn't start. When the machine's firewall is ufw and it's on, 80/tcp, 443/tcp and 443/udp are allowed in it.
 7. **Turns on automatic security updates** for the operating system (`--no-os-updates` leaves them as they are).
@@ -169,7 +171,7 @@ A site's versions are recorded in its folder's `composer.lock` (taken from its i
 
 ## Updating the server
 
-`quire-server update` moves the server itself (its agent, front door, docker-proxy and PostgreSQL's settings) to the latest release; `--to=0.2.0` to another one, `--check` only says whether there's a newer one. It runs in the **updater**, a container of the release that runs now: the new release is checked before any of it is used, and the agent isn't asked to replace itself.
+`quire-server update` moves the server itself (its agent, front door, Docker gate and PostgreSQL's settings) to the latest release; `--to=0.2.0` to another one, `--check` only says whether there's a newer one. It runs in the **updater**, a container of the release that runs now: the new release is checked before any of it is used, and the agent isn't asked to replace itself.
 
 1. **Gets the release and checks it as the installer does:** `release.env` signed by Quire Server's release workflow for exactly that version's tag (Sigstore), the archive's checksum, the image by digest. Its Compose files must work with this server's settings. Its image is pulled. Nothing has changed yet.
 2. **Waits for operations on sites to finish** (none starts meanwhile), and stops the agent. Sites keep running.
@@ -276,11 +278,20 @@ The agent can act on Docker, and that's root on the machine, so the server is bu
   - **Names that belong to others:** another site's domain or the database's name on a shared network, fixed container names, service names with a `-` (lowercase letters, digits and `_` only: Docker names a container `<site>-<service>-1`, so site `jane`'s service `blog-php` would take site `jane-blog`'s `php` container);
   - **New settings:** any Compose setting it doesn't know yet, until it's reviewed (e.g. `use_api_socket`, which hands a container the Docker socket).
 
-  Docker's own authorization plugins have been bypassed (CVE-2024-41110, CVE-2026-34040), so this check is the boundary.
+  Docker's own authorization plugins have been bypassed (CVE-2024-41110, CVE-2026-34040), so the server doesn't rely on them.
+- **Docker itself is behind a gate** ([YorvoGate](https://github.com/yorvolabs/yorvogate), pinned by digest), so a gap in that check isn't root on the machine. It reads each request's body as Docker would before Docker gets it. Each site's Compose runs on a socket of the site's own, which the agent opens for it with exactly what the server allows the site, so the gate holds it, whatever its files say:
+  - only what carries its project's label, and names of its own (`<site>-…`, `<site>_…`); nothing of the server's or another site's (another's containers don't even exist for it);
+  - the same limits as the check: no privileges, capabilities, host paths, devices, host namespaces or published ports, memory and process limits;
+  - images only in its own namespace (`quire-sites/<site>/`), and no pushing them anywhere;
+  - on the shared networks, only its own names;
+  - its BuildKit only to build: nothing else runs in it.
+
+  The agent's own operations (Composer's sandbox, sites' builders, the server's database dumps) go to a socket of their own. Only the agent mounts the gate's sockets, and only the gate holds Docker's socket (and the updater, while it runs).
 - **Sites are isolated from the server and from each other:**
-  - no Docker access, and no route to the agent or the docker-proxy;
+  - no Docker access, and no route to the agent or the gate;
   - a PostgreSQL role that opens only the site's own database, with a share of the server's PostgreSQL it can't exceed (32 connections, 5 GB of temporary files; queries and idle transactions end after 15 and 10 minutes unless the site asks otherwise), and connections kept for the server itself;
   - every service of a site, whoever wrote it: no Linux capabilities but a few harmless ones added back, `no-new-privileges`, memory and process limits, one container each (a site's own extra service without them is refused).
+- **Each site builds on a BuildKit of its own,** so its build cache is its own: rootless (user 1000, not privileged, no capabilities, no host paths), from an image pinned by digest, on the sandbox network (the internet only). The site reaches it through its own socket, only to build, and the image it builds is checked by the gate before it's loaded.
 - **Composer runs in a container of its own** when the server audits or plans a site's update: the agent's image, as nobody, with no capabilities, on a network of its own that only reaches the internet, with only a copy of the site's composer.json and composer.lock. A composer.json that has it fetch other than over HTTPS (`secure-http: false`, `http://` repositories, request `options`) is refused.
 - **The front door serves only registered domains,** and gets certificates only for them. A request's Host header must also match the name its connection was encrypted for, so a forged header can't reach another container. It reaches each site by a name only Docker's network knows (`<domain>.quire.internal`), never the public one: a site that's down gives "Back in a moment", not a loop back to the server.
 - **Secrets:**
@@ -291,7 +302,7 @@ The agent can act on Docker, and that's root on the machine, so the server is bu
 - **Nothing is deleted without a backup,** and every operation is recorded. **Backups off the server are encrypted on it** (restic) before they leave; their password and the bucket's keys are in `server.env` (root only), never in a command line or a log.
 - **Sites build on Quire's runtime images only when they check out:** before every build, each runtime image a site's Dockerfile names (`ghcr.io/quirecms/runtime`, `RUNTIME_BUILDER` and `RUNTIME`) must be signed by quirecms/framework's runtime workflow (Sigstore), and the build gets it by the digest that was checked. One that doesn't check out stops the build (an update is rolled back). Other base images are the site's choice, built on as they are and noted in the operation's log.
 - **Upgrading PostgreSQL never changes the old major's data:** the new one is filled beside it, checked, and only then switched to. The copy runs with the new major's own tools, passwords only through the environment, and database names only as arguments of a fixed script (anything but plain names is refused).
-- **Updates of the server are checked before any of their code runs,** by the release that runs (see "Updating the server"). The updater is the one part with Docker itself rather than the docker-proxy, since it may replace the docker-proxy: it runs only on demand, only the installed release's code, and takes nothing but a version.
+- **Updates of the server are checked before any of their code runs,** by the release that runs (see "Updating the server"). The updater is the one part with Docker itself rather than the gate, since it may replace the gate: it runs only on demand, only the installed release's code, and takes nothing but a version. Services a release no longer has are removed by it; an updater from before the Docker gate leaves the docker-proxy, which the agent removes when it starts, with the privileged builders of those releases.
 
 What this doesn't protect against: a kernel exploit from inside a container (containers share the machine's kernel), a bug in Docker itself, and anyone who is root on the machine or holds `server.env`. [SECURITY.md](SECURITY.md) has the whole threat model, and how to report a vulnerability.
 

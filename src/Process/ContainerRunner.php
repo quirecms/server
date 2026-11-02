@@ -4,21 +4,21 @@ declare(strict_types=1);
 
 namespace Quire\Server\Process;
 
+use Quire\Server\Docker\SandboxNetwork;
 use Symfony\Component\Filesystem\Filesystem;
 
 /**
  * Runs a program in a container of its own, for programs that act on what a site gives them, e.g.
  * Composer on a site's composer.json, which names the addresses it fetches from. In the agent, any
- * address it reaches is one of the agent's networks: the docker-proxy's, which is root on the host,
- * or the database's. The container has the agent's image (its programs), but none of its networks:
- * one of its own, with a way to the internet only. It runs as nobody, with no capabilities and a
+ * address it reaches is one of the agent's networks: the database's. The container has the agent's image (its programs), but none of its networks:
+ * the sandbox network, with a way to the internet only (SandboxNetwork). It runs as nobody, with no capabilities and a
  * read-only root, and sees only a copy of the files in the folder it's given, never the site's folder.
  * What it leaves there (regular files only) is copied back after it ends.
  */
 final readonly class ContainerRunner implements ProcessRunner
 {
-    public const string NETWORK = 'quire-sandbox';
-    public const string LABEL = 'com.quirecms.server.sandbox';
+    public const string NETWORK = SandboxNetwork::NAME;
+    public const string LABEL = SandboxNetwork::LABEL;
 
     /** Who runs the program: nobody */
     private const int USER = 65534;
@@ -28,6 +28,8 @@ final readonly class ContainerRunner implements ProcessRunner
     private const int MAX_FILE = 64 * 1024 * 1024;
 
     private Filesystem $filesystem;
+
+    private SandboxNetwork $network;
 
     public function __construct(
         private ProcessRunner $runner,
@@ -39,6 +41,7 @@ final readonly class ContainerRunner implements ProcessRunner
         private int $user = self::USER,
     ) {
         $this->filesystem = new Filesystem();
+        $this->network = new SandboxNetwork($runner, $dockerHost);
     }
 
     /**
@@ -51,7 +54,7 @@ final readonly class ContainerRunner implements ProcessRunner
             throw new \InvalidArgumentException('A program in a container runs in a folder of files it is given.');
         }
 
-        $this->network();
+        $this->network->ensure();
         $name = 'quire-sandbox-'.bin2hex(random_bytes(6));
         $copy = $this->work.'/'.$name;
         $this->filesystem->mkdir($copy, 0o700);
@@ -111,23 +114,6 @@ final readonly class ContainerRunner implements ProcessRunner
     private function remove(string $name): void
     {
         $this->runner->run(['docker', 'rm', '--force', $name], ['DOCKER_HOST' => $this->dockerHost], timeout: 60);
-    }
-
-    /**
-     * The containers' network: Docker's default kind, with a way out, and nothing else on it.
-     */
-    private function network(): void
-    {
-        if ($this->runner->run(['docker', 'network', 'inspect', self::NETWORK], ['DOCKER_HOST' => $this->dockerHost], timeout: 60)->successful()) {
-            return;
-        }
-
-        $created = $this->runner->run(['docker', 'network', 'create', '--label', self::LABEL.'=1', self::NETWORK], ['DOCKER_HOST' => $this->dockerHost], timeout: 60);
-
-        // Another run may have just created it.
-        if (!$created->successful() && !str_contains($created->errorOutput, 'already exists')) {
-            $created->orFail('Creating the network for programs in containers');
-        }
     }
 
     /**
