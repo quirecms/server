@@ -10,7 +10,9 @@
 # (sysctl ...=0) would lift it for every process on the host, so it isn't done.
 #
 # Prints one word on its standard output, the AppArmor profile sites' builders run under:
-#   yorvogate-buildkit-rootless  the profile is loaded (AppArmor 4 or later)
+#   yorvogate-buildkit-rootless  the profile is loaded (AppArmor 4 or later), by this script or
+#                                already (AppArmor's profiles are the kernel's: in a container, e.g.
+#                                Docker-in-Docker, the machine's own may have loaded it)
 #   unconfined                   AppArmor older than 4: it can't write "userns", and has no such
 #                                restriction to lift (Docker's default profile would stop BuildKit)
 #   none                         the host has no AppArmor (no option is given)
@@ -29,7 +31,15 @@ if [ ! -d /sys/kernel/security/apparmor ] || [ "$(cat /sys/module/apparmor/param
 fi
 
 parser=$(command -v apparmor_parser || true)
-[ -n "$parser" ] || { echo 'AppArmor is on, but apparmor_parser is missing: install the "apparmor" package.' >&2; exit 1; }
+if [ -z "$parser" ]; then
+	if grep -q "^$name " "$loaded" 2>/dev/null; then
+		echo "AppArmor: the profile $name is loaded already (no apparmor_parser here)." >&2
+		echo "$name"
+		exit 0
+	fi
+	echo "AppArmor is on, but apparmor_parser is missing and the profile $name isn't loaded: install the \"apparmor\" package." >&2
+	exit 1
+fi
 
 if [ ! -f /etc/apparmor.d/abi/4.0 ]; then
 	echo 'AppArmor is older than 4.0 here (no user namespace restriction): builders run unconfined.' >&2

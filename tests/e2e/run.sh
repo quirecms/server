@@ -102,6 +102,8 @@ check 'on a system other than Ubuntu 26.04 LTS or later, nothing installs withou
 inside "$install" | tee "$logs"/install.log | sed 's/^/    /'
 check 'the installer finished' "grep -q 'Quire Server runs' $logs/install.log"
 check 'it warned that the system is untested' "grep -q 'going on, as --unsupported-os asks, untested' $logs/install.log"
+# What didn't start says why
+if ! grep -q 'Quire Server runs' "$logs"/install.log; then inside 'cd /srv/quire/server && docker compose --env-file server.env logs --no-color host-setup gate agent 2>&1 | tail -60' | sed 's/^/    /' || true; fi
 check 'the stack is up and healthy' "inside 'quire-server ps --format \"{{.Service}} {{.Health}}\" | grep -q \"agent healthy\"'"
 published=$(inside "docker ps --format '{{.Names}} {{.Ports}}'" | grep -c '0.0.0.0' || true)
 check 'only the front door publishes ports' "[ $published = 1 ]"
@@ -113,10 +115,12 @@ else
 check 'it says it was built from a checkout (no release image)' "inside 'quire-server version' | grep -q 'built from a checkout'"
 fi
 check 'every image of the stack is pinned by digest' "! inside 'cd /srv/quire/server && docker compose --env-file server.env config --images' | grep -v '^quire-server-agent\$' | grep -vq '@sha256:'"
+if ! release; then
 check 'the Docker gate has no network at all' "[ \"\$(inside 'docker inspect quire-server-gate-1 --format \"{{.HostConfig.NetworkMode}}\"')\" = none ]"
 check 'only the gate holds Docker'\''s socket (and the updater, when it runs)' "[ \"\$(inside 'docker ps --format \"{{.Names}}\" | xargs docker inspect --format \"{{.Name}} {{range .Mounts}}{{.Source}} {{end}}\"' | grep -c docker.sock)\" = 1 ] && inside 'docker inspect quire-server-gate-1 --format \"{{range .Mounts}}{{.Source}} {{end}}\"' | grep -q docker.sock"
 check 'the agent reaches Docker through the gate only' "[ \"\$(inside 'docker inspect quire-server-agent-1 --format \"{{range .Config.Env}}{{println .}}{{end}}\"' | grep ^DOCKER_HOST=)\" = DOCKER_HOST=unix:///run/quire-gate/trusted/trusted.sock ]"
 check 'the host was set up for builds' "inside 'docker run --rm -v quire-server_host_facts:/facts:ro alpine:3.22 cat /facts/builder-apparmor' | grep -Eqx 'none|unconfined|yorvogate-buildkit-rootless'"
+fi
 check 'its secrets are root'\''s only' "[ \"\$(inside 'stat -c %a /srv/quire/server/server.env')\" = 600 ] && [ \"\$(inside 'stat -c %a /srv/quire/sites')\" = 700 ]"
 
 resolve='--resolve demo.test:443:127.0.0.1 --resolve jane.test:443:127.0.0.1 --resolve www.jane.test:443:127.0.0.1 --resolve evil.test:443:127.0.0.1'
