@@ -7,9 +7,11 @@ namespace Quire\Server\Docker;
 use Quire\Server\Process\ProcessRunner;
 
 /**
- * A site's images, on its own socket of the Docker gate: which one a name points to, and pointing a
- * name at another one (a site's previous image, kept to roll back to). The gate lets a site name
- * images only in its own namespace ("quire-sites/<project>/").
+ * A site's images: which one a name points to, and pointing a name at another one (a site's previous
+ * image, kept to roll back to). On the gate's trusted socket: an image a site ran before a build has
+ * no name any more (only its container uses it), and the gate can't tell whose a nameless image is,
+ * so a site's own socket doesn't show it. The names are held here instead: only in the site's own
+ * namespace ("quire-sites/<project>/"), and containers only the site's own ("<project>-…").
  */
 final readonly class Images
 {
@@ -28,7 +30,7 @@ final readonly class Images
      */
     public function id(SiteProject $project, string $name): ?string
     {
-        $result = $this->docker($project, ['image', 'inspect', '--format', '{{.Id}}', $this->name($name)]);
+        $result = $this->docker(['image', 'inspect', '--format', '{{.Id}}', $this->name($project, $name)]);
         $id = trim($result->output);
 
         return $result->successful() && 1 === preg_match(self::ID, $id) ? $id : null;
@@ -39,7 +41,11 @@ final readonly class Images
      */
     public function ofContainer(SiteProject $project, string $container): ?string
     {
-        $result = $this->docker($project, ['container', 'inspect', '--format', '{{.Image}}', $container]);
+        if (!str_starts_with($container, $project->name().'-')) {
+            throw new \InvalidArgumentException(\sprintf('"%s" isn\'t one of the site\'s containers.', $container));
+        }
+
+        $result = $this->docker(['container', 'inspect', '--format', '{{.Image}}', $container]);
         $id = trim($result->output);
 
         return $result->successful() && 1 === preg_match(self::ID, $id) ? $id : null;
@@ -54,7 +60,7 @@ final readonly class Images
             throw new \InvalidArgumentException(\sprintf('"%s" isn\'t an image ID.', $id));
         }
 
-        $this->docker($project, ['image', 'tag', $id, $this->name($name)])->orFail('Naming the image');
+        $this->docker(['image', 'tag', $id, $this->name($project, $name)])->orFail('Naming the image');
     }
 
     /**
@@ -62,19 +68,23 @@ final readonly class Images
      */
     public function untag(SiteProject $project, string $name): void
     {
-        $this->docker($project, ['image', 'rm', '--no-prune', $this->name($name)]);
+        $this->docker(['image', 'rm', '--no-prune', $this->name($project, $name)]);
     }
 
-    private function name(string $name): string
+    private function name(SiteProject $project, string $name): string
     {
-        return 1 === preg_match(self::NAME, $name) ? $name : throw new \InvalidArgumentException(\sprintf('"%s" isn\'t an image name.', $name));
+        if (1 !== preg_match(self::NAME, $name) || !str_starts_with($name, PolicyContext::IMAGES.$project->name().'/')) {
+            throw new \InvalidArgumentException(\sprintf('"%s" isn\'t an image name of the site\'s own.', $name));
+        }
+
+        return $name;
     }
 
     /**
      * @param list<string> $arguments
      */
-    private function docker(SiteProject $project, array $arguments): \Quire\Server\Process\ProcessResult
+    private function docker(array $arguments): \Quire\Server\Process\ProcessResult
     {
-        return $this->runner->run(['docker', ...$arguments], $this->gate->site($project), timeout: 120);
+        return $this->runner->run(['docker', ...$arguments], $this->gate->trusted(), timeout: 120);
     }
 }
