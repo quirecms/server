@@ -382,7 +382,7 @@ inside "docker exec jane-php-1 bin/console quire:settings:set site.title 'Jane a
 check 'and writes to it' "title 'Jane after'"
 docker cp "$here/tests/e2e/try-databases.php" "$dind:/root/try-databases.php"
 inside 'docker cp /root/try-databases.php jane-php-1:/app/var/try-databases.php'
-check 'its role is still refused the server'\''s databases' "[ \"\$(inside 'docker exec jane-php-1 php /app/var/try-databases.php' | grep -c ': denied')\" = 3 ]"
+check 'its role is still refused the server'\''s databases' "[ \"\$(inside 'docker exec jane-php-1 php /app/var/try-databases.php' | grep -Ec ': (refused|denied)\$')\" = 3 ]"
 check 'the agent runs, with its registry' "inside 'quire-server ps --format \"{{.Service}} {{.Health}}\"' | grep -q 'agent healthy' && inside 'quire-server operations' | grep -q 'server.database-upgrade.*succeeded'"
 check "18's data stays, beside $major's" "[ \"\$(inside 'docker run --rm -v quire-server_database_data:/v alpine ls /v' | tr '\\n' ' ')\" = \"18 $major \" ]"
 check 'its record is root'\''s only' "[ \"\$(inside 'stat -c %a /srv/quire/backups/database/*/upgrade.json' | sort -u)\" = 600 ]"
@@ -506,7 +506,9 @@ inside 'rm -rf /srv/quire/sites/jane/src/EventListener'
 echo '== Automatic updates (what the night does, run now)'
 check 'a site gets security updates by default' "inside 'quire-server site:updates jane' | grep -q 'fix a known vulnerability'"
 inside 'quire-server site:updates jane off >/dev/null'
-check 'a site whose automatic updates are off gets none' "inside 'quire-server site:update --all --automatic 2>&1' | grep -q 'No site gets automatic updates'"
+# (The adopted site, in a run of every part, still gets its own: only jane's are off.)
+inside 'quire-server site:update --all --automatic 2>&1' > "$logs"/automatic-off.log || true
+check 'a site whose automatic updates are off gets none' "! grep -q jane $logs/automatic-off.log && grep -Eq 'No site gets automatic updates|demo' $logs/automatic-off.log"
 inside 'quire-server site:updates jane security >/dev/null'
 inside 'quire-server site:update --all --automatic 2>&1' | tee "$logs"/automatic.log | sed 's/^/    /'
 check 'its known vulnerability is fixed by itself' "grep -Eq 'jane +updated +fixes symfony/yaml' $logs/automatic.log && ! inside 'grep -A1 \"\\\"name\\\": \\\"symfony/yaml\\\"\" /srv/quire/sites/jane/composer.lock' | grep -q '\"v8.1.0\"'"
@@ -562,8 +564,11 @@ check 'its image is named in its own namespace' "[ \"\$(inside 'docker inspect b
 # A commit building an image under another site's name (its next start would run this code)
 inside "printf '%s\n' '{print} /^services:\$/ && !done {print \"  squat:\"; print \"    build: .\"; print \"    image: quire-sites/jane/php-prod\"; done = 1}' > /root/squat.awk && docker cp /root/squat.awk git-server:/tmp/squat.awk"
 commit 'awk -f /tmp/squat.awk compose.prod.yaml > /tmp/c && cat /tmp/c > compose.prod.yaml' 'Squat'
+# jane's image as it is (none, unless the sites part made jane in this run)
+jane_image() { inside 'docker image inspect --format "{{.Id}}" quire-sites/jane/php-prod 2>/dev/null' || true; }
+jane_before=$(jane_image)
 inside 'quire-server site:deploy blog 2>&1' | tee "$logs"/git-squat.log | sed 's/^/    /'
-check 'a commit naming another site'\''s image is refused, never built' "grep -q 'quire-sites/jane/php-prod' $logs/git-squat.log && grep -q 'as it was before' $logs/git-squat.log && ! inside 'docker image inspect quire-sites/jane/php-prod'"
+check 'a commit naming another site'\''s image is refused, never built' "grep -q 'quire-sites/jane/php-prod' $logs/git-squat.log && grep -q 'as it was before' $logs/git-squat.log && [ \"\$(jane_image)\" = '$jane_before' ]"
 commit 'git revert --no-commit HEAD' 'Back'
 # A commit adding a service with Docker's defaults (NET_RAW) in the web container's network
 inside "printf '%s\n' '{print} /^services:\$/ && !done {print \"  sidecar:\"; print \"    image: alpine:3.22\"; print \"    network_mode: service:php\"; done = 1}' > /root/sidecar.awk && docker cp /root/sidecar.awk git-server:/tmp/sidecar.awk"
