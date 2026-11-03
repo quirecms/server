@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Quire\Server\Network;
 
+use Quire\Server\Database\DatabaseAccess;
 use Quire\Server\Process\ProcessRunner;
 use Quire\Server\Registry\SiteNetworks;
 use Quire\Server\Site\Site;
@@ -33,6 +34,7 @@ final readonly class SiteLinks
         private DockerSubnets $docker,
         private ProcessRunner $runner,
         private string $dockerHost,
+        private DatabaseAccess $access,
     ) {
     }
 
@@ -84,6 +86,9 @@ final readonly class SiteLinks
             $this->disconnect($link, self::DATABASE);
         }
 
+        // Its role logs in from there, and from nowhere else, before anything of the site runs
+        $this->access->sites();
+
         return $subnets;
     }
 
@@ -125,6 +130,15 @@ final readonly class SiteLinks
             }
         }
 
+        // PostgreSQL's rules as the registry has them (the server's network may have been made again)
+        if ($this->access->server()) {
+            $done[] = 'the server\'s logins to PostgreSQL from its network written again';
+        }
+
+        if ($this->access->sites()) {
+            $done[] = 'sites\' logins to PostgreSQL from their links written again';
+        }
+
         return $done;
     }
 
@@ -142,6 +156,7 @@ final readonly class SiteLinks
         }
 
         $this->networks->release($site);
+        $this->access->sites();
     }
 
     /**

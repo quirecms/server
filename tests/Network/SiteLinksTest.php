@@ -28,6 +28,8 @@ final class SiteLinksTest extends RegistryTestCase
     /** @var array<string, array<string, array{ip: string, aliases: list<string>}>> Container => network => attachment */
     private array $containers = [];
 
+    private int $reloads = 0;
+    private string $access;
     private ScriptedRunner $runner;
     private SiteLinks $links;
 
@@ -41,14 +43,14 @@ final class SiteLinksTest extends RegistryTestCase
         new SiteRegistry($this->connection, $this->schema)->add(new SiteName('demo'), [new Domain('demo.example')], Site::OWN_DATABASE, 'demo');
 
         $this->containers = [SiteLinks::FRONT_DOOR => ['quire-edge' => ['ip' => '172.18.0.2', 'aliases' => []]], SiteLinks::DATABASE => ['quire-data' => ['ip' => '172.19.0.2', 'aliases' => ['quire-database']]]];
-        $this->networks = ['bridge' => ['subnet' => '172.17.0.0/16', 'internal' => false, 'label' => '']];
+        $this->networks = ['bridge' => ['subnet' => '172.17.0.0/16', 'internal' => false, 'label' => ''], 'quire-data' => ['subnet' => '172.19.0.0/16', 'internal' => false, 'label' => '']];
         $this->runner = new ScriptedRunner([
             'docker network ls' => fn (array $command): ProcessResult => ScriptedRunner::ok($command, implode("\n", array_keys($this->networks))."\n"),
             'docker network inspect' => function (array $command): ProcessResult {
                 $names = \array_slice($command, 5);
 
-                if ('{{.Name}}' === $command[4]) {
-                    return isset($this->networks[$names[0]]) ? ScriptedRunner::ok($command, $names[0]."\n") : ScriptedRunner::failed($command, 'network '.$names[0].' not found');
+                if ('{{.Name}}' === $command[4] || '{{range .IPAM.Config}}{{.Subnet}} {{end}}' === $command[4]) {
+                    return isset($this->networks[$names[0]]) ? ScriptedRunner::ok($command, ('{{.Name}}' === $command[4] ? $names[0] : $this->networks[$names[0]]['subnet'].' ')."\n") : ScriptedRunner::failed($command, 'network '.$names[0].' not found');
                 }
 
                 return ScriptedRunner::ok($command, implode("\n", array_map(fn (string $name): string => $name.' '.$this->networks[$name]['subnet'], $names))."\n");
@@ -84,11 +86,17 @@ final class SiteLinksTest extends RegistryTestCase
 
                 return ScriptedRunner::ok($command);
             },
+            'docker kill --signal' => function (array $command): ProcessResult {
+                ++$this->reloads;
+
+                return ScriptedRunner::ok($command);
+            },
             'docker container inspect' => fn (array $command): ProcessResult => isset($this->containers[(string) end($command)])
                 ? ScriptedRunner::ok($command, implode(' ', array_keys($this->containers[(string) end($command)]))." \n")
                 : ScriptedRunner::failed($command, 'No such container'),
         ]);
-        $this->links = GateFixture::links($this->runner, $this->connection, $this->schema);
+        $this->access = sys_get_temp_dir().'/quire-access-links-'.bin2hex(random_bytes(6));
+        $this->links = GateFixture::links($this->runner, $this->connection, $this->schema, $this->access);
     }
 
     public function testASitesLinkIsItsOwnWithTheFrontDoorAndPostgresqlAtTheirAddresses(): void
@@ -163,7 +171,7 @@ final class SiteLinksTest extends RegistryTestCase
         $this->containers[SiteLinks::DATABASE] = ['quire-data' => ['ip' => '172.19.0.2', 'aliases' => ['quire-database']]];
         $registry = new SiteRegistry($this->connection, $this->schema);
 
-        self::assertSame(['demo: the front door back on its link', 'jane: the front door, PostgreSQL back on its link'], $this->links->reconcile($registry->all()));
+        self::assertSame(['demo: the front door back on its link', 'jane: the front door, PostgreSQL back on its link', 'the server\'s logins to PostgreSQL from its network written again'], $this->links->reconcile($registry->all()), 'Its first round writes the server\'s logins too (the agent\'s start does, before it).');
         self::assertSame(['ip' => '10.72.0.2', 'aliases' => []], $this->attachment(SiteLinks::FRONT_DOOR, 'quire-link-jane'));
         self::assertSame(['ip' => '10.72.0.66', 'aliases' => []], $this->attachment(SiteLinks::FRONT_DOOR, 'quire-link-demo'));
         self::assertSame(['ip' => '10.72.0.3', 'aliases' => ['quire-database']], $this->attachment(SiteLinks::DATABASE, 'quire-link-jane'));
@@ -171,7 +179,8 @@ final class SiteLinksTest extends RegistryTestCase
 
         $commands = \count($this->runner->runs);
         self::assertSame([], $this->links->reconcile($registry->all()), 'Nothing missing, nothing done.');
-        self::assertSame(['docker network ls', 'docker network inspect', 'docker container inspect', 'docker container inspect'], \array_slice($this->runner->keys(), $commands), 'The same few calls, whatever the number of sites.');
+        self::assertSame(['docker network ls', 'docker network inspect', 'docker container inspect', 'docker container inspect', 'docker network inspect'], \array_slice($this->runner->keys(), $commands), 'The same few calls, whatever the number of sites (the last: the server\'s network, for its logins).');
+        self::assertSame(2, $this->reloads, 'PostgreSQL read its rules again for each change only: jane\'s login, then the server\'s (demo has its own PostgreSQL: nothing changed).');
     }
 
     public function testSitesWithoutAddressesOrRemovedAreLeftAlone(): void
@@ -181,7 +190,8 @@ final class SiteLinksTest extends RegistryTestCase
         $registry->setStatus(new SiteName('jane'), Site::REMOVED);
         unset($this->networks['quire-link-jane']);
 
-        self::assertSame([], $this->links->reconcile($registry->all()), 'jane is removed; demo has no addresses yet (its add makes its link).');
+        self::assertSame(['the server\'s logins to PostgreSQL from its network written again', 'sites\' logins to PostgreSQL from their links written again'], $this->links->reconcile($registry->all()), 'jane is removed (its login goes); demo has no addresses yet (its add makes its link).');
+        self::assertStringNotContainsString('site_jane', (string) file_get_contents($this->access.'/sites.conf'));
         self::assertArrayNotHasKey('quire-link-demo', $this->networks);
     }
 

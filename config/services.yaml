@@ -63,6 +63,13 @@ services:
         arguments:
             $dockerHost: '%env(DOCKER_HOST)%'
 
+    # Who may log in to PostgreSQL from where: files its pg_hba.conf includes (compose.yaml's volume)
+    Quire\Server\Database\DatabaseAccess:
+        arguments:
+            $connection: '@doctrine.dbal.default_connection'
+            $dockerHost: '%env(DOCKER_HOST)%'
+            $directory: /run/quire-database/access
+
     Quire\Server\Docker\RuntimeImages:
         arguments:
             $dockerHost: '%env(DOCKER_HOST)%'

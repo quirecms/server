@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Quire\Server\Tests;
 
 use Doctrine\DBAL\Connection;
+use Quire\Server\Database\DatabaseAccess;
 use Quire\Server\Docker\Builders;
 use Quire\Server\Docker\Gate;
 use Quire\Server\Docker\SandboxNetwork;
@@ -13,6 +14,8 @@ use Quire\Server\Network\SiteLinks;
 use Quire\Server\Network\SiteNetworkRange;
 use Quire\Server\Process\ProcessRunner;
 use Quire\Server\Registry\SiteNetworks;
+use Quire\Server\Registry\SiteRegistry;
+use Quire\Server\Site\SiteFiles;
 
 /**
  * The Docker gate as tests have it: its folders under a test's root, and the sockets of the sites a
@@ -33,9 +36,24 @@ final class GateFixture
      * Sites' links on the trusted socket, their addresses in the test's registry schema, from the
      * default range.
      */
-    public static function links(ProcessRunner $runner, Connection $connection, string $schema): SiteLinks
+    public static function links(ProcessRunner $runner, Connection $connection, string $schema, ?string $access = null): SiteLinks
     {
-        return new SiteLinks(new SiteNetworks($connection, $schema), new SiteNetworkRange(SiteNetworkRange::DEFAULT), new DockerSubnets($runner, self::TRUSTED), $runner, self::TRUSTED);
+        return new SiteLinks(new SiteNetworks($connection, $schema), new SiteNetworkRange(SiteNetworkRange::DEFAULT), new DockerSubnets($runner, self::TRUSTED), $runner, self::TRUSTED, self::access($runner, $connection, $schema, $access));
+    }
+
+    /**
+     * PostgreSQL's logins' rules, written to this folder (a new one in the system's temporary folder if
+     * none is given). The test's connection is both the registry's and the administrative one.
+     */
+    public static function access(ProcessRunner $runner, Connection $connection, string $schema, ?string $directory = null): DatabaseAccess
+    {
+        $directory ??= sys_get_temp_dir().'/quire-access-'.bin2hex(random_bytes(6));
+
+        if (!is_dir($directory) && !mkdir($directory, 0o700, true)) {
+            throw new \RuntimeException('Couldn\'t make '.$directory);
+        }
+
+        return new DatabaseAccess(new SiteRegistry($connection, $schema), new SiteNetworks($connection, $schema), $connection, $connection, new SiteFiles(), $runner, self::TRUSTED, $directory);
     }
 
     /**
@@ -49,7 +67,14 @@ final class GateFixture
     {
         $ok = static fn (array $command): \Quire\Server\Process\ProcessResult => ScriptedRunner::ok(array_values(array_map(static fn (mixed $part): string => \is_scalar($part) ? (string) $part : '', $command)));
 
-        return ['docker network ls' => $ok, 'docker network create' => $ok, 'docker network rm' => $ok, 'docker network connect' => $ok, 'docker network disconnect' => $ok];
+        // The server's network's addresses, for PostgreSQL's logins; any other network is there.
+        // PostgreSQL's container reloads its rules.
+        $inspect = static fn (array $command): \Quire\Server\Process\ProcessResult => ScriptedRunner::ok(
+            array_values(array_map(static fn (mixed $part): string => \is_scalar($part) ? (string) $part : '', $command)),
+            DatabaseAccess::NETWORK === end($command) ? "172.19.0.0/16 \n" : (\is_scalar(end($command)) ? (string) end($command) : '')."\n",
+        );
+
+        return ['docker network ls' => $ok, 'docker network inspect' => $inspect, 'docker network create' => $ok, 'docker network rm' => $ok, 'docker network connect' => $ok, 'docker network disconnect' => $ok, 'docker kill --signal' => $ok];
     }
 
     /**
