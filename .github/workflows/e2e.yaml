@@ -39,7 +39,7 @@ jobs:
       fail-fast: false
       matrix:
         part: [adopt, sites, git, release, update, backups, database]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 40
     steps:
       - name: Checkout code

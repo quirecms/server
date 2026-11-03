@@ -20,7 +20,7 @@ concurrency:
 jobs:
   qa:
     name: Quality checks and tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     steps:
       - name: Checkout code
@@ -42,7 +42,7 @@ jobs:
 
   shell:
     name: Shell scripts
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     steps:
       - name: Checkout code
@@ -55,7 +55,7 @@ jobs:
 
   image:
     name: The agent's image, scanned
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     steps:
       - name: Checkout code

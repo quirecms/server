@@ -21,7 +21,7 @@ A site is an ordinary Quire project in `/srv/quire/sites/<site>` (from `quire/sk
 
 ## Installing it
 
-On a Linux machine (Ubuntu or Debian for Docker to be installed for you; any distribution with Docker Engine 29 and Compose 2.24.4 or later), as root:
+On Ubuntu 26.04 LTS or a later LTS release (see [Supported systems](#supported-systems)), as root:
 
 ```bash
 curl -fsSL https://github.com/quirecms/server/releases/latest/download/install.sh -o install.sh
@@ -51,11 +51,20 @@ The installer:
 4. **Starts PostgreSQL, the docker-proxy and the agent,** from images pinned by digest: the release's agent image (`ghcr.io/quirecms/server`), never built on the machine.
 5. **Adopts the Quire sites already running from `/srv/quire/sites`** (it asks first; see below).
 6. **Starts the front door,** once nothing else holds ports 80 and 443. If another web server holds them, it says which and stops there. It never stops anything it didn't start. When the machine's firewall is ufw and it's on, 80/tcp, 443/tcp and 443/udp are allowed in it.
-7. **Turns on automatic security updates** for the operating system (Ubuntu and Debian; `--no-os-updates` leaves them as they are).
+7. **Turns on automatic security updates** for the operating system (`--no-os-updates` leaves them as they are).
 
 Running it again is safe: it keeps the secrets it made and finishes what's left, e.g. after you've freed ports 80 and 443. `--yes` answers yes to its questions; `--help` lists its options.
 
 **By hand,** for developers: copy this repository to `/srv/quire/server`, create `server.env` from `server.env.dist` (root only, with long random secrets, and `COMPOSE_FILE=compose.yaml:compose.build.yaml` to build the agent), install `bin/quire-server` in `/usr/local/bin`, and run `quire-server up`.
+
+### Supported systems
+
+Quire Server is tested on **Ubuntu 26.04 LTS**, and runs on it and on later LTS releases (28.04, …), on x86_64 and arm64. The installer refuses other systems:
+
+- **Ubuntu's interim releases** (26.10, …) get nine months of security updates: too short for a server.
+- **Other distributions, Debian included:** the Docker gate's builders rely on Ubuntu's AppArmor profile and its restriction on user namespaces, and the server's tests run on Ubuntu only. Another system could run it, but nothing checks that it's as safe there.
+
+`--unsupported-os` installs anyway, with a warning, at your own risk (Docker Engine 29 and Compose 2.24.4 or later must be there already: the installer installs Docker only on Ubuntu). A system is added to this list once the server's end-to-end tests pass on it.
 
 ### Releases
 
