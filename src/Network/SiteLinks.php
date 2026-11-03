@@ -6,6 +6,7 @@ namespace Quire\Server\Network;
 
 use Quire\Server\Process\ProcessRunner;
 use Quire\Server\Registry\SiteNetworks;
+use Quire\Server\Site\Site;
 use Quire\Server\Site\SiteFiles;
 use Quire\Server\Site\SiteName;
 
@@ -43,7 +44,7 @@ final readonly class SiteLinks
     /**
      * The site's addresses, its link made and the server's containers on it: what's missing is done,
      * what's there is checked. The front door and PostgreSQL are connected when their containers
-     * exist; when they're made later, the server's Compose files connect them.
+     * exist; when they're made later, reconcile() connects them.
      *
      * @param bool $database Whether it uses the server's PostgreSQL (an adopted site keeps its own)
      *
@@ -87,6 +88,47 @@ final readonly class SiteLinks
     }
 
     /**
+     * Every site's link made and the server's containers on it, as they should be: a container keeps its
+     * networks across restarts, but not when it's made again (an update, "quire-server up" after a
+     * change), and the server's Compose files don't name sites' links. Run in each of the agent's rounds
+     * and after "quire-server up": three calls to Docker when nothing is missing, whatever the number of
+     * sites. It only adds: an operation on a site may be making its link at the same time.
+     *
+     * @param list<Site> $sites
+     *
+     * @return list<string> What it did, one line each
+     */
+    public function reconcile(array $sites): array
+    {
+        $allocated = $this->networks->all();
+        $networks = $this->docker->all();
+        $front = $this->attached(self::FRONT_DOOR);
+        $database = $this->attached(self::DATABASE);
+        $done = [];
+
+        foreach ($sites as $site) {
+            if (Site::REMOVED === $site->status || !isset($allocated[$site->name->value])) {
+                continue;
+            }
+
+            $link = self::name($site->project);
+            $shared = Site::SHARED_DATABASE === $site->databaseMode;
+            $missing = array_keys(array_filter([
+                'the link itself' => !isset($networks[$link]),
+                'the front door' => null !== $front && !\in_array($link, $front, true),
+                'PostgreSQL' => $shared && null !== $database && !\in_array($link, $database, true),
+            ]));
+
+            if ([] !== $missing) {
+                $this->ensure($site->name, $site->project, $shared);
+                $done[] = \sprintf('%s: %s back on its link', $site->name, implode(', ', $missing));
+            }
+        }
+
+        return $done;
+    }
+
+    /**
      * The site's link gone and its addresses free (it's removed): the server's containers leave it first.
      */
     public function remove(SiteName $site, string $project): void
@@ -107,22 +149,35 @@ final readonly class SiteLinks
      */
     private function connect(string $link, string $container, string $address, array $aliases): void
     {
-        $networks = $this->docker(['container', 'inspect', '--format', '{{range $name, $_ := .NetworkSettings.Networks}}{{$name}} {{end}}', $container]);
+        $networks = $this->attached($container);
 
-        // Not made yet: the server's Compose files connect it when it is
-        if (!$networks->successful() || \in_array($link, explode(' ', trim($networks->output)), true)) {
+        // Not made yet (the agent's round connects it once it is), or on it already
+        if (null === $networks || \in_array($link, $networks, true)) {
             return;
         }
 
         $aliasArguments = array_merge(...array_map(static fn (string $alias): array => ['--alias', $alias], $aliases));
-        $this->docker(['network', 'connect', '--ip', $address, ...$aliasArguments, $link, $container])->orFail(\sprintf('Connecting %s to the site\'s link', $container));
+        $connected = $this->docker(['network', 'connect', '--ip', $address, ...$aliasArguments, $link, $container]);
+
+        // Connected meanwhile (the agent's round and an operation on the site, at once): done
+        if (!$connected->successful() && !str_contains($connected->errorOutput, 'already exists')) {
+            $connected->orFail(\sprintf('Connecting %s to the site\'s link', $container));
+        }
+    }
+
+    /**
+     * @return list<string>|null The networks a container is on, or null when it isn't there
+     */
+    private function attached(string $container): ?array
+    {
+        $networks = $this->docker(['container', 'inspect', '--format', '{{range $name, $_ := .NetworkSettings.Networks}}{{$name}} {{end}}', $container]);
+
+        return $networks->successful() ? array_values(array_filter(explode(' ', trim($networks->output)), static fn (string $name): bool => '' !== $name)) : null;
     }
 
     private function disconnect(string $link, string $container): void
     {
-        $networks = $this->docker(['container', 'inspect', '--format', '{{range $name, $_ := .NetworkSettings.Networks}}{{$name}} {{end}}', $container]);
-
-        if ($networks->successful() && \in_array($link, explode(' ', trim($networks->output)), true)) {
+        if (\in_array($link, $this->attached($container) ?? [], true)) {
             $this->docker(['network', 'disconnect', '--force', $link, $container])->orFail(\sprintf('Disconnecting %s from the site\'s link', $container));
         }
     }

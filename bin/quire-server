@@ -68,6 +68,9 @@ case "${1:-help}" in
 				exit 1
 			fi
 		fi
+		# Containers made again (the front door, PostgreSQL) are back on sites' links now, not at the
+		# agent's next round.
+		compose exec -T agent bin/console server:links --quiet || echo 'The agent couldn'\''t put sites'\'' links back yet: it does at its next round (within a minute).' >&2
 		;;
 	down)
 		shift

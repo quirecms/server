@@ -36,9 +36,9 @@ final class SiteLinksTest extends RegistryTestCase
     {
         parent::setUp();
 
-        foreach (['jane', 'demo'] as $name) {
-            new SiteRegistry($this->connection, $this->schema)->add(new SiteName($name), [new Domain($name.'.example')], Site::SHARED_DATABASE, $name);
-        }
+        // jane on the server's PostgreSQL; demo, adopted, with its own
+        new SiteRegistry($this->connection, $this->schema)->add(new SiteName('jane'), [new Domain('jane.example')], Site::SHARED_DATABASE, 'jane');
+        new SiteRegistry($this->connection, $this->schema)->add(new SiteName('demo'), [new Domain('demo.example')], Site::OWN_DATABASE, 'demo');
 
         $this->containers = [SiteLinks::FRONT_DOOR => ['quire-edge' => ['ip' => '172.18.0.2', 'aliases' => []]], SiteLinks::DATABASE => ['quire-data' => ['ip' => '172.19.0.2', 'aliases' => ['quire-database']]]];
         $this->networks = ['bridge' => ['subnet' => '172.17.0.0/16', 'internal' => false, 'label' => '']];
@@ -152,6 +152,54 @@ final class SiteLinksTest extends RegistryTestCase
 
         $this->links->remove(new SiteName('jane'), 'jane');
         self::assertSame('docker network inspect', array_last($this->runner->keys()), 'Removed already: nothing more to do.');
+    }
+
+    public function testTheServersContainersMadeAgainAreBackOnEverySitesLink(): void
+    {
+        $this->links->ensure(new SiteName('jane'), 'jane', true);
+        $this->links->ensure(new SiteName('demo'), 'demo', false);
+        // "quire-server up" made the front door and PostgreSQL again: their networks are the Compose files' only
+        $this->containers[SiteLinks::FRONT_DOOR] = ['quire-edge' => ['ip' => '172.18.0.2', 'aliases' => []]];
+        $this->containers[SiteLinks::DATABASE] = ['quire-data' => ['ip' => '172.19.0.2', 'aliases' => ['quire-database']]];
+        $registry = new SiteRegistry($this->connection, $this->schema);
+
+        self::assertSame(['demo: the front door back on its link', 'jane: the front door, PostgreSQL back on its link'], $this->links->reconcile($registry->all()));
+        self::assertSame(['ip' => '10.72.0.2', 'aliases' => []], $this->attachment(SiteLinks::FRONT_DOOR, 'quire-link-jane'));
+        self::assertSame(['ip' => '10.72.0.66', 'aliases' => []], $this->attachment(SiteLinks::FRONT_DOOR, 'quire-link-demo'));
+        self::assertSame(['ip' => '10.72.0.3', 'aliases' => ['quire-database']], $this->attachment(SiteLinks::DATABASE, 'quire-link-jane'));
+        self::assertNull($this->attachment(SiteLinks::DATABASE, 'quire-link-demo'), 'demo keeps its own PostgreSQL.');
+
+        $commands = \count($this->runner->runs);
+        self::assertSame([], $this->links->reconcile($registry->all()), 'Nothing missing, nothing done.');
+        self::assertSame(['docker network ls', 'docker network inspect', 'docker container inspect', 'docker container inspect'], \array_slice($this->runner->keys(), $commands), 'The same few calls, whatever the number of sites.');
+    }
+
+    public function testSitesWithoutAddressesOrRemovedAreLeftAlone(): void
+    {
+        $this->links->ensure(new SiteName('jane'), 'jane', true);
+        $registry = new SiteRegistry($this->connection, $this->schema);
+        $registry->setStatus(new SiteName('jane'), Site::REMOVED);
+        unset($this->networks['quire-link-jane']);
+
+        self::assertSame([], $this->links->reconcile($registry->all()), 'jane is removed; demo has no addresses yet (its add makes its link).');
+        self::assertArrayNotHasKey('quire-link-demo', $this->networks);
+    }
+
+    public function testALinkConnectedMeanwhileIsDone(): void
+    {
+        $this->runner->script['docker network connect'] = static fn (array $command): ProcessResult => ScriptedRunner::failed(array_values(array_map(static fn (mixed $part): string => \is_scalar($part) ? (string) $part : '', $command)), 'Error response from daemon: endpoint with name quire-server-front-1 already exists in network quire-link-jane');
+
+        $this->links->ensure(new SiteName('jane'), 'jane', true);
+
+        self::assertArrayHasKey('quire-link-jane', $this->networks, 'An operation on the site and the agent\'s round, at once: no failure.');
+    }
+
+    /**
+     * @return array{ip: string, aliases: list<string>}|null
+     */
+    private function attachment(string $container, string $network): ?array
+    {
+        return $this->containers[$container][$network] ?? null;
     }
 
     /**

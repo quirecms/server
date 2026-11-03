@@ -10,6 +10,7 @@ use Quire\Server\Docker\Builders;
 use Quire\Server\Docker\Gate;
 use Quire\Server\FrontDoor\DomainDirectory;
 use Quire\Server\Git\GitPoller;
+use Quire\Server\Network\SiteLinks;
 use Quire\Server\Operation\OperationLog;
 use Quire\Server\Operation\SiteManager;
 use Quire\Server\Registry\SiteRegistry;
@@ -28,7 +29,8 @@ use Symfony\Component\Console\Style\SymfonyStyle;
         Runs as the agent container's main process. When it starts, it waits for the Docker gate, removes
         what releases before the gate left (the docker-proxy, privileged builders) and gives each site its
         scope on the gate (and no other site one); operations a crash or a restart interrupted are marked
-        failed. Then, every minute, the front door's list of domains is made to
+        failed. Then, every minute, the front door and PostgreSQL are put back on sites' links they're
+        missing from (after they were made again), the front door's list of domains is made to
         match the sites that run, new commits of Git mode sites that poll are deployed, the nightly
         backups off the server are made when due, sites due for their nightly automatic updates get them, and a heartbeat file says the agent is alive (for
         Docker's health check; also at each step of a long deploy or update).
@@ -53,6 +55,7 @@ final class AgentCommand
         private readonly Gate $gate,
         private readonly Builders $builders,
         private readonly ServerPaths $paths,
+        private readonly SiteLinks $links,
     ) {
     }
 
@@ -90,6 +93,7 @@ final class AgentCommand
         }
 
         do {
+            $this->links($io);
             $changes = $this->frontDoor->reconcile($this->registry->servedDomains());
 
             foreach ($changes['added'] as $domain) {
@@ -159,6 +163,21 @@ final class AgentCommand
     /**
      * The backups on the server older than LocalBackups::KEEP_DAYS, once a day.
      */
+    /**
+     * Sites' links as they should be: the front door and PostgreSQL back on them after they were made
+     * again. A failure is said and tried again at the next round; the rest of the round goes on.
+     */
+    private function links(SymfonyStyle $io): void
+    {
+        try {
+            foreach ($this->links->reconcile($this->registry->all()) as $line) {
+                $io->writeln('Links: '.$line);
+            }
+        } catch (\Throwable $e) {
+            $io->writeln('Links: '.$e->getMessage());
+        }
+    }
+
     private function expire(SymfonyStyle $io): void
     {
         try {
