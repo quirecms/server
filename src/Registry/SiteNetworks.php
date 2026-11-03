@@ -69,7 +69,7 @@ final readonly class SiteNetworks
                 return $subnets;
             }
 
-            throw new \DomainException(\sprintf('No addresses are left for a site in %s (QUIRE_SERVER_SITE_NETWORKS): %d sites have theirs%s. A wider range needs every site\'s networks made again: see "Site networks" in the README.', $range->cidr, \count($taken), $blockedByDocker > 0 ? \sprintf(', and other Docker networks on this machine overlap %d more (%s)', $blockedByDocker, implode(', ', $this->overlapping($docker, $range->cidr))) : ''));
+            throw new \DomainException(\sprintf('No addresses are left for a site in %s (QUIRE_SERVER_SITE_NETWORKS): %d sites have theirs%s. A wider range that holds this one gives room (sites keep the addresses they have): see "Site networks" in the README.', $range->cidr, \count($taken), $blockedByDocker > 0 ? \sprintf(', and other Docker networks on this machine overlap %d more (%s)', $blockedByDocker, implode(', ', $this->overlapping($docker, $range->cidr))) : ''));
         });
     }
 

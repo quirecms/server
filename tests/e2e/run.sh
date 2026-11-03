@@ -75,7 +75,7 @@ until inside 'docker info' >/dev/null 2>&1; do sleep 1; done
 if [ -n "$cache" ]; then inside 'docker rm -f $(docker ps -aq) >/dev/null 2>&1; docker rmi -f quire-server-agent >/dev/null 2>&1; docker volume prune -af >/dev/null; docker network prune -f >/dev/null; rm -rf /srv/quire /root/blog; true'; fi
 inside 'apk add -q --no-cache curl openssl'
 # The machine's routes as Ubuntu's ip lists them (busybox's doesn't list every table)
-if linking; then inside 'apk add -q --no-cache iproute2'; fi
+if ! release; then inside 'apk add -q --no-cache iproute2'; fi
 # (Nothing else: install.sh needs only what a fresh machine has.)
 
 if want adopt; then
@@ -100,6 +100,8 @@ if from_release; then
 else
 	install='sh /root/quire-server/install.sh --source=/root/quire-server --yes --test-certificates --no-os-updates --unsupported-os 2>&1'
 fi
+# The installer with more options
+installing() { inside "${install% 2>&1} $* 2>&1"; }
 # This checkout's agent (the links part moves the release's server to it later)
 if [ -n "$image" ] && ! release; then
 	docker save "$image" | docker exec -i "$dind" docker load -q
@@ -108,6 +110,14 @@ fi
 
 # The Docker-in-Docker machine is Alpine: not a supported system, so it takes --unsupported-os.
 check 'on a system other than Ubuntu 26.04 LTS or later, nothing installs without --unsupported-os' "! inside 'sh /root/quire-server/install.sh --yes --no-os-updates' && inside 'sh /root/quire-server/install.sh --yes --no-os-updates 2>&1' | grep -q 'runs on Ubuntu 26.04 LTS' && ! inside 'test -e /srv/quire/server'"
+if ! from_release; then
+# A VPN's route on part of the sites' default range: sites there would lose their traffic to it
+inside 'ip route add 10.72.8.0/24 dev eth0'
+inside "$install" > "$logs"/install-routed.log || true
+check 'a range the machine routes elsewhere is refused before the server starts, with a free one named' "grep -q '10.72.8.0/24 (eth0)' $logs/install-routed.log && grep -q 'again with --site-networks=10.73.0.0/16, which nothing here routes' $logs/install-routed.log && ! grep -q 'Quire Server runs' $logs/install-routed.log && [ -z \"\$(inside 'docker ps -aq --filter label=com.docker.compose.project=quire-server')\" ]"
+check 'a range the agent wouldn'\''t take is refused, with why' "installing --site-networks=10.72.1.0/16 | grep -q \"10.72.1.0/16 isn't a network's own address\" && ! inside 'grep -q 10.72.1.0 /srv/quire/server/server.env'"
+inside 'ip route del 10.72.8.0/24 dev eth0'
+fi
 inside "$install" | tee "$logs"/install.log | sed 's/^/    /'
 check 'the installer finished' "grep -q 'Quire Server runs' $logs/install.log"
 check 'it warned that the system is untested' "grep -q 'going on, as --unsupported-os asks, untested' $logs/install.log"
@@ -149,6 +159,9 @@ fi
 server_env=$(inside 'sha256sum /srv/quire/server/server.env')
 inside "$install" > "$logs"/install-again.log || true
 check 'running the installer again changes nothing' "grep -q 'installed in /srv/quire/server already' $logs/install-again.log && grep -q 'Quire Server runs' $logs/install-again.log && [ \"\$(inside 'sha256sum /srv/quire/server/server.env')\" = \"$server_env\" ]"
+if want adopt && ! from_release; then
+check 'once a site has its addresses, the installer doesn'\''t change the range' "! installing --site-networks=10.73.0.0/16 > $logs/install-range.log && grep -q 'keep them, so --site-networks can' $logs/install-range.log && [ \"\$(inside 'sha256sum /srv/quire/server/server.env')\" = \"$server_env\" ]"
+fi
 # As PostgreSQL's superuser, in its container (local connections need the password too: SCRAM only)
 postgres_password=$(inside "sed -n 's/^QUIRE_SERVER_POSTGRES_PASSWORD=//p' /srv/quire/server/server.env" | tr -d "'")
 pg() { inside "docker exec -e PGPASSWORD=$postgres_password quire-server-database-1 psql -U postgres -Atc \"$1\""; }
