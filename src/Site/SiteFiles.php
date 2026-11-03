@@ -102,6 +102,9 @@ final readonly class SiteFiles
         $hosts = array_map(static fn (Domain $domain): string => $domain->value, $domains);
         $primary = $hosts[0];
         $hardening = ['security_opt' => ['no-new-privileges:true'], 'cap_drop' => ['ALL']];
+        // Every container of the site comes back after a reboot or a crash: said here, whatever its own
+        // files say (the skeleton's PostgreSQL had none, so an adopted site came back without it)
+        $hardening['restart'] = 'unless-stopped';
         $php = [
             'image' => self::image($project ?? $site->value),
             // Only the front door reaches the site.
