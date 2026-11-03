@@ -10,26 +10,22 @@ use Quire\Server\Registry\RuntimeBuilds;
 use Symfony\Component\Filesystem\Filesystem;
 
 /**
- * Docker Compose for sites, through the docker-proxy. Building and starting always check the site's
- * whole configuration against the policy first: there's no way to start a site without it. Building
- * checks Quire's runtime images it's built on too (RuntimeImages).
- *
- * Each site is built by a BuildKit of its own (a privileged container, as BuildKit's are), from an image
- * pinned by digest: a site's build cache ("RUN --mount=type=cache") can't be read or poisoned by
- * another site's build, and nothing that runs privileged is a tag someone could move.
+ * Docker Compose for sites, each on its own socket of the Docker gate (Gate), which holds what Docker
+ * receives to what the site is allowed. Building and starting always check the site's whole
+ * configuration against the policy first: there's no way to start a site without it. Building checks
+ * Quire's runtime images it's built on too (RuntimeImages), and builds on the site's own rootless
+ * BuildKit (Builders).
  */
 final readonly class Compose
 {
-    /** BuildKit, by digest: Dependabot can't see it here, so it's bumped by hand with Docker's CLI */
-    public const string BUILDKIT = 'moby/buildkit:v0.34.1@sha256:99368f3e46177c6405b9740e4461d91cee004128daeecca78d4ceac50ec1da5c';
-
     public function __construct(
         private ProcessRunner $runner,
         private ComposePolicy $policy,
         private ComposeFiles $files,
         private RuntimeImages $runtime,
         private RuntimeBuilds $builds,
-        private string $dockerHost,
+        private Gate $gate,
+        private Builders $builders,
     ) {
     }
 
@@ -85,7 +81,7 @@ final readonly class Compose
             $arguments[] = $name.'='.$image;
         }
 
-        $builder = $this->builder($project, $output);
+        $builder = $this->builders->ensure($project, $this->gate->site($project), $output);
         $this->compose($project, ['build', '--pull', '--builder', $builder, ...$arguments], timeout: 1800, output: $output)->orFail('Building the site');
         // What it's built on now: a newer runtime is built on at night.
         $this->builds->record($project->name(), $pinned);
@@ -103,16 +99,17 @@ final readonly class Compose
     }
 
     /**
-     * Starts a site with the configuration it had before the server changed it, unchecked: only to put
-     * back exactly what was running before (e.g. when adopting it failed), never anything new. Its
-     * env file must be the copy the server kept of the one it had.
+     * Starts a site with the configuration it had before the server changed it, unchecked, on the
+     * gate's trusted socket: only to put back exactly what was running before (e.g. when adopting it
+     * failed), never anything new. A site installed before the server publishes its own ports, which a
+     * site's socket refuses. Its env file must be the copy the server kept of the one it had.
      *
      * @param (\Closure(string): void)|null $output
      */
     public function restoreAsBefore(SiteProject $project, string $envFileBefore, ?\Closure $output = null): void
     {
         $before = new SiteProject($project->directory, $envFileBefore, $project->policy);
-        $this->compose($before, ['up', '--detach', '--wait', '--wait-timeout', '300', '--remove-orphans', '--no-build'], timeout: 600, output: $output)->orFail('Starting the site as it was');
+        $this->compose($before, ['up', '--detach', '--wait', '--wait-timeout', '300', '--remove-orphans', '--no-build'], timeout: 600, output: $output, trusted: true)->orFail('Starting the site as it was');
     }
 
     /**
@@ -124,23 +121,12 @@ final readonly class Compose
     }
 
     /**
-     * Removes the site's builders (its BuildKit containers and their caches): with the site, or those
-     * of an older BuildKit than BUILDKIT.
+     * Removes the site's builder and its build cache, and its scope on the gate: with the site.
      */
-    public function removeBuilders(SiteProject $project, ?string $except = null): void
+    public function forget(string $project): void
     {
-        $containers = $this->docker(['container', 'ls', '--all', '--filter', 'name=^buildx_buildkit_'.$this->builderPrefix($project), '--format', '{{.Names}}'], 60)->orFail('Listing the site\'s builders');
-
-        foreach (explode("\n", trim($containers->output)) as $container) {
-            // The filter is a prefix: another site's ("jane-blog" for "jane") isn't this one's.
-            if (1 !== preg_match('/^buildx_buildkit_'.preg_quote($this->builderPrefix($project), '/').'[0-9a-f]{12}0\z/', $container) || (null !== $except && 'buildx_buildkit_'.$except.'0' === $container)) {
-                continue;
-            }
-
-            $this->docker(['container', 'rm', '--force', '--volumes', $container], 120)->orFail('Removing the site\'s builder');
-            // Its cache: the volume buildx names after the container
-            $this->docker(['volume', 'rm', '--force', $container.'_state'], 60)->orFail('Removing the site\'s build cache');
-        }
+        $this->builders->remove($project);
+        $this->gate->remove($project);
     }
 
     /**
@@ -225,48 +211,15 @@ final readonly class Compose
     }
 
     /**
-     * The site's builder for BUILDKIT, created when it isn't there yet: its name says the image, so a
-     * new BuildKit makes new builders (and the older one goes).
-     *
-     * @param (\Closure(string): void)|null $output
-     */
-    private function builder(SiteProject $project, ?\Closure $output): string
-    {
-        $name = $this->builderPrefix($project).substr(hash('sha256', self::BUILDKIT), 0, 12);
-
-        if (!$this->docker(['buildx', 'inspect', $name], 60)->successful()) {
-            $this->docker(['buildx', 'create', '--name', $name, '--driver', 'docker-container', '--driver-opt', 'image='.self::BUILDKIT, '--bootstrap'], 600, $output)->orFail('Starting the site\'s builder');
-        }
-
-        $this->removeBuilders($project, except: $name);
-
-        return $name;
-    }
-
-    private function builderPrefix(SiteProject $project): string
-    {
-        return 'quire-'.$project->name().'-';
-    }
-
-    /**
      * @param list<string>                  $arguments
      * @param (\Closure(string): void)|null $output
      */
-    private function docker(array $arguments, float $timeout, ?\Closure $output = null): ProcessResult
-    {
-        return $this->runner->run(['docker', ...$arguments], ['DOCKER_HOST' => $this->dockerHost], timeout: $timeout, output: $output);
-    }
-
-    /**
-     * @param list<string>                  $arguments
-     * @param (\Closure(string): void)|null $output
-     */
-    private function compose(SiteProject $project, array $arguments, float $timeout, ?\Closure $output = null, ?string $inputFile = null): ProcessResult
+    private function compose(SiteProject $project, array $arguments, float $timeout, ?\Closure $output = null, ?string $inputFile = null, bool $trusted = false): ProcessResult
     {
         return $this->runner->run(
             ['docker', 'compose', '--project-directory', $project->directory, '--env-file', $project->envFile, '--project-name', $project->name(), ...$arguments],
             [
-                'DOCKER_HOST' => $this->dockerHost,
+                ...($trusted ? $this->gate->trusted() : $this->gate->site($project)),
                 'COMPOSE_ANSI' => 'never',
                 'COMPOSE_PROGRESS' => 'plain',
                 // Only the env file says which files and project: nothing inherited.

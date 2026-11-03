@@ -500,8 +500,10 @@ final readonly class SiteManager
 
                 if ($project instanceof SiteProject && is_file($directory.'/'.SiteFiles::ENV_FILE)) {
                     $this->compose->down($project, volumes: true, output: $operation->output(...));
-                    $this->compose->removeBuilders($project);
                 }
+
+                // Its builder and its socket on the Docker gate: nothing acts as it any more.
+                $this->compose->forget($site->project);
 
                 if (Site::SHARED_DATABASE === $site->databaseMode) {
                     $step('Removing its database');

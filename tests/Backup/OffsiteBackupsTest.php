@@ -34,6 +34,7 @@ use Quire\Server\Site\ServerPaths;
 use Quire\Server\Site\Site;
 use Quire\Server\Site\SiteFiles;
 use Quire\Server\Site\SiteName;
+use Quire\Server\Tests\GateFixture;
 use Quire\Server\Tests\Registry\RegistryTestCase;
 use Quire\Server\Tests\ScriptedRunner;
 use Quire\Server\Update\SiteUpdater;
@@ -201,12 +202,12 @@ final class OffsiteBackupsTest extends RegistryTestCase
         $repositories = new SiteGit($this->connection, $this->schema);
         $keys = new DeployKeys($this->runner, $this->paths);
         $git = new Git($this->runner, $keys);
-        $compose = new Compose($this->runner, new ComposePolicy(), new ComposeFiles(), new RuntimeImages($this->runner, new RuntimeFloors($this->connection, $this->schema)), new RuntimeBuilds($this->connection, $this->schema), 'tcp://docker-proxy:2375');
-        $sites = new SiteManager($this->registry, $operations, new SiteLock($this->connection, $this->schema), new SkeletonInstaller($this->runner), new SiteDatabases($this->connection), new SiteFiles(), $compose, new DomainDirectory($this->paths->domains()), $this->paths, $git, $repositories, $keys, new SiteDatabaseDumps($this->runner, $compose, 'tcp://docker-proxy:2375'), '');
-        $updater = new SiteUpdater($this->registry, new SiteUpdates($this->connection, $this->schema), $repositories, $operations, new SiteLock($this->connection, $this->schema), $sites, $compose, new Images($this->runner, 'tcp://docker-proxy:2375'), $git, $this->paths);
+        $compose = new Compose($this->runner, new ComposePolicy(), new ComposeFiles(), new RuntimeImages($this->runner, new RuntimeFloors($this->connection, $this->schema)), new RuntimeBuilds($this->connection, $this->schema), GateFixture::gate($this->runner, $this->root, 'jane', 'jane-copy', 'old-site'), GateFixture::builders($this->runner, $this->root));
+        $sites = new SiteManager($this->registry, $operations, new SiteLock($this->connection, $this->schema), new SkeletonInstaller($this->runner), new SiteDatabases($this->connection), new SiteFiles(), $compose, new DomainDirectory($this->paths->domains()), $this->paths, $git, $repositories, $keys, new SiteDatabaseDumps($this->runner, $compose, GateFixture::TRUSTED), '');
+        $updater = new SiteUpdater($this->registry, new SiteUpdates($this->connection, $this->schema), $repositories, $operations, new SiteLock($this->connection, $this->schema), $sites, $compose, new Images($this->runner, GateFixture::gate($this->runner, $this->root, 'jane', 'jane-copy', 'old-site')), $git, $this->paths);
         $settings = new BackupSettings('s3:https://host/bucket', 'the-key', 'the-secret', 'a-long-random-password-0123456789');
 
-        return new OffsiteBackups($settings, new Restic($this->runner, $settings, $this->root.'/backups/.restic-cache'), $this->registry, $sites, new SiteLock($this->connection, $this->schema), $updater, $repositories, new UpdatePolicies($this->connection, $this->schema), $operations, $this->paths, $this->runner, 'tcp://docker-proxy:2375', 'postgresql://postgres:x@quire-database:5432/postgres');
+        return new OffsiteBackups($settings, new Restic($this->runner, $settings, $this->root.'/backups/.restic-cache'), $this->registry, $sites, new SiteLock($this->connection, $this->schema), $updater, $repositories, new UpdatePolicies($this->connection, $this->schema), $operations, $this->paths, $this->runner, GateFixture::TRUSTED, 'postgresql://postgres:x@quire-database:5432/postgres');
     }
 
     /**

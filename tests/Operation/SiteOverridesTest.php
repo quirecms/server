@@ -20,6 +20,7 @@ use Quire\Server\Site\ServerPaths;
 use Quire\Server\Site\Site;
 use Quire\Server\Site\SiteFiles;
 use Quire\Server\Site\SiteName;
+use Quire\Server\Tests\GateFixture;
 use Quire\Server\Tests\Registry\RegistryTestCase;
 use Quire\Server\Tests\ScriptedRunner;
 use Symfony\Component\Filesystem\Filesystem;
@@ -51,7 +52,7 @@ final class SiteOverridesTest extends RegistryTestCase
         $this->registry = new SiteRegistry($this->connection, $this->schema);
         $this->runner = new ScriptedRunner([
             'docker image inspect' => fn (array $command): ProcessResult => isset($this->tags[$command[5]]) ? ScriptedRunner::ok($command, $this->tags[$command[5]]."\n") : ScriptedRunner::failed($command, 'No such image'),
-            'docker container inspect' => static fn (array $command): ProcessResult => 'demo_x-php-1' === $command[5] || 'jane-php-1' === $command[5] ? ScriptedRunner::ok($command, self::RUNNING."\n") : ScriptedRunner::failed($command, 'No such container'),
+            'docker container inspect' => static fn (array $command): ProcessResult => 'demo-x-php-1' === $command[5] || 'jane-php-1' === $command[5] ? ScriptedRunner::ok($command, self::RUNNING."\n") : ScriptedRunner::failed($command, 'No such container'),
             'docker image tag' => function (array $command): ProcessResult {
                 $this->tags[$command[4]] = $command[3];
 
@@ -73,7 +74,7 @@ final class SiteOverridesTest extends RegistryTestCase
     public function testSitesOfAnEarlierReleaseAreBroughtUpToDate(): void
     {
         $this->site('jane', 'jane', Site::SHARED_DATABASE);
-        $this->site('demo', 'demo_x', Site::OWN_DATABASE);
+        $this->site('demo', 'demo-x', Site::OWN_DATABASE);
         $this->registry->add(new SiteName('gone'), [new Domain('gone.example')], Site::SHARED_DATABASE, 'gone');
         $this->registry->setStatus(new SiteName('gone'), Site::REMOVED);
 
@@ -82,9 +83,9 @@ final class SiteOverridesTest extends RegistryTestCase
         $jane = (string) file_get_contents($this->paths->site(new SiteName('jane')).'/'.SiteFiles::OVERRIDE);
         self::assertStringContainsString('image: quire-sites/jane/php-prod', $jane);
         self::assertStringContainsString('jane.example', $jane, 'Its domains, from the registry.');
-        self::assertStringContainsString('image: quire-sites/demo_x/php-prod', (string) file_get_contents($this->paths->site(new SiteName('demo')).'/'.SiteFiles::OVERRIDE), 'An adopted site\'s own project.');
+        self::assertStringContainsString('image: quire-sites/demo-x/php-prod', (string) file_get_contents($this->paths->site(new SiteName('demo')).'/'.SiteFiles::OVERRIDE), 'An adopted site\'s own project.');
         ksort($this->tags);
-        self::assertSame(['quire-sites/demo_x/php-prod' => self::RUNNING, 'quire-sites/jane/php-prod' => self::RUNNING], $this->tags, 'The image each runs, named anew: its next update can be undone.');
+        self::assertSame(['quire-sites/demo-x/php-prod' => self::RUNNING, 'quire-sites/jane/php-prod' => self::RUNNING], $this->tags, 'The image each runs, named anew: its next update can be undone.');
         self::assertFileDoesNotExist($this->paths->site(new SiteName('gone')).'/'.SiteFiles::OVERRIDE);
         self::assertCount(2, array_keys($this->runner->keys(), 'docker compose up', true), 'Each started again with it, once.');
         self::assertStringContainsString('jane.example.quire.internal', $jane, 'Named on quire-edge by a name no public DNS answers.');
@@ -126,6 +127,6 @@ final class SiteOverridesTest extends RegistryTestCase
 
     private function subject(): SiteOverrides
     {
-        return new SiteOverrides($this->registry, new SiteFiles(), $this->paths, new Images($this->runner, 'tcp://docker-proxy:2375'), new SiteLock($this->connection, $this->schema), new Compose($this->runner, new ComposePolicy(), new ComposeFiles(), new RuntimeImages($this->runner, new RuntimeFloors($this->connection, $this->schema)), new RuntimeBuilds($this->connection, $this->schema), 'tcp://docker-proxy:2375'));
+        return new SiteOverrides($this->registry, new SiteFiles(), $this->paths, new Images($this->runner, GateFixture::gate($this->runner, $this->root, 'jane', 'demo-x', 'gone')), new SiteLock($this->connection, $this->schema), new Compose($this->runner, new ComposePolicy(), new ComposeFiles(), new RuntimeImages($this->runner, new RuntimeFloors($this->connection, $this->schema)), new RuntimeBuilds($this->connection, $this->schema), GateFixture::gate($this->runner, $this->root, 'jane', 'demo-x', 'gone'), GateFixture::builders($this->runner, $this->root)));
     }
 }

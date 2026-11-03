@@ -46,7 +46,7 @@ final readonly class ComposePolicy
      * (CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID). Never NET_RAW or NET_ADMIN (spoofing and
      * reconfiguring the networks other sites are on), nor any SYS_ one.
      */
-    private const array ALLOWED_CAPABILITIES = ['NET_BIND_SERVICE', 'CHOWN', 'DAC_OVERRIDE', 'FOWNER', 'SETGID', 'SETUID'];
+    public const array ALLOWED_CAPABILITIES = ['NET_BIND_SERVICE', 'CHOWN', 'DAC_OVERRIDE', 'FOWNER', 'SETGID', 'SETUID'];
 
     /**
      * A service's name: no dash. Docker names its container "<project>-<service>-1", and a site's name
@@ -55,8 +55,17 @@ final readonly class ComposePolicy
      */
     private const string SERVICE_NAME = '/^[a-z0-9][a-z0-9_]{0,62}\z/';
 
-    /** The most processes a container may run */
-    private const int MAX_PIDS = 4096;
+    /** The most processes a container may run (the Docker gate's max_pids, gate/yorvogate.yaml) */
+    public const int MAX_PIDS = 4096;
+
+    /** The most memory a container may have: 64 GiB (the gate's max_memory) */
+    public const int MAX_MEMORY = 64 << 30;
+
+    /**
+     * The limits a service may set ("ulimits"), the gate's too: no real-time priority ("rtprio"),
+     * locked memory or niceness above the others' on a shared machine.
+     */
+    public const array ULIMITS = ['nofile', 'nproc', 'core', 'stack'];
 
     /** Service settings no site may use */
     private const array FORBIDDEN_SERVICE_KEYS = [
@@ -203,7 +212,7 @@ final readonly class ComposePolicy
         }
 
         // Any other value joins a Docker network by its name, past the checks of "networks" below: the
-        // host's, the default bridge, or the docker-proxy's (quire-docker), which is root on the host.
+        // host's, the default bridge, or one of the server's own.
         $network = $this->string($service['network_mode'] ?? '');
         $sibling = str_starts_with($network, 'service:') ? substr($network, 8) : null;
 
@@ -364,6 +373,19 @@ final readonly class ComposePolicy
 
         if (null === ($service['mem_limit'] ?? $limits['memory'] ?? null)) {
             $violations[] = '"mem_limit" is missing: every service has a memory limit.';
+        }
+
+        // Compose prints both in bytes.
+        foreach (['mem_limit' => $service['mem_limit'] ?? null, 'deploy.resources.limits.memory' => $limits['memory'] ?? null] as $key => $memory) {
+            if (null !== $memory && (!is_numeric($memory) || (int) $memory < 1 || (int) $memory > self::MAX_MEMORY)) {
+                $violations[] = \sprintf('"%s: %s": at most %d GiB.', $key, $this->string($memory), self::MAX_MEMORY >> 30);
+            }
+        }
+
+        foreach (array_keys($this->map($service['ulimits'] ?? [])) as $limit) {
+            if (!\in_array($limit, self::ULIMITS, true)) {
+                $violations[] = \sprintf('"ulimits: %s": only %s may be set.', $limit, implode(', ', self::ULIMITS));
+            }
         }
 
         $pids = $service['pids_limit'] ?? $limits['pids'] ?? null;

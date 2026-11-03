@@ -8,8 +8,8 @@ use Quire\Server\Process\ProcessResult;
 use Quire\Server\Process\ProcessRunner;
 
 /**
- * The server's own Compose project (quire-server: front door, agent, docker-proxy, PostgreSQL), as the
- * updater acts on it: on Docker itself, since it may have to replace the docker-proxy.
+ * The server's own Compose project (quire-server: front door, agent, Docker gate, PostgreSQL), as the
+ * updater acts on it: on Docker itself, since it may have to replace the gate.
  */
 final readonly class ServerStack
 {
@@ -33,6 +33,28 @@ final readonly class ServerStack
         $this->compose($folder, $envFile, ['config', '--quiet'], 60)->orFail('Checking the release\'s Compose files with this server\'s settings');
     }
 
+    /**
+     * Whether the release's Docker gate accepts every site's scope the server has now: its own binary and
+     * settings, on the server's scope files, before anything is swapped. A gate refuses a scope it no
+     * longer accepts (YorvoGate 0.2.1 refuses prefixes of 12 hex digits and "_"), and that site then
+     * can't act on Docker. No network, nothing written.
+     *
+     * @return bool Whether it was checked: a release from before the gate (0.3.1 and older) has none
+     *
+     * @throws \RuntimeException When it refuses one, with the gate's reason (it names the file)
+     */
+    public function checkGate(string $folder, string $envFile): bool
+    {
+        $services = $this->compose($folder, $envFile, ['config', '--services'], 60)->orFail('Listing the release\'s services')->output;
+        if (!\in_array('gate', explode("\n", str_replace("\r", '', trim($services))), true)) {
+            return false;
+        }
+
+        $this->compose($folder, $envFile, ['run', '--rm', '--no-deps', '--quiet-pull', '-T', 'gate', 'check', '--config', '/etc/yorvogate/yorvogate.yaml'], 600)->orFail('Checking the sites\' scopes with the release\'s Docker gate');
+
+        return true;
+    }
+
     public function pull(string $image): void
     {
         $this->runner->run(['docker', 'pull', '--quiet', $image], ['DOCKER_HOST' => $this->dockerHost], timeout: 1800)->orFail('Getting the release\'s image');
@@ -52,14 +74,16 @@ final readonly class ServerStack
     }
 
     /**
-     * Starts what changed (of these services, or all) and waits until each is healthy.
+     * Starts what changed (of these services, or all) and waits until each is healthy. A service the
+     * release doesn't have any more goes (e.g. going back to a release before the Docker gate: the
+     * gate, which holds Docker's socket); the updater, a one-off container, isn't one of those.
      *
      * @param (\Closure(string): void)|null $output
      * @param list<string>                  $services
      */
     public function up(ServerFolder $folder, int $wait, ?\Closure $output = null, array $services = []): void
     {
-        $this->in($folder, ['up', '--detach', '--no-build', '--wait', '--wait-timeout', (string) $wait, ...$services], $wait + 600, $output)->orFail('Starting the server');
+        $this->in($folder, ['up', '--detach', '--no-build', '--remove-orphans', '--wait', '--wait-timeout', (string) $wait, ...$services], $wait + 600, $output)->orFail('Starting the server');
     }
 
     /**

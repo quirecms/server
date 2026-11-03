@@ -229,7 +229,7 @@ final readonly class SiteUpdater
                             SkeletonFiles::restore($directory, array_values(array_filter($putBack['paths'], \is_string(...))), $putBack['files']);
                         }
 
-                        $this->images->tag($intent['image_before'], $intent['image']);
+                        $this->images->tag($project, $intent['image_before'], $intent['image']);
                         $this->compose->up($project, $operation->output(...));
 
                         if (\is_string($intent['backup'] ?? null)) {
@@ -338,7 +338,7 @@ final readonly class SiteUpdater
             $project = $this->sites->projectOf($site);
             $image = $this->compose->image($project, self::PHP);
 
-            if ($this->images->id($image) !== $update['image_after']) {
+            if ($this->images->id($project, $image) !== $update['image_after']) {
                 throw new \DomainException(\sprintf('The site was built again since its last %s: it can\'t be undone.', $what));
             }
 
@@ -360,7 +360,7 @@ final readonly class SiteUpdater
 
                 $step(\sprintf('Putting back its files and image from before the %s', $what));
                 $back();
-                $this->images->tag($update['image_before'], $image);
+                $this->images->tag($project, $update['image_before'], $image);
                 $this->compose->up($project, $operation->output(...));
 
                 if ($restore) {
@@ -376,7 +376,7 @@ final readonly class SiteUpdater
 
                 try {
                     $forward();
-                    $this->images->tag($update['image_after'], $image);
+                    $this->images->tag($project, $update['image_after'], $image);
                     $this->compose->up($project, $operation->output(...));
 
                     if ($restore && null !== $current) {
@@ -500,7 +500,7 @@ final readonly class SiteUpdater
         $project = $this->sites->projectOf($site);
         $image = $this->compose->image($project, self::PHP);
         // The image it runs: its tag may name another (a build a crash cut short, never run).
-        $before = $this->images->ofContainer($project->name().'-'.self::PHP.'-1') ?? $this->images->id($image);
+        $before = $this->images->ofContainer($project, $project->name().'-'.self::PHP.'-1') ?? $this->images->id($project, $image);
         $changed = false;
         $intent = ['operation' => $operation->id, 'what' => $what, 'image' => $image, 'image_before' => $before, 'backup' => null, 'put_back' => $putBack];
 
@@ -523,7 +523,7 @@ final readonly class SiteUpdater
 
             // Back to the image it runs, whatever the build left under its name.
             if (null !== $before) {
-                $this->images->tag($before, $image);
+                $this->images->tag($project, $before, $image);
             }
 
             $this->filesystem->remove($this->paths->backups($site->name).'/'.self::INTENT);
@@ -532,9 +532,9 @@ final readonly class SiteUpdater
             throw new UpdateFailed($operation->id, true, $e->getMessage(), $e);
         }
 
-        $after = $this->images->id($image) ?? throw new \LogicException('The new image was just built.');
+        $after = $this->images->id($project, $image) ?? throw new \LogicException('The new image was just built.');
         // A name for the image it ran, so nothing prunes it while this can be undone.
-        $this->images->tag($before, $this->withoutTag($image).':before-update');
+        $this->images->tag($project, $before, $this->withoutTag($image).':before-update');
         $backup = null;
         $migrationsBefore = null;
         $migrationsAfter = null;
@@ -582,7 +582,7 @@ final readonly class SiteUpdater
             // Whether the new version's migrations ran, asked of it while it may still answer.
             $migrationsNow = null === $migrationsBefore ? null : $this->executedMigrations($project);
             $revert();
-            $this->images->tag($before, $image);
+            $this->images->tag($project, $before, $image);
             $this->compose->up($project, $operation->output(...));
 
             if (null !== $backup && (null === $migrationsNow || $migrationsNow !== $migrationsBefore)) {

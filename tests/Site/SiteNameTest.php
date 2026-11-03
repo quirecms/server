@@ -57,7 +57,7 @@ final class SiteNameTest extends TestCase
      */
     public static function reserved(): iterable
     {
-        foreach (['server', 'agent', 'front', 'database', 'docker-proxy', 'console', 'sites', 'backups', 'quire', 'quire-server', 'quire-edge', 'quiredata'] as $name) {
+        foreach (['server', 'agent', 'front', 'gate', 'host-setup', 'database', 'docker-proxy', 'console', 'sites', 'backups', 'quire', 'quire-server', 'quire-edge', 'quiredata'] as $name) {
             yield $name => [$name];
         }
     }
@@ -67,6 +67,40 @@ final class SiteNameTest extends TestCase
     {
         $this->expectExceptionMessageIsOrContains('is reserved for the server itself');
         new SiteName($value);
+    }
+
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function recreateNames(): iterable
+    {
+        yield 'hex letters and digits' => ['deadbeef1234'];
+        yield 'a word' => ['facade123456'];
+        yield 'letters only' => ['abcdefabcdef'];
+    }
+
+    #[DataProvider('recreateNames')]
+    public function testNamesComposeGivesRecreatedContainersAreReserved(string $value): void
+    {
+        $this->expectExceptionMessageIsOrContains('Docker Compose gives names of 12 hex digits');
+        new SiteName($value);
+    }
+
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function nearRecreateNames(): iterable
+    {
+        yield '11 hex digits' => ['deadbeef123'];
+        yield '13 hex digits' => ['deadbeef12345'];
+        yield 'a letter past f' => ['deadbeefcafg'];
+        yield 'with a dash' => ['deadbe-ef1234'];
+    }
+
+    #[DataProvider('nearRecreateNames')]
+    public function testOnlyExactlyTwelveHexDigitsAreReserved(string $value): void
+    {
+        self::assertSame($value, new SiteName($value)->value);
     }
 
     public function testMessagesShowWhatWasGivenSafely(): void

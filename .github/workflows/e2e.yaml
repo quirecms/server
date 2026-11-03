@@ -46,6 +46,11 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Set the runner up for rootless builds
+        # The server's own host setup (gate/host-setup.sh), on a real Ubuntu with AppArmor: it loads the
+        # profile that grants sites' rootless BuildKit a user namespace. The Docker-in-Docker machine
+        # runs under it (its Docker has no AppArmor of its own), so builds inside it get one too.
+        run: echo "E2E_DIND_APPARMOR=$(sudo sh gate/host-setup.sh)" >> "$GITHUB_ENV"
       - name: Build the agent
         if: matrix.part != 'release'
         run: docker build --pull -t quire-server-agent:test .

@@ -51,18 +51,19 @@ final readonly class SiteOverrides
                     $before = (string) file_get_contents($override);
                     $this->files->writeOverride($directory, $site->name, $site->domains, $site->databaseMode, $site->project);
                     $image = SiteFiles::image($site->project);
+                    $project = SiteProject::of($this->paths, $site->name, $site->domains, $site->project, $site->databaseMode);
 
-                    if (null === $this->images->id($image)) {
-                        $running = $this->images->ofContainer($site->project.'-php-1');
+                    if (null === $this->images->id($project, $image)) {
+                        $running = $this->images->ofContainer($project, $site->project.'-php-1');
 
                         if (null !== $running) {
-                            $this->images->tag($running, $image);
+                            $this->images->tag($project, $running, $image);
                         }
                     }
 
                     if ($before !== file_get_contents($override)) {
                         try {
-                            $this->compose->up(SiteProject::of($this->paths, $site->name, $site->domains, $site->project, $site->databaseMode));
+                            $this->compose->up($project);
                         } catch (\Throwable $e) {
                             // As it was, matching the containers that run: they weren't changed.
                             $this->files->write($override, $before, 0o644);

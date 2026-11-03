@@ -115,6 +115,9 @@ final readonly class ServerUpdater
             ServerFolder::writeSecret($staged, $env->content());
             $this->stack->validate($release->files, $staged);
             $log('Its Compose files check out with this server\'s settings');
+            if ($this->stack->checkGate($release->files, $staged)) {
+                $log('Its Docker gate accepts every site\'s scope');
+            }
             $log('Getting its image');
             $this->stack->pull($release->image);
 

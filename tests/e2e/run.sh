@@ -49,11 +49,16 @@ backingup() { [ "${E2E_ONLY:-}" = backups ]; }
 upgrading() { [ "${E2E_ONLY:-}" = database ]; }
 cache=''
 if [ "${E2E_CACHE:-}" = 1 ]; then cache='-v quire-server-e2e-cache:/var/lib/docker'; fi
-# shellcheck disable=SC2086 # $cache is empty or two words
 # Docker Hub refuses anonymous pulls now and then (CI's runners are anonymous): the machine's image, and
 # what Docker pulls inside it from Docker Hub, come through Google's mirror of it (Docker falls back to
 # Docker Hub itself). Pinned by digest: the same image from either.
-docker run -d --privileged --name "$dind" $cache -e DOCKER_TLS_CERTDIR= \
+# On a host whose AppArmor restricts user namespaces (Ubuntu 23.10 and later), the machine runs under the
+# profile gate/host-setup.sh loads (E2E_DIND_APPARMOR, its output): its own Docker has no AppArmor, so
+# sites' rootless builders inside it get their user namespace from it.
+apparmor=''
+case "${E2E_DIND_APPARMOR:-none}" in none | '') ;; *) apparmor="--security-opt apparmor=$E2E_DIND_APPARMOR" ;; esac
+# shellcheck disable=SC2086 # $cache and $apparmor are empty or two words
+docker run -d --privileged --name "$dind" $cache $apparmor -e DOCKER_TLS_CERTDIR= \
 	mirror.gcr.io/library/docker:29.9.2-dind@sha256:9e79b879b177fbd72c34376a3dd3d91747da5db49e1f560f76aea59561471977 \
 	--registry-mirror=https://mirror.gcr.io >/dev/null
 until inside 'docker info' >/dev/null 2>&1; do sleep 1; done
@@ -97,6 +102,8 @@ check 'on a system other than Ubuntu 26.04 LTS or later, nothing installs withou
 inside "$install" | tee "$logs"/install.log | sed 's/^/    /'
 check 'the installer finished' "grep -q 'Quire Server runs' $logs/install.log"
 check 'it warned that the system is untested' "grep -q 'going on, as --unsupported-os asks, untested' $logs/install.log"
+# What didn't start says why
+if ! grep -q 'Quire Server runs' "$logs"/install.log; then inside 'cd /srv/quire/server && docker compose --env-file server.env logs --no-color host-setup gate agent 2>&1 | tail -60' | sed 's/^/    /' || true; fi
 check 'the stack is up and healthy' "inside 'quire-server ps --format \"{{.Service}} {{.Health}}\" | grep -q \"agent healthy\"'"
 published=$(inside "docker ps --format '{{.Names}} {{.Ports}}'" | grep -c '0.0.0.0' || true)
 check 'only the front door publishes ports' "[ $published = 1 ]"
@@ -108,7 +115,12 @@ else
 check 'it says it was built from a checkout (no release image)' "inside 'quire-server version' | grep -q 'built from a checkout'"
 fi
 check 'every image of the stack is pinned by digest' "! inside 'cd /srv/quire/server && docker compose --env-file server.env config --images' | grep -v '^quire-server-agent\$' | grep -vq '@sha256:'"
-check 'the docker-proxy network has no way out' "inside 'docker network inspect quire-docker --format \"{{.Internal}}\"' | grep -q true"
+if ! release; then
+check 'the Docker gate has no network at all' "[ \"\$(inside 'docker inspect quire-server-gate-1 --format \"{{.HostConfig.NetworkMode}}\"')\" = none ]"
+check 'only the gate holds Docker'\''s socket (and the updater, when it runs)' "[ \"\$(inside 'docker ps --format \"{{.Names}}\" | xargs docker inspect --format \"{{.Name}} {{range .Mounts}}{{.Source}} {{end}}\"' | grep -c docker.sock)\" = 1 ] && inside 'docker inspect quire-server-gate-1 --format \"{{range .Mounts}}{{.Source}} {{end}}\"' | grep -q docker.sock"
+check 'the agent reaches Docker through the gate only' "[ \"\$(inside 'docker inspect quire-server-agent-1 --format \"{{range .Config.Env}}{{println .}}{{end}}\"' | grep ^DOCKER_HOST=)\" = DOCKER_HOST=unix:///run/quire-gate/trusted/trusted.sock ]"
+check 'the host was set up for builds' "inside 'docker run --rm -v quire-server_host_facts:/facts:ro alpine:3.22 cat /facts/builder-apparmor' | grep -Eqx 'none|unconfined|yorvogate-buildkit-rootless'"
+fi
 check 'its secrets are root'\''s only' "[ \"\$(inside 'stat -c %a /srv/quire/server/server.env')\" = 600 ] && [ \"\$(inside 'stat -c %a /srv/quire/sites')\" = 700 ]"
 
 resolve='--resolve demo.test:443:127.0.0.1 --resolve jane.test:443:127.0.0.1 --resolve www.jane.test:443:127.0.0.1 --resolve evil.test:443:127.0.0.1'
@@ -357,7 +369,26 @@ inside 'docker cp /root/try-databases.php jane-php-1:/app/var/try-databases.php'
 tried=$(inside 'docker exec jane-php-1 php /app/var/try-databases.php' || true)
 echo "$tried" | sed 's/^/    /'
 check 'its role is refused the server'\''s databases (with its real password)' "[ \"\$(echo \"\$tried\" | grep -c ': denied')\" = 3 ]"
-check 'the site can'\''t reach the docker-proxy' "! inside 'docker exec jane-php-1 php -r \"exit(@fsockopen(\\\"docker-proxy\\\", 2375, \\\$e, \\\$m, 3) ? 0 : 1);\"'"
+check 'the site has no way to Docker (no socket, no gate on its networks)' "! inside 'docker inspect jane-php-1 jane-worker-1 --format \"{{range .Mounts}}{{.Source}} {{.Name}} {{end}}\"' | grep -Eq 'docker.sock|gate_'"
+# The gate holds what Docker receives for the site even where the Compose policy would miss something:
+# requests sent straight to the site's socket, as its Compose's are (in the agent, which mounts them).
+site_docker() { inside "docker exec quire-server-agent-1 env DOCKER_HOST=unix:///run/quire-gate/sites/jane.sock docker $1 2>&1"; }
+# On the site's own network: the gate refuses Docker's default one (a container joins its scope's networks)
+own='--network jane_default --label com.docker.compose.project=jane --cap-drop ALL --security-opt no-new-privileges --memory 64m --pids-limit 64'
+check 'the gate: a container as the policy allows it starts (a control)' "site_docker 'run --rm --name jane-probe $own alpine:3.22 true'"
+check 'the gate: a privileged container is refused' "site_docker 'run --rm --name jane-probe $own --privileged alpine:3.22 true' | grep -qi privileged"
+check 'the gate: the host'\''s files are refused' "! site_docker 'run --rm --name jane-probe $own -v /:/host alpine:3.22 true' >/dev/null && ! site_docker 'volume create --label com.docker.compose.project=jane --opt type=none --opt o=bind --opt device=/ jane_host' >/dev/null"
+check 'the gate: a capability the policy doesn'\''t give is refused' "site_docker 'run --rm --name jane-probe $own --cap-add SYS_ADMIN alpine:3.22 true' | grep -qi SYS_ADMIN"
+check 'the gate: the host'\''s namespaces are refused' "! site_docker 'run --rm --name jane-probe $own --pid host alpine:3.22 true' >/dev/null"
+check 'the gate: another project'\''s name is refused' "! site_docker 'run --rm --name other-probe --label com.docker.compose.project=other --cap-drop ALL --security-opt no-new-privileges --memory 64m --pids-limit 64 alpine:3.22 true' >/dev/null"
+check 'the gate: the server'\''s own containers aren'\''t there for a site' "site_docker 'exec quire-server-database-1 id' | grep -q 'No such container' && site_docker 'container inspect quire-server-agent-1' | grep -q 'No such container'"
+check 'the gate: a shell in the site'\''s builder is refused (it may only build)' "site_docker 'exec quire-buildkit-jane id' | grep -q 'dial-stdio'"
+check 'the gate: an image can'\''t be pushed' "! site_docker 'push quire-sites/jane/php-prod' >/dev/null"
+check 'the gate: an image can'\''t be named in another'\''s place' "! site_docker 'tag quire-sites/jane/php-prod quire-sites/other/php-prod' >/dev/null && ! site_docker 'tag quire-sites/jane/php-prod quire-server-agent:latest' >/dev/null"
+check 'the site'\''s build ran on its own socket, its image loaded there' "inside 'quire-server logs gate' | grep '\"scope\":\"jane\"' | grep -q '\"endpoint\":\"image.load\"'"
+builder=$(inside "docker inspect quire-buildkit-jane --format '{{.HostConfig.Privileged}} {{.Config.User}} {{.HostConfig.CapAdd}} {{.HostConfig.NetworkMode}}'" || true)
+echo "    builder: $builder"
+check 'its builder is rootless: not privileged, user 1000, no capabilities, on the sandbox network' "[ \"\$builder\" = 'false 1000:1000 [] quire-sandbox' ]"
 check 'its settings are root'\''s only' "[ \"\$(inside 'stat -c %a /srv/quire/sites/jane/prod.env')\" = 600 ]"
 check 'the operation is recorded' "inside 'quire-server operations' | grep -q 'site.add.*succeeded'"
 operation=$(inside 'quire-server operations' | grep site.add | head -1 | awk '{print $1}')
@@ -411,8 +442,8 @@ check 'it answers after its automatic update' "[ \"\$(inside \"curl -sk $resolve
 inside 'quire-server site:update --all --automatic 2>&1' > "$logs"/automatic-again.log
 check 'the next run finds nothing to fix' "grep -Eq 'jane +up to date +no known vulnerability' $logs/automatic-again.log"
 check 'Composer ran in a container of its own, gone after' "[ -z \"\$(inside 'docker ps -aq --filter label=com.quirecms.server.sandbox')\" ] && inside 'docker network inspect quire-sandbox'"
-check 'that container reaches neither the docker-proxy nor the database' "! inside 'docker run --rm --network quire-sandbox alpine:3.22 sh -c \"wget -qT5 -O- http://docker-proxy:2375/_ping || nc -zw5 quire-database 5432\"'"
-# A composer.json in the site's folder that has Composer post to the docker-proxy
+check 'that container doesn'\''t reach the database (nor the gate, which has no network)' "! inside 'docker run --rm --network quire-sandbox alpine:3.22 sh -c \"nc -zw5 quire-database 5432\"'"
+# A composer.json in the site's folder that has Composer post to a plain-HTTP address (the docker-proxy's, before the gate)
 inside 'cp /srv/quire/sites/jane/composer.json /root/jane-composer.json && sed -i "s#^    \"type\": \"project\",#    \"type\": \"project\", \"repositories\": [{\"type\": \"composer\", \"url\": \"http://docker-proxy:2375\", \"options\": {\"http\": {\"method\": \"POST\"}}}], \"config\": {\"secure-http\": false},#" /srv/quire/sites/jane/composer.json'
 check 'a composer.json fetching other than over HTTPS is refused' "inside 'quire-server site:audit jane 2>&1' | tr -s ' \\n' ' ' | grep -q 'over HTTPS only' && inside 'quire-server site:update jane --dry-run 2>&1' | tr -s ' \\n' ' ' | grep -q 'over HTTPS only'"
 inside 'cp /root/jane-composer.json /srv/quire/sites/jane/composer.json'
