@@ -19,7 +19,7 @@ final readonly class PolicyContext
 
     /**
      * @param array<string, array<string, list<string>>> $sharedNetworks Shared network => service => the aliases it may have there, e.g.
-     *                                                                   ['quire-edge' => ['php' => ['jane.example']], 'quire-data' => ['php' => [], 'worker' => []]]
+     *                                                                   ['quire-link-jane' => ['php' => ['jane.example.quire.internal'], 'worker' => []]]
      */
     public function __construct(
         public string $project,

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Quire\Server\ServerDatabase;
 
+use Quire\Server\Network\SiteLinks;
 use Quire\Server\Process\ProcessResult;
 use Quire\Server\Process\ProcessRunner;
 
@@ -77,13 +78,13 @@ final readonly class DatabaseContainers
 
     /**
      * @return list<string> The running containers that can reach the server's PostgreSQL (sites using
-     *                      it, and anything else on its network), but the server's own
+     *                      it, on their links, and anything else on its networks), but the server's own
      */
     public function clients(): array
     {
         $clients = [];
 
-        foreach ($this->lines($this->docker(['ps', '--filter', 'network='.self::NETWORK, '--format', '{{.ID}} {{.Names}} {{.Label "com.docker.compose.project"}}'])->orFail('Listing what uses the server\'s PostgreSQL')) as $line) {
+        foreach ($this->lines($this->docker(['ps', ...$this->networkFilters(), '--format', '{{.ID}} {{.Names}} {{.Label "com.docker.compose.project"}}'])->orFail('Listing what uses the server\'s PostgreSQL')) as $line) {
             [$id, $name, $project] = explode(' ', $line.'  ', 4);
 
             if (self::PROJECT !== $project && self::BESIDE !== $name && 1 === preg_match('/^[0-9a-f]{12,64}\z/', $id)) {
@@ -104,12 +105,34 @@ final readonly class DatabaseContainers
     {
         $tools = [];
 
-        foreach ($this->lines($this->docker(['ps', '--format', '{{.Names}}', '--filter', 'network='.self::NETWORK, '--filter', 'label=com.docker.compose.service=php'])->orFail('Listing the sites that use the server\'s PostgreSQL')) as $name) {
+        foreach ($this->lines($this->docker(['ps', '--format', '{{.Names}}', ...$this->networkFilters(), '--filter', 'label=com.docker.compose.service=php'])->orFail('Listing the sites that use the server\'s PostgreSQL')) as $name) {
             $version = $this->docker(['exec', $name, 'pg_dump', '--version'], 60);
             $tools[$name] = $version->successful() && 1 === preg_match('/\(PostgreSQL\) (\d+)/', $version->output, $match) ? (int) $match[1] : null;
         }
 
         return $tools;
+    }
+
+    /**
+     * "docker ps" filters for every network PostgreSQL is on (Docker takes them as "any of"): the
+     * server's, and each link of a site that uses it (D-34). Not running: the server's network only.
+     *
+     * @return list<string>
+     */
+    private function networkFilters(): array
+    {
+        $networks = [self::NETWORK];
+        $attached = $this->docker(['inspect', '--format', '{{range $name, $_ := .NetworkSettings.Networks}}{{$name}} {{end}}', SiteLinks::DATABASE], 60);
+
+        if ($attached->successful()) {
+            foreach (explode(' ', trim($attached->output)) as $network) {
+                if (str_starts_with($network, SiteLinks::PREFIX) && 1 === preg_match('/^[a-z0-9][a-z0-9_.-]*\z/', $network)) {
+                    $networks[] = $network;
+                }
+            }
+        }
+
+        return array_merge(...array_map(static fn (string $network): array => ['--filter', 'network='.$network], $networks));
     }
 
     /**

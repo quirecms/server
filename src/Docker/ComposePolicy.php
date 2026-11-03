@@ -567,8 +567,15 @@ final readonly class ComposePolicy
 
         $ipam = $this->map($network['ipam'] ?? []);
         array_push($violations, ...$this->unknown($ipam, 'network.ipam', 'ipam.'));
+        $pools = $this->list($ipam['config'] ?? []);
 
-        foreach ($this->list($ipam['config'] ?? []) as $pool) {
+        // As the gate has it: with addresses of its own, each network names its subnet among them
+        // (Docker's pools would give it anyone's, and run out at about 30 networks)
+        if ($context->subnet instanceof Ipv4Cidr && ([] === $pools || [] !== array_filter($pools, fn (mixed $pool): bool => !isset($this->map($pool)['subnet'])))) {
+            $violations[] = \sprintf('it names no subnet: a site\'s networks get their addresses from its own (%s), which its "default" network has already.', $context->subnet);
+        }
+
+        foreach ($pools as $pool) {
             $pool = $this->map($pool);
             array_push($violations, ...$this->unknown($pool, 'network.ipam.config', 'ipam.config.'));
             array_push($violations, ...$this->addresses($pool, $context));

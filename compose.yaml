@@ -208,10 +208,11 @@ services:
     shm_size: 256m
 
 networks:
-  # The front door and sites' web containers
+  # The front door's own, its way out (certificates). Sites aren't on it: the front door reaches each
+  # on the site's link (quire-link-<project>, D-34), which the agent connects it to.
   quire-edge:
     name: quire-edge
-  # PostgreSQL, sites and the agent
+  # PostgreSQL, the agent and the updater. Sites reach PostgreSQL on their links.
   quire-data:
     name: quire-data
 

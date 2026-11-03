@@ -74,7 +74,7 @@ final class GateFixture
             DatabaseAccess::NETWORK === end($command) ? "172.19.0.0/16 \n" : (\is_scalar(end($command)) ? (string) end($command) : '')."\n",
         );
 
-        return ['docker network ls' => $ok, 'docker network inspect' => $inspect, 'docker network create' => $ok, 'docker network rm' => $ok, 'docker network connect' => $ok, 'docker network disconnect' => $ok, 'docker kill --signal' => $ok];
+        return ['docker network ls' => $ok, 'docker network inspect' => $inspect, 'docker network create' => $ok, 'docker network rm' => $ok, 'docker network connect' => $ok, 'docker network disconnect' => $ok, 'docker kill --signal' => $ok, 'docker exec '.SiteLinks::FRONT_DOOR => static fn (array $command): \Quire\Server\Process\ProcessResult => ScriptedRunner::failed(array_values(array_map(static fn (mixed $part): string => \is_scalar($part) ? (string) $part : '', $command)), 'Error response from daemon: No such container: '.SiteLinks::FRONT_DOOR)];
     }
 
     /**

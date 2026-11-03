@@ -55,6 +55,8 @@ final class GateTest extends TestCase
                 'quire-link-jane' => ['aliases' => ['jane-php-1', 'jane-worker-1', 'jane.example.quire.internal', 'php', 'worker', 'www.jane.example.quire.internal']],
             ],
             'builders' => ['quire-buildkit-jane'],
+            // Where its networks' addresses must be: its project's /27 (the gate refuses any other)
+            'subnets' => ['10.72.0.32/27'],
         ], $this->gate()->scope($this->project('jane')));
     }
 

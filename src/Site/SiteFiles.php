@@ -25,7 +25,7 @@ final readonly class SiteFiles
     public const string DATABASE_HOST = 'quire-database';
 
     /**
-     * How the front door names a site's domain on quire-edge: "<domain>.quire.internal". The ".internal"
+     * How the front door names a site's domain on its link: "<domain>.quire.internal". The ".internal"
      * domain is never public (ICANN keeps it for private use): while the site is down, its name doesn't
      * resolve anywhere else, and visitors get the "Back in a moment" page. A site's public domain would
      * be asked of public DNS then, which names this server: the front door again, in a loop.

@@ -287,6 +287,17 @@ final class ComposePolicyTest extends TestCase
         self::assertSame([], $addresses([], new PolicyContext('jane', $this->site, [])), 'Docker\'s choice, as before the server planned them.');
     }
 
+    public function testASitesNetworkNamesItsSubnetAsTheGateWantsIt(): void
+    {
+        $context = new PolicyContext('jane', $this->site, [], Ipv4Cidr::parse('10.72.0.32/27'));
+        $unnamed = 'Network "cache": it names no subnet: a site\'s networks get their addresses from its own (10.72.0.32/27), which its "default" network has already.';
+        $violations = static fn (array $network, ?PolicyContext $with = null): array => new ComposePolicy()->violations(['name' => 'jane', 'networks' => ['cache' => ['name' => 'jane_cache'] + $network]], $with ?? $context);
+
+        self::assertSame([$unnamed], $violations([]), 'A network of its own beside "default": Docker\'s pools would give it anyone\'s addresses.');
+        self::assertSame([$unnamed], $violations(['ipam' => ['config' => [['subnet' => '10.72.0.32/27'], ['gateway' => '10.72.0.33']]]]), 'Each pool names one.');
+        self::assertSame([], $violations([], new PolicyContext('jane', $this->site, [])), 'A site without addresses of its own yet: Docker\'s.');
+    }
+
     /**
      * @param array<mixed> $config
      *

@@ -18,7 +18,13 @@ use Quire\Server\Site\SiteFiles;
  * Every site's compose.server.yaml as this release writes it, at each start of the agent: a release
  * may harden sites further, or name things anew (their images are named "quire-sites/<project>/…" since
  * 0.3.1). The image a site runs gets its name too when it has none yet, so its next update can still be
- * undone. A site whose override changed is started again with it (a few seconds), once.
+ * undone. A running site whose override changed is started again with it (a few seconds), once; a
+ * failed one gets it for its next start.
+ *
+ * This is also how a server of a release before D-34 moves its sites to their links: each gets its
+ * addresses and its link, its override without the shared networks, and its "up" recreates its own
+ * network at its addresses (Compose does, as the network's settings changed) and its containers on
+ * it and on the link only. The front door is then asked to reach it there.
  */
 final readonly class SiteOverrides
 {
@@ -43,7 +49,8 @@ final readonly class SiteOverrides
         foreach ($this->registry->all() as $site) {
             $directory = $this->paths->site($site->name);
 
-            if (Site::RUNNING !== $site->status || !is_file($directory.'/'.SiteFiles::OVERRIDE)) {
+            // Not one being made or removed: their operations put them right, or back, themselves
+            if (!\in_array($site->status, [Site::RUNNING, Site::FAILED], true) || !is_file($directory.'/'.SiteFiles::OVERRIDE)) {
                 continue;
             }
 
@@ -65,14 +72,21 @@ final readonly class SiteOverrides
                         }
                     }
 
-                    if ($before !== file_get_contents($override)) {
+                    if (Site::RUNNING === $site->status && $before !== file_get_contents($override)) {
                         try {
                             $this->compose->up($project);
                         } catch (\Throwable $e) {
-                            // As it was, matching the containers that run: they weren't changed.
+                            // As it was, matching the containers that run if they weren't changed; the
+                            // next start tries again.
                             $this->files->write($override, $before, 0o644);
 
                             throw $e;
+                        }
+
+                        $domain = $site->domains[0]->value;
+
+                        if (false === $this->links->frontDoorReaches($domain)) {
+                            throw new \RuntimeException(\sprintf('It runs, but the front door doesn\'t reach it on its link (%s%s:80): the agent\'s rounds connect the front door again each minute, and say it if they can\'t ("quire-server logs agent").', $domain, SiteFiles::EDGE_SUFFIX));
                         }
                     }
                 });
