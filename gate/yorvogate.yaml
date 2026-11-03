@@ -17,6 +17,9 @@ upstream: unix:///var/run/docker.sock
 listeners:
   - name: trusted
     address: unix:///run/yorvogate/trusted/trusted.sock
+    # Root's group, named rather than left to the gate's own: the agent (root) is the only client,
+    # and the only container that mounts the sockets' volumes
+    socket_group: 0
     mode: trusted
     allow:
       system: read
@@ -29,6 +32,7 @@ listeners:
 
   - name: sites
     scope_sockets: /run/yorvogate/sites
+    socket_group: 0
     mode: scoped
     scopes: /etc/yorvogate/sites
     # Sites' BuildKit runs rootless under this AppArmor profile, which grants it only a user namespace
