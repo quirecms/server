@@ -7,6 +7,7 @@ namespace Quire\Server\Operation;
 use Quire\Server\Docker\Compose;
 use Quire\Server\Docker\Images;
 use Quire\Server\Docker\SiteProject;
+use Quire\Server\Network\SiteLinks;
 use Quire\Server\Registry\SiteLock;
 use Quire\Server\Registry\SiteRegistry;
 use Quire\Server\Site\ServerPaths;
@@ -28,6 +29,7 @@ final readonly class SiteOverrides
         private Images $images,
         private SiteLock $lock,
         private Compose $compose,
+        private SiteLinks $links,
     ) {
     }
 
@@ -49,9 +51,11 @@ final readonly class SiteOverrides
                 $this->lock->run($site->name, function () use ($site, $directory): void {
                     $override = $directory.'/'.SiteFiles::OVERRIDE;
                     $before = (string) file_get_contents($override);
-                    $this->files->writeOverride($directory, $site->name, $site->domains, $site->databaseMode, $site->project);
+                    // Its link and addresses: made the first time (a site of a release before D-34)
+                    $subnets = $this->links->ensure($site->name, $site->project, Site::SHARED_DATABASE === $site->databaseMode);
+                    $this->files->writeOverride($directory, $site->name, $site->domains, $site->databaseMode, $subnets, $site->project);
                     $image = SiteFiles::image($site->project);
-                    $project = SiteProject::of($this->paths, $site->name, $site->domains, $site->project, $site->databaseMode);
+                    $project = SiteProject::of($this->paths, $site->name, $site->domains, $site->project, $site->databaseMode, $subnets);
 
                     if (null === $this->images->id($project, $image)) {
                         $running = $this->images->ofContainer($project, $site->project.'-php-1');

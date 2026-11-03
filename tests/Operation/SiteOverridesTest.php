@@ -61,6 +61,7 @@ final class SiteOverridesTest extends RegistryTestCase
             // What the policy reads: the project, nothing it refuses (or, for a test, something it does)
             'docker compose config' => fn (array $command): ProcessResult => ScriptedRunner::ok($command, (string) json_encode(['name' => $command[7], 'services' => $this->refused ? ['php' => ['privileged' => true]] : []])),
             'docker compose up' => static fn (array $command): ProcessResult => ScriptedRunner::ok($command),
+            ...GateFixture::networkScript(),
         ]);
     }
 
@@ -127,6 +128,6 @@ final class SiteOverridesTest extends RegistryTestCase
 
     private function subject(): SiteOverrides
     {
-        return new SiteOverrides($this->registry, new SiteFiles(), $this->paths, new Images($this->runner, GateFixture::gate($this->runner, $this->root, 'jane', 'demo-x', 'gone')), new SiteLock($this->connection, $this->schema), new Compose($this->runner, new ComposePolicy(), new ComposeFiles(), new RuntimeImages($this->runner, new RuntimeFloors($this->connection, $this->schema)), new RuntimeBuilds($this->connection, $this->schema), GateFixture::gate($this->runner, $this->root, 'jane', 'demo-x', 'gone'), GateFixture::builders($this->runner, $this->root)));
+        return new SiteOverrides($this->registry, new SiteFiles(), $this->paths, new Images($this->runner, GateFixture::gate($this->runner, $this->root, 'jane', 'demo-x', 'gone')), new SiteLock($this->connection, $this->schema), new Compose($this->runner, new ComposePolicy(), new ComposeFiles(), new RuntimeImages($this->runner, new RuntimeFloors($this->connection, $this->schema)), new RuntimeBuilds($this->connection, $this->schema), GateFixture::gate($this->runner, $this->root, 'jane', 'demo-x', 'gone'), GateFixture::builders($this->runner, $this->root)), GateFixture::links($this->runner, $this->connection, $this->schema));
     }
 }

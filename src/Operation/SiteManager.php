@@ -13,9 +13,11 @@ use Quire\Server\FrontDoor\DomainDirectory;
 use Quire\Server\Git\DeployKeys;
 use Quire\Server\Git\Git;
 use Quire\Server\Git\Repository;
+use Quire\Server\Network\SiteLinks;
 use Quire\Server\Process\Durable;
 use Quire\Server\Registry\SiteGit;
 use Quire\Server\Registry\SiteLock;
+use Quire\Server\Registry\SiteNetworks;
 use Quire\Server\Registry\SiteRegistry;
 use Quire\Server\Site\Domain;
 use Quire\Server\Site\EnvFile;
@@ -48,6 +50,8 @@ final readonly class SiteManager
         private SiteGit $repositories,
         private DeployKeys $keys,
         private SiteDatabaseDumps $dumps,
+        private SiteLinks $links,
+        private SiteNetworks $networks,
         private string $mailerDsn = '',
         private Filesystem $filesystem = new Filesystem(),
     ) {
@@ -123,7 +127,9 @@ final readonly class SiteManager
                     'POSTGRES_PASSWORD' => bin2hex(random_bytes(24)),
                     'MAILER_DSN' => $this->mailerDsn,
                 ], static fn (string $value): bool => '' !== $value));
-                $this->files->writeOverride($directory, $request->name, $request->domains, Site::SHARED_DATABASE);
+                $subnets = $this->links->ensure($request->name, $request->name->value, true);
+                $undo[] = fn () => $this->links->remove($request->name, $request->name->value);
+                $this->files->writeOverride($directory, $request->name, $request->domains, Site::SHARED_DATABASE, $subnets);
                 $project = $this->project($request->name, $request->domains, $request->name->value, Site::SHARED_DATABASE);
 
                 $step('Checking and building it (a few minutes)');
@@ -245,7 +251,9 @@ final readonly class SiteManager
                     'QUIRE_DATABASE_PASSWORD' => $databasePassword,
                     'POSTGRES_PASSWORD' => bin2hex(random_bytes(24)),
                 ], static fn (string $value): bool => '' !== $value));
-                $this->files->writeOverride($directory, $name, $domains, Site::SHARED_DATABASE);
+                $subnets = $this->links->ensure($name, $name->value, true);
+                $undo[] = fn () => $this->links->remove($name, $name->value);
+                $this->files->writeOverride($directory, $name, $domains, Site::SHARED_DATABASE, $subnets);
                 $project = $this->project($name, $domains, $name->value, Site::SHARED_DATABASE);
 
                 $step('Checking and building it (a few minutes)');
@@ -379,7 +387,9 @@ final readonly class SiteManager
                 $step('Changing its settings (a copy of them is kept)');
                 $this->files->write($before, $env->content(), 0o600);
                 $files = $env->get('COMPOSE_FILE') ?? 'compose.yaml:compose.prod.yaml';
-                $this->files->writeOverride($directory, $name, $domains, Site::OWN_DATABASE, $project);
+                $subnets = $this->links->ensure($name, $project, false);
+                $undo[] = fn () => $this->links->remove($name, $project);
+                $this->files->writeOverride($directory, $name, $domains, Site::OWN_DATABASE, $subnets, $project);
                 $this->files->write($envPath, $env->with([
                     'COMPOSE_FILE' => str_contains($files, SiteFiles::OVERRIDE) ? $files : $files.':'.SiteFiles::OVERRIDE,
                     'COMPOSE_PROJECT_NAME' => $project,
@@ -390,6 +400,9 @@ final readonly class SiteManager
                     $this->filesystem->remove($directory.'/'.SiteFiles::OVERRIDE);
                     $this->compose->restoreAsBefore($site, $before, $operation->output(...));
                 };
+
+                // With its link and addresses, as the override has them
+                $site = $this->project($name, $domains, $project, Site::OWN_DATABASE);
 
                 // Its image gets the site's own name (two sites would share "quire-php-prod" otherwise):
                 // built while the site still runs as it was, so it's offline only while it restarts.
@@ -504,6 +517,8 @@ final readonly class SiteManager
 
                 // Its builder and its socket on the Docker gate: nothing acts as it any more.
                 $this->compose->forget($site->project);
+                // Its link: the front door and PostgreSQL leave it, and its addresses are free again.
+                $this->links->remove($name, $site->project);
 
                 if (Site::SHARED_DATABASE === $site->databaseMode) {
                     $step('Removing its database');
@@ -555,7 +570,7 @@ final readonly class SiteManager
      */
     public function project(SiteName $name, array $domains, string $project, string $databaseMode): SiteProject
     {
-        return SiteProject::of($this->paths, $name, $domains, $project, $databaseMode);
+        return SiteProject::of($this->paths, $name, $domains, $project, $databaseMode, $this->networks->find($name));
     }
 
     public function projectOf(Site $site): SiteProject

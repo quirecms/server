@@ -26,6 +26,7 @@ use Quire\Server\Registry\RuntimeBuilds;
 use Quire\Server\Registry\RuntimeFloors;
 use Quire\Server\Registry\SiteGit;
 use Quire\Server\Registry\SiteLock;
+use Quire\Server\Registry\SiteNetworks;
 use Quire\Server\Registry\SiteRegistry;
 use Quire\Server\Registry\SiteUpdates;
 use Quire\Server\Registry\UpdatePolicies;
@@ -69,6 +70,7 @@ final class OffsiteBackupsTest extends RegistryTestCase
         $this->paths = new ServerPaths($this->root);
         $this->registry = new SiteRegistry($this->connection, $this->schema);
         $this->runner = new ScriptedRunner([
+            ...GateFixture::networkScript(),
             'restic --quiet' => fn (array $command): ProcessResult => match ($command[2]) {
                 'snapshots' => $this->snapshots($command),
                 'restore' => $this->restore($command),
@@ -203,7 +205,7 @@ final class OffsiteBackupsTest extends RegistryTestCase
         $keys = new DeployKeys($this->runner, $this->paths);
         $git = new Git($this->runner, $keys);
         $compose = new Compose($this->runner, new ComposePolicy(), new ComposeFiles(), new RuntimeImages($this->runner, new RuntimeFloors($this->connection, $this->schema)), new RuntimeBuilds($this->connection, $this->schema), GateFixture::gate($this->runner, $this->root, 'jane', 'jane-copy', 'old-site'), GateFixture::builders($this->runner, $this->root));
-        $sites = new SiteManager($this->registry, $operations, new SiteLock($this->connection, $this->schema), new SkeletonInstaller($this->runner), new SiteDatabases($this->connection), new SiteFiles(), $compose, new DomainDirectory($this->paths->domains()), $this->paths, $git, $repositories, $keys, new SiteDatabaseDumps($this->runner, $compose, GateFixture::TRUSTED), '');
+        $sites = new SiteManager($this->registry, $operations, new SiteLock($this->connection, $this->schema), new SkeletonInstaller($this->runner), new SiteDatabases($this->connection), new SiteFiles(), $compose, new DomainDirectory($this->paths->domains()), $this->paths, $git, $repositories, $keys, new SiteDatabaseDumps($this->runner, $compose, GateFixture::TRUSTED), GateFixture::links($this->runner, $this->connection, $this->schema), new SiteNetworks($this->connection, $this->schema), '');
         $updater = new SiteUpdater($this->registry, new SiteUpdates($this->connection, $this->schema), $repositories, $operations, new SiteLock($this->connection, $this->schema), $sites, $compose, new Images($this->runner, GateFixture::gate($this->runner, $this->root, 'jane', 'jane-copy', 'old-site')), $git, $this->paths);
         $settings = new BackupSettings('s3:https://host/bucket', 'the-key', 'the-secret', 'a-long-random-password-0123456789');
 
