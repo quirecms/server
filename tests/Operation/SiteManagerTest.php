@@ -384,7 +384,7 @@ final class SiteManagerTest extends RegistryTestCase
         self::assertSame([
             'docker', 'container', 'run', '--detach', '--name', $container, '--label', Builders::LABEL.'='.$this->name->value, '--label', 'com.quirecms.server.buildkit='.Builders::BUILDKIT,
             '--network', 'quire-sandbox',
-            '--security-opt', 'seccomp=unconfined', '--security-opt', 'systempaths=unconfined',
+            '--security-opt', 'seccomp=unconfined', '--security-opt', 'systempaths=unconfined', '--security-opt', 'no-new-privileges=false',
             '--pids-limit', '4096',
             '--volume', $container.'-state:/home/user/.local/share/buildkit',
             Builders::BUILDKIT,
