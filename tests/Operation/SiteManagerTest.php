@@ -34,6 +34,7 @@ use Quire\Server\Site\SiteName;
 use Quire\Server\Tests\GateFixture;
 use Quire\Server\Tests\Registry\RegistryTestCase;
 use Symfony\Component\Filesystem\Filesystem;
+use Symfony\Component\Yaml\Yaml;
 
 /**
  * Adding and removing sites, with Docker and Composer scripted (what they'd print), and the real
@@ -558,6 +559,13 @@ final class SiteManagerTest extends RegistryTestCase
         $override = (string) file_get_contents($directory.'/compose.server.yaml');
         self::assertStringNotContainsString('quire-data', $override, 'Not on the server\'s PostgreSQL network.');
         self::assertStringNotContainsString('own-database', $override, 'Its PostgreSQL keeps running.');
+        $written = Yaml::parse($override, Yaml::PARSE_CUSTOM_TAGS);
+        self::assertIsArray($written);
+        self::assertIsArray($written['services'] ?? null);
+        foreach (['php', 'worker', 'database'] as $service) {
+            self::assertIsArray($written['services'][$service] ?? null);
+            self::assertSame('unless-stopped', $written['services'][$service]['restart'] ?? null, $service.' comes back after a reboot, its own PostgreSQL too.');
+        }
 
         $operation = $this->operations->latest()[0];
         self::assertSame(['site.adopt', 'succeeded'], [$operation['action'], $operation['status']]);
