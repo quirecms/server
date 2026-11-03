@@ -6,7 +6,7 @@
 # What it does, in order (each step is safe to run again: run it again to finish an interrupted
 # install, and the secrets it made are kept):
 #
-#   1. Checks the machine; installs Docker from Docker's own repository when it's missing (asks first).
+#   1. Checks the machine (Ubuntu 26.04 LTS or a later LTS release); installs Docker from Docker's own repository when it's missing (asks first).
 #   2. Gets a release and checks it: its signature (Sigstore, made by quirecms/server's release
 #      workflow for that very version), its archive's checksum and its image's signature; nothing is
 #      run that doesn't check out. Puts the server in /srv/quire/server, its settings and new secrets
@@ -17,7 +17,7 @@
 #      and moved behind the front door, a few seconds offline each.
 #   5. Starts the front door, once nothing else holds ports 80 and 443. It never stops or removes
 #      anything it didn't start: if another web server holds them, it says which and stops there.
-#   6. Turns on the operating system's automatic security updates (Ubuntu and Debian).
+#   6. Turns on the operating system's automatic security updates.
 #
 # Options:
 #   --email=ADDRESS    Let's Encrypt writes here about certificates (expiry, problems)
@@ -25,6 +25,7 @@
 #   --source=DIR       Install from this folder (a checkout of quirecms/server) instead of a release
 #   --version=X.Y.Z    The release to install (this installer's own release, or the latest)
 #   --no-os-updates    Leave the operating system's updates as they are
+#   --unsupported-os   Install on another system anyway, untested (see "Supported systems" in the README)
 #   --test-certificates  Certificates from the front door's own authority, not Let's Encrypt (tests)
 #
 # The whole script is a function called on its last line: a download cut short runs nothing.
@@ -36,6 +37,8 @@ release=''
 root=${QUIRE_SERVER_ROOT:-/srv/quire}
 docker_min=29.0.0
 compose_min=2.24.4
+# Ubuntu's LTS releases from this one on: the only systems the server is tested on
+ubuntu_min=26.04
 # Docker's release signing key (https://docs.docker.com/engine/install/ubuntu/)
 docker_key_fingerprint=9DC858229FC7DD38854AE2D88D81803C0EBFCD88
 
@@ -86,7 +89,34 @@ check_machine() {
 	mkdir -p "$root"
 	space=$(df -Pm "$root" | awk 'NR == 2 { print $4 }')
 	if [ "$space" -lt 10240 ]; then warn "${space} MB free on $root: sites need room to build (10 GB or more)."; fi
-	note "Linux $(uname -m), ${memory} MB of memory, ${space} MB free on $root"
+	note "$(system_name), $(uname -m), ${memory} MB of memory, ${space} MB free on $root"
+
+	supported_system && return 0
+	if [ "$unsupported_os" = 1 ]; then
+		warn "$(system_name) isn't a supported system (Ubuntu $ubuntu_min LTS or a later LTS release): going on, as --unsupported-os asks, untested. The Docker gate's builders rely on Ubuntu's AppArmor."
+		return 0
+	fi
+	die "Quire Server runs on Ubuntu $ubuntu_min LTS or a later LTS release; this is $(system_name). (--unsupported-os installs anyway, untested.)"
+}
+
+# The system's name from /etc/os-release, e.g. "Ubuntu 26.04 LTS"
+system_name() {
+	# shellcheck disable=SC1091
+	(. /etc/os-release 2>/dev/null && printf '%s\n' "${PRETTY_NAME:-${NAME:-Linux}}") || echo Linux
+}
+
+# Whether this is Ubuntu, an LTS release, $ubuntu_min or later. Interim releases get 9 months of
+# security updates: too short for a server.
+supported_system() {
+	[ -r /etc/os-release ] || return 1
+	(
+		# shellcheck disable=SC1091
+		. /etc/os-release
+		[ "${ID:-}" = ubuntu ] || exit 1
+		case "${VERSION:-}" in *LTS*) ;; *) exit 1 ;; esac
+		printf '%s\n' "${VERSION_ID:-}" | grep -Eq '^[0-9]+\.[0-9]+$' || exit 1
+		at_least "$ubuntu_min" "$VERSION_ID"
+	)
 }
 
 install_docker() {
@@ -103,10 +133,7 @@ install_docker() {
 	[ -r /etc/os-release ] || die 'Docker is missing, and this system is unknown: install Docker Engine, and run this again.'
 	# shellcheck disable=SC1091
 	. /etc/os-release
-	case "${ID:-}" in
-		ubuntu | debian) ;;
-		*) die "Docker is missing: install Docker Engine for ${PRETTY_NAME:-this system} (https://docs.docker.com/engine/install/), and run this again." ;;
-	esac
+	[ "${ID:-}" = ubuntu ] || die "Docker is missing: install Docker Engine for ${PRETTY_NAME:-this system} (https://docs.docker.com/engine/install/), and run this again."
 	ask "Docker isn't installed. Install it from Docker's repository (download.docker.com)?" || die 'Docker is needed: install it, or answer yes.'
 
 	say 'Installing Docker'
@@ -342,6 +369,7 @@ main() {
 	version=$release
 	email=''
 	os_updates=1
+	unsupported_os=0
 	test_certificates=0
 
 	for argument in "$@"; do
@@ -351,6 +379,7 @@ main() {
 			--version=*) version=${argument#--version=} ;;
 			--email=*) email=${argument#--email=} ;;
 			--no-os-updates) os_updates=0 ;;
+			--unsupported-os) unsupported_os=1 ;;
 			--test-certificates) test_certificates=1 ;;
 			-h | --help) sed -n '2,/^set -eu/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
 			*) die "Unknown option: $argument (see --help)" ;;

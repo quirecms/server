@@ -82,18 +82,21 @@ tar -C "$here" --exclude=./.git --exclude=./vendor --exclude=./var --exclude=./t
 if release; then
 	# The latest release, as a user gets it, but checked by this checkout's install.sh; with root's
 	# umask as strict as it gets (cosign runs as a user of its own and must still read the files).
-	install='umask 077; sh /root/quire-server/install.sh --yes --test-certificates --no-os-updates 2>&1'
-	check 'a release that doesn'\''t exist, or a version that isn'\''t one, installs nothing' "! inside 'sh /root/quire-server/install.sh --version=0.0.0 --yes --no-os-updates' && ! inside 'sh /root/quire-server/install.sh \"--version=0.1.0/../..\" --yes --no-os-updates' && ! inside 'test -e /srv/quire/server'"
+	install='umask 077; sh /root/quire-server/install.sh --yes --test-certificates --no-os-updates --unsupported-os 2>&1'
+	check 'a release that doesn'\''t exist, or a version that isn'\''t one, installs nothing' "! inside 'sh /root/quire-server/install.sh --version=0.0.0 --yes --no-os-updates --unsupported-os' && ! inside 'sh /root/quire-server/install.sh \"--version=0.1.0/../..\" --yes --no-os-updates --unsupported-os' && ! inside 'test -e /srv/quire/server'"
 else
-	install='sh /root/quire-server/install.sh --source=/root/quire-server --yes --test-certificates --no-os-updates 2>&1'
+	install='sh /root/quire-server/install.sh --source=/root/quire-server --yes --test-certificates --no-os-updates --unsupported-os 2>&1'
 	if [ -n "$image" ]; then
 		docker save "$image" | docker exec -i "$dind" docker load -q
 		inside "docker tag $image quire-server-agent"
 	fi
 fi
 
+# The Docker-in-Docker machine is Alpine: not a supported system, so it takes --unsupported-os.
+check 'on a system other than Ubuntu 26.04 LTS or later, nothing installs without --unsupported-os' "! inside 'sh /root/quire-server/install.sh --yes --no-os-updates' && inside 'sh /root/quire-server/install.sh --yes --no-os-updates 2>&1' | grep -q 'runs on Ubuntu 26.04 LTS' && ! inside 'test -e /srv/quire/server'"
 inside "$install" | tee "$logs"/install.log | sed 's/^/    /'
 check 'the installer finished' "grep -q 'Quire Server runs' $logs/install.log"
+check 'it warned that the system is untested' "grep -q 'going on, as --unsupported-os asks, untested' $logs/install.log"
 check 'the stack is up and healthy' "inside 'quire-server ps --format \"{{.Service}} {{.Health}}\" | grep -q \"agent healthy\"'"
 published=$(inside "docker ps --format '{{.Names}} {{.Ports}}'" | grep -c '0.0.0.0' || true)
 check 'only the front door publishes ports' "[ $published = 1 ]"
