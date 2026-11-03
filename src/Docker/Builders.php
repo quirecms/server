@@ -150,6 +150,9 @@ final readonly class Builders
             'container', 'run', '--detach', '--name', $container, '--label', self::LABEL.'='.$project, '--label', self::IMAGE_LABEL.'='.self::BUILDKIT,
             '--network', $this->network->ensure(),
             '--security-opt', 'seccomp=unconfined', '--security-opt', 'systempaths=unconfined',
+            // Said, not left to Docker's default: a hardened daemon ("no-new-privileges": true, CIS
+            // Docker 2.18) would otherwise take newuidmap's file capabilities, and the builder exits
+            '--security-opt', 'no-new-privileges=false',
             ...(null === $apparmor ? [] : ['--security-opt', 'apparmor='.$apparmor]),
             '--pids-limit', (string) self::PIDS,
             '--volume', $container.'-state:/home/user/.local/share/buildkit',
