@@ -39,11 +39,20 @@ final readonly class ServerStack
      * longer accepts (YorvoGate 0.2.1 refuses prefixes of 12 hex digits and "_"), and that site then
      * can't act on Docker. No network, nothing written.
      *
+     * @return bool Whether it was checked: a release from before the gate (0.3.1 and older) has none
+     *
      * @throws \RuntimeException When it refuses one, with the gate's reason (it names the file)
      */
-    public function checkGate(string $folder, string $envFile): void
+    public function checkGate(string $folder, string $envFile): bool
     {
+        $services = $this->compose($folder, $envFile, ['config', '--services'], 60)->orFail('Listing the release\'s services')->output;
+        if (!\in_array('gate', explode("\n", str_replace("\r", '', trim($services))), true)) {
+            return false;
+        }
+
         $this->compose($folder, $envFile, ['run', '--rm', '--no-deps', '--quiet-pull', '-T', 'gate', 'check', '--config', '/etc/yorvogate/yorvogate.yaml'], 600)->orFail('Checking the sites\' scopes with the release\'s Docker gate');
+
+        return true;
     }
 
     public function pull(string $image): void

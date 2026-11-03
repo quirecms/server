@@ -62,6 +62,8 @@ final class ServerUpdaterTest extends RegistryTestCase
     private bool $verified = true;
     private bool $composeValid = true;
     private bool $gateAccepts = true;
+
+    private bool $releaseHasGate = true;
     private bool $restoreFails = false;
 
     /** The PostgreSQL major the server runs */
@@ -122,7 +124,11 @@ final class ServerUpdaterTest extends RegistryTestCase
             'tar -xf' => $delegate,
             'cp -R' => $delegate,
             'chmod -R' => $delegate,
-            'docker compose config' => fn (array $command): ProcessResult => $this->composeValid ? ScriptedRunner::ok($command) : ScriptedRunner::failed($command, 'required variable QUIRE_SERVER_NEW_SECRET is missing a value'),
+            'docker compose config' => fn (array $command): ProcessResult => match (true) {
+                '--services' === end($command) => ScriptedRunner::ok($command, "front\nagent\n".($this->releaseHasGate ? "gate\n" : 'docker-proxy'."\n")."database\n"),
+                $this->composeValid => ScriptedRunner::ok($command),
+                default => ScriptedRunner::failed($command, 'required variable QUIRE_SERVER_NEW_SECRET is missing a value'),
+            },
             'docker compose run' => fn (array $command): ProcessResult => match (true) {
                 ['gate', 'check', '--config', '/etc/yorvogate/yorvogate.yaml'] !== \array_slice($command, -4) => throw new \LogicException('Unexpected: '.implode(' ', $command)),
                 $this->gateAccepts => ScriptedRunner::ok($command),
@@ -200,7 +206,7 @@ final class ServerUpdaterTest extends RegistryTestCase
 
         // Checked (its files, then its gate on the sites' scopes) and its image got while the server
         // runs; stopped only then, backed up, started.
-        self::assertSame(['curl -fsSL', 'curl -fsSL', 'cosign verify-blob', 'curl -fsSL', 'tar -tzf', 'tar -xzf', 'docker compose exec', 'docker compose config', 'docker compose run', 'docker pull --quiet', 'docker compose stop', 'tar -cf', 'docker compose exec', 'cp -R', 'chmod -R', 'docker compose up', 'docker compose exec'], $this->runner->keys());
+        self::assertSame(['curl -fsSL', 'curl -fsSL', 'cosign verify-blob', 'curl -fsSL', 'tar -tzf', 'tar -xzf', 'docker compose exec', 'docker compose config', 'docker compose config', 'docker compose run', 'docker pull --quiet', 'docker compose stop', 'tar -cf', 'docker compose exec', 'cp -R', 'chmod -R', 'docker compose up', 'docker compose exec'], $this->runner->keys());
 
         // Its secrets never in a command's arguments
         foreach ($this->runner->runs as $run) {
@@ -288,6 +294,14 @@ final class ServerUpdaterTest extends RegistryTestCase
         $this->failsAndRuns('/Checking the sites\' scopes with the release\'s Docker gate.*deadbeefcafe\.json/s', self::OLD);
         self::assertNotContains('docker compose stop', $this->runner->keys());
         self::assertNotContains('docker pull --quiet', $this->runner->keys(), 'Not even its image is got.');
+    }
+
+    public function testAReleaseFromBeforeTheGateIsntCheckedByOne(): void
+    {
+        $this->releaseHasGate = false;
+        $this->update();
+        self::assertNotContains('docker compose run', $this->runner->keys());
+        self::assertContains('docker compose up', $this->runner->keys(), 'It updates all the same.');
     }
 
     public function testItWaitsForOperationsOnSites(): void
