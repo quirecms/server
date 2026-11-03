@@ -13,6 +13,9 @@
 #   E2E_ONLY=backups tests/e2e/run.sh … backups off the server (restic, on an S3 service of its own)
 #   E2E_ONLY=database tests/e2e/run.sh … the server's PostgreSQL upgraded to the next major
 #                                             (E2E_POSTGRES_NEXT, else 19rc1-alpine), undone, cleaned
+#   E2E_ONLY=links tests/e2e/run.sh …  sites' links (D-34): the latest release installed with a site on the
+#                                             shared networks, moved to this checkout (its files and agent),
+#                                             a second site added; what each reaches of the other and the server
 #   E2E_CACHE=1 tests/e2e/run.sh …     keeps the machine's images and build cache between runs
 #                                             (in the volume quire-server-e2e-cache; one run at a time)
 #
@@ -47,6 +50,9 @@ release() { [ "${E2E_ONLY:-}" = release ]; }
 updating() { [ "${E2E_ONLY:-}" = update ]; }
 backingup() { [ "${E2E_ONLY:-}" = backups ]; }
 upgrading() { [ "${E2E_ONLY:-}" = database ]; }
+linking() { [ "${E2E_ONLY:-}" = links ]; }
+# Installed from the latest release (its signatures checked), not from this checkout
+from_release() { release || linking; }
 cache=''
 if [ "${E2E_CACHE:-}" = 1 ]; then cache='-v quire-server-e2e-cache:/var/lib/docker'; fi
 # Docker Hub refuses anonymous pulls now and then (CI's runners are anonymous): the machine's image, and
@@ -68,6 +74,8 @@ until inside 'docker info' >/dev/null 2>&1; do sleep 1; done
 # earlier checkout's (its build layers stay cached).
 if [ -n "$cache" ]; then inside 'docker rm -f $(docker ps -aq) >/dev/null 2>&1; docker rmi -f quire-server-agent >/dev/null 2>&1; docker volume prune -af >/dev/null; docker network prune -f >/dev/null; rm -rf /srv/quire /root/blog; true'; fi
 inside 'apk add -q --no-cache curl openssl'
+# The machine's routes as Ubuntu's ip lists them (busybox's doesn't list every table)
+if linking; then inside 'apk add -q --no-cache iproute2'; fi
 # (Nothing else: install.sh needs only what a fresh machine has.)
 
 if want adopt; then
@@ -84,17 +92,18 @@ echo '== Installing the server with install.sh (it adopts the site)'
 docker exec "$dind" mkdir -p /root/quire-server
 tar -C "$here" --exclude=./.git --exclude=./vendor --exclude=./var --exclude=./tests -cf - . | docker exec -i "$dind" tar -C /root/quire-server -xf -
 
-if release; then
+if from_release; then
 	# The latest release, as a user gets it, but checked by this checkout's install.sh; with root's
 	# umask as strict as it gets (cosign runs as a user of its own and must still read the files).
 	install='umask 077; sh /root/quire-server/install.sh --yes --test-certificates --no-os-updates --unsupported-os 2>&1'
 	check 'a release that doesn'\''t exist, or a version that isn'\''t one, installs nothing' "! inside 'sh /root/quire-server/install.sh --version=0.0.0 --yes --no-os-updates --unsupported-os' && ! inside 'sh /root/quire-server/install.sh \"--version=0.1.0/../..\" --yes --no-os-updates --unsupported-os' && ! inside 'test -e /srv/quire/server'"
 else
 	install='sh /root/quire-server/install.sh --source=/root/quire-server --yes --test-certificates --no-os-updates --unsupported-os 2>&1'
-	if [ -n "$image" ]; then
-		docker save "$image" | docker exec -i "$dind" docker load -q
-		inside "docker tag $image quire-server-agent"
-	fi
+fi
+# This checkout's agent (the links part moves the release's server to it later)
+if [ -n "$image" ] && ! release; then
+	docker save "$image" | docker exec -i "$dind" docker load -q
+	inside "docker tag $image quire-server-agent"
 fi
 
 # The Docker-in-Docker machine is Alpine: not a supported system, so it takes --unsupported-os.
@@ -111,11 +120,11 @@ if release; then
 check 'the release'\''s signatures were checked' "grep -q 'Its signature checks out' $logs/install.log && grep -q 'Its image'\''s signature checks out too' $logs/install.log"
 check 'it runs the release'\''s signed image, by digest' "inside 'quire-server version' | grep -Eq '^Agent: ghcr.io/quirecms/server@sha256:[0-9a-f]{64}\$' && [ \"\$(inside 'docker inspect quire-server-agent-1 --format {{.Config.Image}}')\" = \"\$(inside 'sed -n s/^QUIRE_SERVER_IMAGE=//p /srv/quire/server/server.env')\" ]"
 check 'nothing was built on the machine' "[ -z \"\$(inside 'docker images -q quire-server-agent')\" ]"
-else
+elif ! linking; then
 check 'it says it was built from a checkout (no release image)' "inside 'quire-server version' | grep -q 'built from a checkout'"
 fi
 check 'every image of the stack is pinned by digest' "! inside 'cd /srv/quire/server && docker compose --env-file server.env config --images' | grep -v '^quire-server-agent\$' | grep -vq '@sha256:'"
-if ! release; then
+if ! from_release; then
 check 'the Docker gate has no network at all' "[ \"\$(inside 'docker inspect quire-server-gate-1 --format \"{{.HostConfig.NetworkMode}}\"')\" = none ]"
 check 'only the gate holds Docker'\''s socket (and the updater, when it runs)' "[ \"\$(inside 'docker ps --format \"{{.Names}}\" | xargs docker inspect --format \"{{.Name}} {{range .Mounts}}{{.Source}} {{end}}\"' | grep -c docker.sock)\" = 1 ] && inside 'docker inspect quire-server-gate-1 --format \"{{range .Mounts}}{{.Source}} {{end}}\"' | grep -q docker.sock"
 check 'the agent reaches Docker through the gate only' "[ \"\$(inside 'docker inspect quire-server-agent-1 --format \"{{range .Config.Env}}{{println .}}{{end}}\"' | grep ^DOCKER_HOST=)\" = DOCKER_HOST=unix:///run/quire-gate/trusted/trusted.sock ]"
@@ -143,6 +152,70 @@ check 'running the installer again changes nothing' "grep -q 'installed in /srv/
 # As PostgreSQL's superuser, in its container (local connections need the password too: SCRAM only)
 postgres_password=$(inside "sed -n 's/^QUIRE_SERVER_POSTGRES_PASSWORD=//p' /srv/quire/server/server.env" | tr -d "'")
 pg() { inside "docker exec -e PGPASSWORD=$postgres_password quire-server-database-1 psql -U postgres -Atc \"$1\""; }
+
+if linking; then
+echo '== A site of a release before links (D-34): on the networks every site shares'
+inside 'quire-server site:add jane --domain=jane.test --admin-email=jane@example.com --title="Jane" 2>&1' > "$logs"/add-jane.log || true
+check 'jane runs on the release' "inside 'quire-server site:list' | grep jane | grep -q running"
+# A container's networks and addresses: "<network>=<address> …"
+attached() { inside "docker inspect $1 --format '{{range \$name, \$n := .NetworkSettings.Networks}}{{\$name}}={{\$n.IPAddress}} {{end}}'"; }
+check 'it is on quire-edge and quire-data, as every site was' "attached jane-php-1 | grep -q quire-edge= && attached jane-php-1 | grep -q quire-data="
+
+echo '== The server moves to this checkout (its files and its agent, as an update replaces them)'
+inside 'tar -C /root/quire-server -cf - . | tar -C /srv/quire/server -xf - --no-same-owner'
+inside "sed -i 's/^QUIRE_SERVER_IMAGE=.*/QUIRE_SERVER_IMAGE=/' /srv/quire/server/server.env"
+inside 'quire-server up 2>&1' > "$logs"/up-links.log || true
+# The agent's start moves each site to its link (a few seconds offline each)
+inside 'for i in $(seq 150); do quire-server logs agent 2>&1 | grep -q "Automatic updates" && break; sleep 2; done'
+inside 'quire-server logs agent 2>&1 | grep -v "^ *$" | tail -8' | sed 's/^/    /'
+check 'the agent is this checkout'\''s' "inside 'quire-server version' | grep -q 'built from a checkout'"
+check 'jane left the shared networks' "! attached jane-php-1 | grep -Eq 'quire-(edge|data)=' && ! attached jane-worker-1 | grep -Eq 'quire-(edge|data)='"
+check 'jane is on its link, its own network at its addresses' "attached jane-php-1 | grep -Eq 'quire-link-jane=10\.72\.0\.(1[6-9]|2[0-9]|3[01]) ' && [ \"\$(inside \"docker network inspect jane_default --format '{{range .IPAM.Config}}{{.Subnet}}{{end}}'\")\" = 10.72.0.32/27 ]"
+check 'its link has no way out, and the containers'\'' addresses from .16' "[ \"\$(inside \"docker network inspect quire-link-jane --format '{{.Internal}} {{range .IPAM.Config}}{{.Subnet}} {{.IPRange}}{{end}}'\")\" = 'true 10.72.0.0/27 10.72.0.16/28' ]"
+check 'the front door is on it at .2, PostgreSQL at .3 as quire-database' "attached quire-server-front-1 | grep -q 'quire-link-jane=10.72.0.2 ' && attached quire-server-database-1 | grep -q 'quire-link-jane=10.72.0.3 ' && inside \"docker inspect quire-server-database-1 --format '{{(index .NetworkSettings.Networks \\\"quire-link-jane\\\").DNSNames}}'\" | grep -q quire-database"
+check 'jane is served with its data, and its role opens its database' "inside \"curl -sk $resolve https://jane.test/\" | grep -q Jane && inside 'docker exec jane-php-1 php bin/console dbal:run-sql -q \"SELECT 1\"'"
+check 'it trusts only the front door'\''s address as its proxy' "[ \"\$(inside 'docker exec jane-php-1 printenv SYMFONY_TRUSTED_PROXIES')\" = 10.72.0.2 ]"
+
+echo '== A second site, added on a link of its own'
+inside 'quire-server site:add kim --domain=kim.test --admin-email=kim@example.com --title="Kim" 2>&1' > "$logs"/add-kim.log || true
+check 'kim runs, on its own link and addresses' "inside 'quire-server site:list' | grep kim | grep -q running && attached kim-php-1 | grep -Eq 'quire-link-kim=10\.72\.0\.(8[0-9]|9[0-5]) ' && attached quire-server-front-1 | grep -q 'quire-link-kim=10.72.0.66 '"
+docker cp "$here/tests/e2e/try-links.php" "$dind:/root/try-links.php"
+inside 'docker cp /root/try-links.php jane-php-1:/app/var/try-links.php'
+from_jane() { inside "docker exec jane-php-1 php /app/var/try-links.php $1"; }
+kim_link=$(inside "docker inspect kim-php-1 --format '{{(index .NetworkSettings.Networks \"quire-link-kim\").IPAddress}}'" || true)
+kim_own=$(inside "docker inspect kim-php-1 --format '{{(index .NetworkSettings.Networks \"kim_default\").IPAddress}}'" || true)
+reached=$(from_jane "tcp $kim_link:80 $kim_own:80 kim.test.quire.internal:80 kim-php-1:80 10.72.0.66:443 10.72.0.67:5432 jane.test.quire.internal:80" || true)
+echo "$reached" | sed 's/^/    /'
+check 'from jane, nothing of kim answers, by address or by name' "[ \"\$(echo \"\$reached\" | head -4 | grep -c ' not reached\$')\" = 4 ]"
+check 'nor the front door or PostgreSQL on kim'\''s link' "[ \"\$(echo \"\$reached\" | sed -n 5,6p | grep -c ' not reached\$')\" = 2 ]"
+check 'a control: jane reaches itself by its name on its link' "echo \"\$reached\" | grep -qx 'jane.test.quire.internal:80 reached'"
+kim_password=$(inside "grep '^QUIRE_DATABASE_PASSWORD=' /srv/quire/sites/kim/prod.env | cut -d\\' -f2")
+server_password=$(inside "sed -n 's/^QUIRE_SERVER_DATABASE_PASSWORD=//p' /srv/quire/server/server.env" | tr -d "'")
+check 'kim'\''s role, with its real password, is refused from jane' "[ \"\$(from_jane \"login site_kim site_kim $kim_password\")\" = refused ]"
+check 'PostgreSQL'\''s superuser, with its real password, is refused from a site' "[ \"\$(from_jane \"login postgres postgres $postgres_password\")\" = refused ]"
+check 'so is the server'\''s own role' "[ \"\$(from_jane \"login quire_server quire_server $server_password\")\" = refused ]"
+check 'a control: kim'\''s role logs in from kim' "inside 'docker exec kim-php-1 php bin/console dbal:run-sql -q \"SELECT 1\"'"
+check 'PostgreSQL reads its rules without an error' "[ \"\$(pg 'SELECT count(*) FROM pg_hba_file_rules WHERE error IS NOT NULL')\" = 0 ]"
+
+echo '== The server'\''s containers made again: "quire-server up" puts them back on every link'
+inside 'cd /srv/quire/server && docker compose --env-file server.env up --detach --wait --force-recreate --no-deps front database >/dev/null 2>&1' || true
+check 'made again, they are on no link' "! attached quire-server-front-1 | grep -q quire-link- && ! attached quire-server-database-1 | grep -q quire-link-"
+inside 'quire-server up >/dev/null 2>&1' || true
+check 'after "up", the front door and PostgreSQL are back on both links, at their addresses' "attached quire-server-front-1 | grep -q 'quire-link-jane=10.72.0.2 ' && attached quire-server-front-1 | grep -q 'quire-link-kim=10.72.0.66 ' && attached quire-server-database-1 | grep -q 'quire-link-jane=10.72.0.3 ' && attached quire-server-database-1 | grep -q 'quire-link-kim=10.72.0.67 '"
+check 'both sites are served again' "inside \"curl -sk $resolve https://jane.test/\" | grep -q Jane && inside 'curl -sk --resolve kim.test:443:127.0.0.1 https://kim.test/' | grep -q Kim"
+
+echo '== A network the machine routes on the sites'\'' range (a VPN added later)'
+inside 'ip route add 10.72.200.0/24 dev eth0'
+check '"quire-server up" names it, with what to do' "inside 'quire-server up 2>&1' | grep -q '^  10.72.200.0/24 (eth0)\$'"
+inside 'ip route del 10.72.200.0/24 dev eth0'
+check 'and says nothing once it'\''s gone' "! inside 'quire-server up 2>&1' | grep -q 'routes part of the sites'"
+
+echo '== Removing a site takes its link and its login'
+inside 'quire-server site:remove kim --yes >/dev/null 2>&1' || true
+check 'kim'\''s link is gone, the front door and PostgreSQL off it' "! inside 'docker network ls --format {{.Name}}' | grep -q quire-link-kim && ! attached quire-server-front-1 | grep -q quire-link-kim && ! attached quire-server-database-1 | grep -q quire-link-kim"
+check 'its login is gone from PostgreSQL'\''s rules' "[ \"\$(pg \"SELECT count(*) FROM pg_hba_file_rules WHERE 'site_kim' = ANY(user_name)\")\" = 0 ]"
+check 'jane is still served' "inside \"curl -sk $resolve https://jane.test/\" | grep -q Jane"
+fi
 
 if updating; then
 to=${E2E_UPDATE_TO:-0.1.0}
@@ -368,7 +441,7 @@ docker cp "$here/tests/e2e/try-databases.php" "$dind:/root/try-databases.php"
 inside 'docker cp /root/try-databases.php jane-php-1:/app/var/try-databases.php'
 tried=$(inside 'docker exec jane-php-1 php /app/var/try-databases.php' || true)
 echo "$tried" | sed 's/^/    /'
-check 'its role is refused the server'\''s databases (with its real password)' "[ \"\$(echo \"\$tried\" | grep -c ': denied')\" = 3 ]"
+check 'its role is refused the server'\''s databases (with its real password)' "[ \"\$(echo \"\$tried\" | grep -Ec ': (refused|denied)\$')\" = 3 ]"
 check 'the site has no way to Docker (no socket, no gate on its networks)' "! inside 'docker inspect jane-php-1 jane-worker-1 --format \"{{range .Mounts}}{{.Source}} {{.Name}} {{end}}\"' | grep -Eq 'docker.sock|gate_'"
 # The gate holds what Docker receives for the site even where the Compose policy would miss something:
 # requests sent straight to the site's socket, as its Compose's are (in the agent, which mounts them).
