@@ -90,7 +90,7 @@ A site installed from the skeleton on its own (as in [the production docs](https
 
 If anything fails, it's put back as it was, ports included. Its domains are those of its `SERVER_NAME`, or pass them: `--domain=jane.example --domain=www.jane.example`.
 
-Its Compose project (its `COMPOSE_PROJECT_NAME`, or its folder's name) must follow the rules of a site's name (lowercase letters, digits and single dashes, nothing starting with `quire`) and be no other site's: Docker's containers, volumes and networks belong to a project by its name. Any other is refused before anything changes; such a site's project must be renamed first (its volumes carry the project's name, so their data has to be copied to the new ones).
+Its Compose project (its `COMPOSE_PROJECT_NAME`, or its folder's name) must follow the rules of a site's name (lowercase letters, digits and single dashes, nothing starting with `quire`, not 12 hex digits) and be no other site's: Docker's containers, volumes and networks belong to a project by its name. Any other is refused before anything changes; such a site's project must be renamed first (its volumes carry the project's name, so their data has to be copied to the new ones).
 
 ## Commands
 
@@ -123,7 +123,7 @@ quire-server up | down | ps | logs     # the server itself ("down -v" is refused
                                        # up and down wait for no operation to run, or --force)
 ```
 
-- **Site names** are 2 to 30 lowercase letters, digits and single dashes (`jane`, `club-news`). They name the site's folder, its containers (`jane-php-1`) and its database (`site_jane`). Its domains are separate, and the first one is its main address.
+- **Site names** are 2 to 30 lowercase letters, digits and single dashes (`jane`, `club-news`), starting with a letter; names of exactly 12 hex digits (`deadbeefcafe`) are Docker Compose's for containers it recreates, and are refused. They name the site's folder, its containers (`jane-php-1`) and its database (`site_jane`). Its domains are separate, and the first one is its main address.
 - **Adding** gets the skeleton with Composer (without running any of its code), creates the site's database, checks and builds the site, starts it, installs it, and opens its domains. The first admin gets a password, shown once, or with `--invite` an email to choose one (needs an email server, and Quire 0.1.1 or later). If anything fails, everything done is undone.
 - **Sites that keep their own PostgreSQL** (adopted ones) have it removed with them; the server's PostgreSQL holds the others' databases.
 - **Removing** backs the site up to `/srv/quire/backups/<site>/final-<time>.tar`, closes its domains, removes its containers, volumes and database, and moves its folder to `/srv/quire/sites/.removed/`. A site that can't start can't be backed up: `--skip-backup` removes it anyway, and its data is gone.

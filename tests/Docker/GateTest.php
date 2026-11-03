@@ -99,8 +99,9 @@ final class GateTest extends TestCase
 
     public function testNoScopeActsForTheServersOwnNames(): void
     {
-        // Nor a project with "_": Compose's aliases would be names Docker's DNS doesn't take
-        foreach (['quire-server', 'quire', '../jane', 'Jane', '', 'demo_x'] as $project) {
+        // Nor a project with "_": Compose's aliases would be names Docker's DNS doesn't take. Nor 12 hex
+        // digits: the prefix "<project>_" would be a recreated container's name, which the gate refuses.
+        foreach (['quire-server', 'quire', '../jane', 'Jane', '', 'demo_x', 'deadbeefcafe'] as $project) {
             try {
                 SiteProject::checked($project);
                 self::fail($project.' was accepted.');
