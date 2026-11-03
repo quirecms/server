@@ -57,6 +57,8 @@ services:
       QUIRE_SERVER_ROOT: ${QUIRE_SERVER_ROOT:-/srv/quire}
       # Which release runs ("quire-server version")
       QUIRE_SERVER_IMAGE: ${QUIRE_SERVER_IMAGE:-}
+      # The private range sites' networks get their addresses from: a /26 per site
+      QUIRE_SERVER_SITE_NETWORKS: ${QUIRE_SERVER_SITE_NETWORKS:-10.72.0.0/16}
       # Git mode sites that deploy by themselves: how often their branch is asked for new commits
       QUIRE_SERVER_GIT_POLL_SECONDS: ${QUIRE_SERVER_GIT_POLL_SECONDS:-300}
       # The hour (UTC) from which sites get their automatic updates each night ("site:updates"), or "off"

@@ -201,4 +201,26 @@ final class Schema
             "CREATE UNIQUE INDEX site_project ON {$s}.site (project) WHERE status <> 'removed'",
         ];
     }
+
+    /**
+     * Each site's addresses (D-34): a /26 of the server's range, which PostgreSQL itself keeps from
+     * overlapping another site's. A removed site's row goes, and its addresses with it.
+     *
+     * @return list<string>
+     */
+    public static function version8(string $schema = self::NAME): array
+    {
+        $s = '"'.str_replace('"', '""', $schema).'"';
+
+        return [
+            <<<SQL
+                CREATE TABLE {$s}.site_network (
+                    site text PRIMARY KEY REFERENCES {$s}.site (name) ON DELETE CASCADE,
+                    block cidr NOT NULL CHECK (family(block) = 4 AND masklen(block) = 26),
+                    created_at timestamptz NOT NULL DEFAULT now(),
+                    EXCLUDE USING gist (block inet_ops WITH &&)
+                )
+                SQL,
+        ];
+    }
 }
