@@ -64,7 +64,7 @@ final readonly class SiteLinks
         if (null === $existing) {
             $created = $this->docker([
                 'network', 'create', '--driver', 'bridge', '--internal',
-                '--subnet', (string) $subnets->link, '--gateway', $subnets->link->address(1),
+                '--subnet', (string) $subnets->link, '--ip-range', (string) $subnets->linkContainers(), '--gateway', $subnets->link->address(1),
                 '--label', self::LABEL.'='.$project, $link,
             ]);
 

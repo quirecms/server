@@ -59,6 +59,7 @@ final class SiteLinksTest extends RegistryTestCase
                 $name = (string) end($command);
                 $this->networks[$name] = ['subnet' => $this->option($command, '--subnet'), 'internal' => \in_array('--internal', $command, true), 'label' => $this->option($command, '--label')];
                 self::assertSame(Ipv4Cidr::parse($this->option($command, '--subnet'))->address(1), $this->option($command, '--gateway'), 'Docker\'s gateway takes .1, as the plan has it.');
+                self::assertSame(Ipv4Cidr::parse($this->option($command, '--subnet'))->address(16).'/28', $this->option($command, '--ip-range'), 'The site\'s containers get .16 to .31: never the front door\'s .2 or PostgreSQL\'s .3, even while they\'re off it.');
 
                 return ScriptedRunner::ok($command);
             },

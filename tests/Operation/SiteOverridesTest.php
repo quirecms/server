@@ -128,6 +128,41 @@ final class SiteOverridesTest extends RegistryTestCase
         self::assertSame(['jane.example.quire.internal'], $reached, 'Once it runs, the front door is asked to reach it there.');
     }
 
+    public function testASiteWhoseNetworkMovesHasEveryContainerMadeAgain(): void
+    {
+        $this->site('jane', 'jane', Site::SHARED_DATABASE);
+        $subnet = "172.18.0.0/16 \n";
+        $this->runner->script['docker network inspect'] = static function (array $command) use (&$subnet): ProcessResult {
+            $command = array_values(array_map(static fn (mixed $part): string => \is_scalar($part) ? (string) $part : '', $command));
+
+            return match (end($command)) {
+                'jane_default' => ScriptedRunner::ok($command, $subnet),
+                'quire-data' => ScriptedRunner::ok($command, "172.19.0.0/16 \n"),
+                default => ScriptedRunner::ok($command, end($command)."\n"),
+            };
+        };
+
+        $this->subject()->refresh();
+
+        self::assertContains('--force-recreate', $this->lastUp(), 'Docker\'s addresses: Compose makes its network again, and would reconnect containers it keeps without their service\'s name ("database" wouldn\'t resolve).');
+
+        // At its addresses already (a change of its override for another reason): only what changed
+        $subnet = "10.72.0.32/27 \n";
+        new Filesystem()->dumpFile($this->paths->site(new SiteName('jane')).'/'.SiteFiles::OVERRIDE, "services: {}\n");
+        $this->subject()->refresh();
+        self::assertNotContains('--force-recreate', $this->lastUp());
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function lastUp(): array
+    {
+        $ups = array_values(array_filter($this->runner->runs, static fn (array $run): bool => 'docker compose up' === ScriptedRunner::key($run['command'])));
+
+        return [] === $ups ? [] : array_last($ups)['command'];
+    }
+
     public function testAMovedSiteTheFrontDoorDoesntReachIsSaid(): void
     {
         $this->site('jane', 'jane', Site::SHARED_DATABASE);
