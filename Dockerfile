@@ -12,7 +12,7 @@ FROM ghcr.io/sigstore/cosign/cosign:v3.1.4@sha256:0f06154836d2de34f887a5c273506d
 FROM restic/restic:0.19.1@sha256:136600b6ff6843d61d355f7f71f460a166429f35de6fd11b568fece3c9a4d510 AS restic
 # The Docker gate, for the tests only (they check the scopes the agent writes with the gate itself);
 # the server runs its image (compose.yaml), the same digest (a test keeps them equal).
-FROM ghcr.io/yorvolabs/yorvogate:0.2.2@sha256:a70cdc48b759bc7c554879202d41ce4ba4520fd5e44788cec5ce020f887b660b AS yorvogate
+FROM ghcr.io/yorvolabs/yorvogate:0.2.2@sha256:bb5ff1be3e01277cace418597ad9adde40b133ff1864ca657f456d3cb15bd134 AS yorvogate
 FROM mlocati/php-extension-installer:2.12@sha256:e772f8d2c1b88ab5872611b400410b4ab1839a6a0ff5ce460eb2105a35d62953 AS php_extension_installer
 
 FROM php:8.5-cli-alpine@sha256:e899a75c775804e5466dbd9c96b31f8b6c6ae2ddb053a8466223a0c32992ff8e AS agent
