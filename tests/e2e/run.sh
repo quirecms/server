@@ -373,14 +373,15 @@ check 'the site has no way to Docker (no socket, no gate on its networks)' "! in
 # The gate holds what Docker receives for the site even where the Compose policy would miss something:
 # requests sent straight to the site's socket, as its Compose's are (in the agent, which mounts them).
 site_docker() { inside "docker exec quire-server-agent-1 env DOCKER_HOST=unix:///run/quire-gate/sites/jane.sock docker $1 2>&1"; }
-own='--label com.docker.compose.project=jane --cap-drop ALL --security-opt no-new-privileges --memory 64m --pids-limit 64'
+# On the site's own network: the gate refuses Docker's default one (a container joins its scope's networks)
+own='--network jane_default --label com.docker.compose.project=jane --cap-drop ALL --security-opt no-new-privileges --memory 64m --pids-limit 64'
 check 'the gate: a container as the policy allows it starts (a control)' "site_docker 'run --rm --name jane-probe $own alpine:3.22 true'"
 check 'the gate: a privileged container is refused' "site_docker 'run --rm --name jane-probe $own --privileged alpine:3.22 true' | grep -qi privileged"
 check 'the gate: the host'\''s files are refused' "! site_docker 'run --rm --name jane-probe $own -v /:/host alpine:3.22 true' >/dev/null && ! site_docker 'volume create --label com.docker.compose.project=jane --opt type=none --opt o=bind --opt device=/ jane_host' >/dev/null"
 check 'the gate: a capability the policy doesn'\''t give is refused' "site_docker 'run --rm --name jane-probe $own --cap-add SYS_ADMIN alpine:3.22 true' | grep -qi SYS_ADMIN"
 check 'the gate: the host'\''s namespaces are refused' "! site_docker 'run --rm --name jane-probe $own --pid host alpine:3.22 true' >/dev/null"
 check 'the gate: another project'\''s name is refused' "! site_docker 'run --rm --name other-probe --label com.docker.compose.project=other --cap-drop ALL --security-opt no-new-privileges --memory 64m --pids-limit 64 alpine:3.22 true' >/dev/null"
-check 'the gate: the server'\''s own containers aren'\''t there for a site' "site_docker 'exec quire-server-database-1 id' | grep -q 'No such container' && site_docker 'inspect quire-server-agent-1' | grep -q 'No such'"
+check 'the gate: the server'\''s own containers aren'\''t there for a site' "site_docker 'exec quire-server-database-1 id' | grep -q 'No such container' && site_docker 'container inspect quire-server-agent-1' | grep -q 'No such container'"
 check 'the gate: a shell in the site'\''s builder is refused (it may only build)' "site_docker 'exec quire-buildkit-jane id' | grep -q 'dial-stdio'"
 check 'the gate: an image can'\''t be pushed' "! site_docker 'push quire-sites/jane/php-prod' >/dev/null"
 check 'the gate: an image can'\''t be named in another'\''s place' "! site_docker 'tag quire-sites/jane/php-prod quire-sites/other/php-prod' >/dev/null && ! site_docker 'tag quire-sites/jane/php-prod quire-server-agent:latest' >/dev/null"
