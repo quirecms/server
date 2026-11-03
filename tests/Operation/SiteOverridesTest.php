@@ -61,6 +61,7 @@ final class SiteOverridesTest extends RegistryTestCase
             // What the policy reads: the project, nothing it refuses (or, for a test, something it does)
             'docker compose config' => fn (array $command): ProcessResult => ScriptedRunner::ok($command, (string) json_encode(['name' => $command[7], 'services' => $this->refused ? ['php' => ['privileged' => true]] : []])),
             'docker compose up' => static fn (array $command): ProcessResult => ScriptedRunner::ok($command),
+            ...GateFixture::networkScript(),
         ]);
     }
 
@@ -88,7 +89,7 @@ final class SiteOverridesTest extends RegistryTestCase
         self::assertSame(['quire-sites/demo-x/php-prod' => self::RUNNING, 'quire-sites/jane/php-prod' => self::RUNNING], $this->tags, 'The image each runs, named anew: its next update can be undone.');
         self::assertFileDoesNotExist($this->paths->site(new SiteName('gone')).'/'.SiteFiles::OVERRIDE);
         self::assertCount(2, array_keys($this->runner->keys(), 'docker compose up', true), 'Each started again with it, once.');
-        self::assertStringContainsString('jane.example.quire.internal', $jane, 'Named on quire-edge by a name no public DNS answers.');
+        self::assertStringContainsString('jane.example.quire.internal', $jane, 'Named on its link by a name no public DNS answers.');
 
         $this->runner->runs = [];
         self::assertSame([], $this->subject()->refresh());
@@ -105,6 +106,83 @@ final class SiteOverridesTest extends RegistryTestCase
         self::assertStringContainsString('privileged', $failed['jane'] ?? '');
         self::assertSame("services:\n  php:\n    cap_drop: [ALL]\n", file_get_contents($this->paths->site(new SiteName('jane')).'/'.SiteFiles::OVERRIDE), 'As it was, matching its containers.');
         self::assertNotContains('docker compose up', $this->runner->keys());
+    }
+
+    public function testASiteOfAReleaseBeforeLinksMovesToItsLink(): void
+    {
+        $this->site('jane', 'jane', Site::SHARED_DATABASE);
+        $reached = [];
+        $this->runner->script['docker exec quire-server-front-1'] = static function (array $command) use (&$reached): ProcessResult {
+            $command = array_values(array_map(static fn (mixed $part): string => \is_scalar($part) ? (string) $part : '', $command));
+            $reached[] = $command[7];
+
+            return ScriptedRunner::ok($command);
+        };
+
+        self::assertSame([], $this->subject()->refresh());
+
+        $jane = (string) file_get_contents($this->paths->site(new SiteName('jane')).'/'.SiteFiles::OVERRIDE);
+        self::assertStringContainsString('quire-link-jane', $jane);
+        self::assertStringNotContainsString('quire-edge', $jane, 'Off the networks every site shared.');
+        self::assertStringContainsString('subnet: 10.72.0.32/27', $jane, 'Its own network at its addresses: Compose makes it again there on "up".');
+        self::assertSame(['jane.example.quire.internal'], $reached, 'Once it runs, the front door is asked to reach it there.');
+    }
+
+    public function testASiteWhoseNetworkMovesHasEveryContainerMadeAgain(): void
+    {
+        $this->site('jane', 'jane', Site::SHARED_DATABASE);
+        $subnet = "172.18.0.0/16 \n";
+        $this->runner->script['docker network inspect'] = static function (array $command) use (&$subnet): ProcessResult {
+            $command = array_values(array_map(static fn (mixed $part): string => \is_scalar($part) ? (string) $part : '', $command));
+
+            return match (end($command)) {
+                'jane_default' => ScriptedRunner::ok($command, $subnet),
+                'quire-data' => ScriptedRunner::ok($command, "172.19.0.0/16 \n"),
+                default => ScriptedRunner::ok($command, end($command)."\n"),
+            };
+        };
+
+        $this->subject()->refresh();
+
+        self::assertContains('--force-recreate', $this->lastUp(), 'Docker\'s addresses: Compose makes its network again, and would reconnect containers it keeps without their service\'s name ("database" wouldn\'t resolve).');
+
+        // At its addresses already (a change of its override for another reason): only what changed
+        $subnet = "10.72.0.32/27 \n";
+        new Filesystem()->dumpFile($this->paths->site(new SiteName('jane')).'/'.SiteFiles::OVERRIDE, "services: {}\n");
+        $this->subject()->refresh();
+        self::assertNotContains('--force-recreate', $this->lastUp());
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function lastUp(): array
+    {
+        $ups = array_values(array_filter($this->runner->runs, static fn (array $run): bool => 'docker compose up' === ScriptedRunner::key($run['command'])));
+
+        return [] === $ups ? [] : array_last($ups)['command'];
+    }
+
+    public function testAMovedSiteTheFrontDoorDoesntReachIsSaid(): void
+    {
+        $this->site('jane', 'jane', Site::SHARED_DATABASE);
+        $this->runner->script['docker exec quire-server-front-1'] = static fn (array $command): ProcessResult => ScriptedRunner::failed(array_values(array_map(static fn (mixed $part): string => \is_scalar($part) ? (string) $part : '', $command)), '');
+
+        $failed = $this->subject()->refresh();
+
+        self::assertStringContainsString('the front door doesn\'t reach it on its link (jane.example.quire.internal:80)', $failed['jane'] ?? '');
+        self::assertStringContainsString('quire-link-jane', (string) file_get_contents($this->paths->site(new SiteName('jane')).'/'.SiteFiles::OVERRIDE), 'It runs with it: kept.');
+    }
+
+    public function testAFailedSiteGetsItsOverrideForItsNextStart(): void
+    {
+        $this->site('jane', 'jane', Site::SHARED_DATABASE);
+        $this->registry->setStatus(new SiteName('jane'), Site::FAILED);
+
+        self::assertSame([], $this->subject()->refresh());
+
+        self::assertStringContainsString('quire-link-jane', (string) file_get_contents($this->paths->site(new SiteName('jane')).'/'.SiteFiles::OVERRIDE), 'An earlier release\'s would join networks this one refuses.');
+        self::assertNotContains('docker compose up', $this->runner->keys(), 'Not started: it wasn\'t running.');
     }
 
     public function testANameItHasAlreadyIsKept(): void
@@ -127,6 +205,6 @@ final class SiteOverridesTest extends RegistryTestCase
 
     private function subject(): SiteOverrides
     {
-        return new SiteOverrides($this->registry, new SiteFiles(), $this->paths, new Images($this->runner, GateFixture::gate($this->runner, $this->root, 'jane', 'demo-x', 'gone')), new SiteLock($this->connection, $this->schema), new Compose($this->runner, new ComposePolicy(), new ComposeFiles(), new RuntimeImages($this->runner, new RuntimeFloors($this->connection, $this->schema)), new RuntimeBuilds($this->connection, $this->schema), GateFixture::gate($this->runner, $this->root, 'jane', 'demo-x', 'gone'), GateFixture::builders($this->runner, $this->root)));
+        return new SiteOverrides($this->registry, new SiteFiles(), $this->paths, new Images($this->runner, GateFixture::gate($this->runner, $this->root, 'jane', 'demo-x', 'gone')), new SiteLock($this->connection, $this->schema), new Compose($this->runner, new ComposePolicy(), new ComposeFiles(), new RuntimeImages($this->runner, new RuntimeFloors($this->connection, $this->schema)), new RuntimeBuilds($this->connection, $this->schema), GateFixture::gate($this->runner, $this->root, 'jane', 'demo-x', 'gone'), GateFixture::builders($this->runner, $this->root)), GateFixture::links($this->runner, $this->connection, $this->schema));
     }
 }

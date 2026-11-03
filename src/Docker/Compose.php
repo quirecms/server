@@ -95,7 +95,27 @@ final readonly class Compose
     public function up(SiteProject $project, ?\Closure $output = null): void
     {
         $this->check($project);
-        $this->compose($project, ['up', '--detach', '--wait', '--wait-timeout', '600', '--remove-orphans', '--no-build'], timeout: 900, output: $output)->orFail('Starting the site');
+        // Its own network moves to its addresses (a site of a release before D-34, or adopted): Compose
+        // makes the network again, but reconnects the containers it doesn't make again without their
+        // service's name (Compose 5.6), so "database" wouldn't resolve. All are made again.
+        $recreate = $this->moves($project) ? ['--force-recreate'] : [];
+        $this->compose($project, ['up', '--detach', '--wait', '--wait-timeout', '600', '--remove-orphans', '--no-build', ...$recreate], timeout: 900, output: $output)->orFail('Starting the site');
+    }
+
+    /**
+     * Whether the site's own network is there at other addresses than the ones the server planned.
+     */
+    private function moves(SiteProject $project): bool
+    {
+        $subnet = $project->policy->subnet;
+
+        if (!$subnet instanceof \Quire\Server\Network\Ipv4Cidr) {
+            return false;
+        }
+
+        $network = $this->runner->run(['docker', 'network', 'inspect', '--format', '{{range .IPAM.Config}}{{.Subnet}} {{end}}', $project->name().'_default'], $this->gate->trusted(), timeout: 60);
+
+        return $network->successful() && [(string) $subnet] !== array_values(array_filter(explode(' ', trim($network->output)), static fn (string $part): bool => '' !== $part));
     }
 
     /**

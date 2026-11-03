@@ -238,7 +238,8 @@ final readonly class Gate
      *   - its images are "quire-sites/<project>/…", which no other site may use;
      *   - on the server's shared networks, only the aliases Compose gives its containers there (the
      *     service's name and the container's) and those the policy allows (its domains');
-     *   - its BuildKit builder, which it may only reach to build (Builders).
+     *   - its BuildKit builder, which it may only reach to build (Builders);
+     *   - its addresses (D-34): each network it creates names a subnet inside its project's /27.
      *
      * @return array<string, mixed>
      */
@@ -267,6 +268,7 @@ final readonly class Gate
             'images' => [PolicyContext::IMAGES.$name.'/'],
             ...([] === $networks ? [] : ['networks' => $networks]),
             'builders' => [Builders::container($name)],
+            ...($project->policy->subnet instanceof \Quire\Server\Network\Ipv4Cidr ? ['subnets' => [(string) $project->policy->subnet]] : []),
         ];
     }
 

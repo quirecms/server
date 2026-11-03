@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Quire\Server\Site;
 
 use Quire\Server\Docker\PolicyContext;
+use Quire\Server\Network\SiteLinks;
+use Quire\Server\Network\SiteSubnets;
 use Quire\Server\Process\Durable;
 use Symfony\Component\Yaml\Tag\TaggedValue;
 use Symfony\Component\Yaml\Yaml;
@@ -19,11 +21,11 @@ final readonly class SiteFiles
     public const string ENV_FILE = 'prod.env';
     public const string OVERRIDE = 'compose.server.yaml';
 
-    /** The server's PostgreSQL, on the quire-data network */
+    /** The server's PostgreSQL, by its name on each site's link (SiteLinks) */
     public const string DATABASE_HOST = 'quire-database';
 
     /**
-     * How the front door names a site's domain on quire-edge: "<domain>.quire.internal". The ".internal"
+     * How the front door names a site's domain on its link: "<domain>.quire.internal". The ".internal"
      * domain is never public (ICANN keeps it for private use): while the site is down, its name doesn't
      * resolve anywhere else, and visitors get the "Back in a moment" page. A site's public domain would
      * be asked of public DNS then, which names this server: the front door again, in a loop.
@@ -91,9 +93,10 @@ final readonly class SiteFiles
 
     /**
      * @param list<Domain> $domains The primary one first
+     * @param SiteSubnets  $subnets Its addresses (SiteLinks::ensure made its link)
      * @param string|null  $project Its Compose project (its own for an adopted site), the site's name if null
      */
-    public function writeOverride(string $directory, SiteName $site, array $domains, string $databaseMode, ?string $project = null): void
+    public function writeOverride(string $directory, SiteName $site, array $domains, string $databaseMode, SiteSubnets $subnets, ?string $project = null): void
     {
         if ([] === $domains) {
             throw new \InvalidArgumentException('A site needs at least one domain.');
@@ -101,6 +104,7 @@ final readonly class SiteFiles
 
         $hosts = array_map(static fn (Domain $domain): string => $domain->value, $domains);
         $primary = $hosts[0];
+        $link = SiteLinks::name($project ?? $site->value);
         $hardening = ['security_opt' => ['no-new-privileges:true'], 'cap_drop' => ['ALL']];
         // Every container of the site comes back after a reboot or a crash: said here, whatever its own
         // files say (the skeleton's PostgreSQL had none, so an adopted site came back without it)
@@ -113,10 +117,13 @@ final readonly class SiteFiles
                 // Plain HTTP for its domains: the front door has the certificates.
                 'SERVER_NAME' => implode(', ', array_map(static fn (string $host): string => 'http://'.$host, $hosts)).', php:80',
                 'DEFAULT_URI' => 'https://'.$primary,
-                'SYMFONY_TRUSTED_PROXIES' => 'private_ranges',
+                // The front door's address on the site's link, and nothing else: a proxy anywhere else
+                // could claim any client address (M-08)
+                'SYMFONY_TRUSTED_PROXIES' => $subnets->frontDoor(),
             ],
             'labels' => ['com.quirecms.site' => 'true', 'com.quirecms.server.site' => $site->value],
-            'networks' => ['default' => null, 'quire-edge' => ['aliases' => array_map(static fn (string $host): string => $host.self::EDGE_SUFFIX, $hosts)]],
+            // Its link, where the front door finds it by these names; its own network for the internet
+            'networks' => ['default' => null, $link => ['aliases' => array_map(static fn (string $host): string => $host.self::EDGE_SUFFIX, $hosts)]],
             'mem_limit' => '1g',
             'pids_limit' => 512,
             // FrankenPHP's binary needs this one to start (a file capability, for port 80).
@@ -139,13 +146,15 @@ final readonly class SiteFiles
         ] + $hardening;
         $services = ['php' => $php, 'worker' => $worker, 'database' => $database];
 
-        $networks = ['quire-edge' => ['external' => true]];
+        $networks = [
+            // Its own network at the addresses the server planned for it, not one of Docker's pools
+            'default' => ['ipam' => ['config' => [['subnet' => (string) $subnets->project]]]],
+            $link => ['external' => true],
+        ];
 
         if (Site::SHARED_DATABASE === $databaseMode) {
-            // The server's PostgreSQL, on its network; the site's own doesn't run.
-            $services['php']['networks']['quire-data'] = null;
-            $services['worker']['networks']['quire-data'] = null;
-            $networks['quire-data'] = ['external' => true];
+            // The server's PostgreSQL, on the site's link; the site's own doesn't run.
+            $services['worker']['networks'][$link] = null;
             $url = \sprintf('postgresql://%1$s:${QUIRE_DATABASE_PASSWORD}@%2$s:5432/%1$s?serverVersion=18&charset=utf8', $site->databaseIdentifier(), self::DATABASE_HOST);
             $services['php']['environment']['DATABASE_URL'] = $url;
             $services['worker']['environment']['DATABASE_URL'] = $url;

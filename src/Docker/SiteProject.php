@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Quire\Server\Docker;
 
+use Quire\Server\Network\SiteLinks;
+use Quire\Server\Network\SiteSubnets;
 use Quire\Server\Site\Domain;
 use Quire\Server\Site\ServerPaths;
 use Quire\Server\Site\Site;
@@ -25,18 +27,22 @@ final readonly class SiteProject
 
     /**
      * How a site of this server runs: its folder, its prod.env, and what the policy allows it (its
-     * project, and its names on the shared networks).
+     * project, its names on its link, its addresses). Without addresses (none allocated yet), it may
+     * join no network of the server's and choose no addresses of its own.
      *
      * @param list<Domain> $domains
      */
-    public static function of(ServerPaths $paths, SiteName $name, array $domains, string $project, string $databaseMode): self
+    public static function of(ServerPaths $paths, SiteName $name, array $domains, string $project, string $databaseMode, ?SiteSubnets $subnets): self
     {
         $directory = $paths->site($name);
+        $shared = $subnets instanceof SiteSubnets ? [SiteLinks::name($project) => [
+            // The front door finds its php by its domains; with the server's PostgreSQL, the worker
+            // reaches it there too
+            'php' => array_map(static fn (Domain $domain): string => $domain->value.SiteFiles::EDGE_SUFFIX, $domains),
+            ...(Site::SHARED_DATABASE === $databaseMode ? ['worker' => []] : []),
+        ]] : [];
 
-        return new self($directory, $directory.'/'.SiteFiles::ENV_FILE, new PolicyContext($project, $directory, [
-            'quire-edge' => ['php' => array_map(static fn (Domain $domain): string => $domain->value.SiteFiles::EDGE_SUFFIX, $domains)],
-            'quire-data' => Site::SHARED_DATABASE === $databaseMode ? ['php' => [], 'worker' => []] : [],
-        ]));
+        return new self($directory, $directory.'/'.SiteFiles::ENV_FILE, new PolicyContext($project, $directory, $shared, $subnets?->project));
     }
 
     public function name(): string

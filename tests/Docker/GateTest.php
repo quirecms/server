@@ -10,6 +10,7 @@ use Quire\Server\Docker\ComposePolicy;
 use Quire\Server\Docker\Gate;
 use Quire\Server\Docker\PolicyContext;
 use Quire\Server\Docker\SiteProject;
+use Quire\Server\Network\SiteNetworkRange;
 use Quire\Server\Process\ProcessResult;
 use Quire\Server\Process\SymfonyProcessRunner;
 use Quire\Server\Site\Domain;
@@ -49,11 +50,13 @@ final class GateTest extends TestCase
             'prefixes' => ['jane-', 'jane_'],
             'images' => ['quire-sites/jane/'],
             'networks' => [
-                // Compose's own aliases (the service's name and its container's), and its domains'
-                'quire-edge' => ['aliases' => ['jane-php-1', 'jane.example.quire.internal', 'php', 'www.jane.example.quire.internal']],
-                'quire-data' => ['aliases' => ['jane-php-1', 'jane-worker-1', 'php', 'worker']],
+                // Its own link only (D-34): Compose's own aliases (the service's name and its
+                // container's), and its domains', where the front door finds it
+                'quire-link-jane' => ['aliases' => ['jane-php-1', 'jane-worker-1', 'jane.example.quire.internal', 'php', 'worker', 'www.jane.example.quire.internal']],
             ],
             'builders' => ['quire-buildkit-jane'],
+            // Where its networks' addresses must be: its project's /27 (the gate refuses any other)
+            'subnets' => ['10.72.0.32/27'],
         ], $this->gate()->scope($this->project('jane')));
     }
 
@@ -61,7 +64,7 @@ final class GateTest extends TestCase
     {
         $scope = $this->gate()->scope($this->project('demo', Site::OWN_DATABASE));
 
-        self::assertSame(['quire-edge'], array_keys(\is_array($scope['networks'] ?? null) ? $scope['networks'] : []));
+        self::assertSame(['quire-link-demo' => ['aliases' => ['demo-php-1', 'demo.example.quire.internal', 'php', 'www.demo.example.quire.internal']]], $scope['networks'] ?? null, 'Its php for the front door; its worker stays off: it reaches no PostgreSQL there.');
     }
 
     public function testEachOperationHasTheScopeWrittenAndTheSitesOwnDockerConfiguration(): void
@@ -220,6 +223,6 @@ final class GateTest extends TestCase
         $paths = new ServerPaths($this->root);
         new Filesystem()->mkdir($paths->site($site));
 
-        return SiteProject::of($paths, $site, [new Domain($site->value.'.example'), new Domain('www.'.$site->value.'.example')], $name, $database);
+        return SiteProject::of($paths, $site, [new Domain($site->value.'.example'), new Domain('www.'.$site->value.'.example')], $name, $database, new SiteNetworkRange(SiteNetworkRange::DEFAULT)->block(0));
     }
 }

@@ -26,6 +26,7 @@ use Quire\Server\Registry\RuntimeBuilds;
 use Quire\Server\Registry\RuntimeFloors;
 use Quire\Server\Registry\SiteGit;
 use Quire\Server\Registry\SiteLock;
+use Quire\Server\Registry\SiteNetworks;
 use Quire\Server\Registry\SiteRegistry;
 use Quire\Server\Site\Domain;
 use Quire\Server\Site\ServerPaths;
@@ -130,6 +131,7 @@ final class SiteManagerTest extends RegistryTestCase
             },
             'docker exec abcdef123456' => static fn (array $command): ProcessResult => self::ok($command, ''),
             'docker exec --interactive' => static fn (array $command): ProcessResult => self::ok($command, ''),
+            ...GateFixture::networkScript(),
         ];
     }
 
@@ -165,6 +167,26 @@ final class SiteManagerTest extends RegistryTestCase
         self::assertMatchesRegularExpression("/^APP_SECRET='[0-9a-f]{64}'\$/m", $env);
         $override = (string) file_get_contents($this->paths->site($this->name).'/compose.server.yaml');
         self::assertStringContainsString('${QUIRE_DATABASE_PASSWORD}', $override, 'It names the variable…');
+        // On its own link (D-34): the front door finds it there by its domains, PostgreSQL is there,
+        // and the front door's address is the only proxy it trusts
+        /** @var array{services: array{php: array{networks: mixed, environment: array<string, mixed>}, worker: array{networks: mixed}}, networks: array<string, mixed>} $written */
+        $written = Yaml::parse($override, Yaml::PARSE_CUSTOM_TAGS);
+        $link = 'quire-link-'.$this->name->value;
+        self::assertSame([
+            'php' => ['default' => null, $link => ['aliases' => ['jane.example.quire.internal', 'www.jane.example.quire.internal']]],
+            'worker' => ['default' => null, $link => null],
+            'link' => ['external' => true],
+            'own' => ['ipam' => ['config' => [['subnet' => '10.72.0.32/27']]]],
+            'proxies' => '10.72.0.2',
+        ], [
+            'php' => $written['services']['php']['networks'] ?? null,
+            'worker' => $written['services']['worker']['networks'] ?? null,
+            'link' => $written['networks'][$link] ?? null,
+            'own' => $written['networks']['default'] ?? null,
+            'proxies' => $written['services']['php']['environment']['SYMFONY_TRUSTED_PROXIES'] ?? null,
+        ]);
+        self::assertDoesNotMatchRegularExpression('/\bquire-(edge|data)\b/', $override, 'None of the networks all sites shared.');
+        self::assertStringNotContainsString('private_ranges', $override);
         self::assertStringNotContainsString($this->envValue($env, 'QUIRE_DATABASE_PASSWORD'), $override, '…never the secret: the override holds none.');
         self::assertStringNotContainsString($this->envValue($env, 'APP_SECRET'), $override);
 
@@ -259,7 +281,7 @@ final class SiteManagerTest extends RegistryTestCase
         self::assertSame(['site.restore_as_new', 'succeeded'], [$this->operations->latest()[0]['action'], $this->operations->latest()[0]['status']]);
         // Checked, built and started with the server's override, like any site
         self::assertSame(['config', 'build', 'config', 'up'], \array_slice(array_values(array_filter(array_map(static fn (array $command): string => $command[8] ?? '', $this->commands()), static fn (string $sub): bool => \in_array($sub, ['config', 'build', 'up'], true))), 0, 4));
-        self::assertStringContainsString('quire-edge', (string) file_get_contents($directory.'/compose.server.yaml'));
+        self::assertStringContainsString('quire-link-'.$this->name->value, (string) file_get_contents($directory.'/compose.server.yaml'), 'On its own link.');
     }
 
     public function testARestoreAsANewSiteThatFailsUndoesEverything(): void
@@ -280,6 +302,8 @@ final class SiteManagerTest extends RegistryTestCase
         self::assertFalse($this->databases->exists($this->name));
         self::assertSame([], $this->frontDoor->all());
         self::assertSame(Site::REMOVED, $this->registry->get($this->name)?->status);
+        self::assertNull(new SiteNetworks($this->connection, $this->schema)->find($this->name), 'Its addresses are free again.');
+        self::assertContains(['docker', 'network', 'rm', 'quire-link-'.$this->name->value], array_map(array_values(...), $this->commands), 'Its link is gone.');
         self::assertSame('failed', $this->operations->latest()[0]['status']);
     }
 
@@ -593,12 +617,13 @@ final class SiteManagerTest extends RegistryTestCase
         }
 
         $directory = $this->paths->site($this->name);
-        $restart = array_last($this->commands) ?? [];
+        $restart = array_last(array_values(array_filter($this->commands, static fn (array $command): bool => 'compose' === ($command[1] ?? null)))) ?? [];
         self::assertSame(['up', $directory.'/prod.env.before-server'], [$restart[8] ?? '', $restart[5] ?? ''], 'Started again with the settings it had.');
         self::assertContains('--no-build', $restart, 'With the image it had, unchecked: nothing new.');
         self::assertSame($original, file_get_contents($directory.'/prod.env'));
         self::assertFileDoesNotExist($directory.'/compose.server.yaml');
         self::assertSame([], $this->frontDoor->all());
+        self::assertNull(new SiteNetworks($this->connection, $this->schema)->find($this->name), 'Its addresses are free again.');
         self::assertSame(Site::REMOVED, $this->registry->get($this->name)?->status, 'Not a site of the server: it can be adopted again.');
         self::assertSame('failed', $this->operations->latest()[0]['status']);
         self::assertFileExists($directory.'/compose.yaml', 'Its folder stays where it is.');
@@ -737,6 +762,8 @@ final class SiteManagerTest extends RegistryTestCase
             new SiteGit($this->connection, $this->schema),
             $keys,
             new SiteDatabaseDumps($runner, $compose, GateFixture::TRUSTED),
+            GateFixture::links($runner, $this->connection, $this->schema),
+            new SiteNetworks($this->connection, $this->schema),
             'smtp://mailer:25',
         );
     }
@@ -816,28 +843,34 @@ final class SiteManagerTest extends RegistryTestCase
     {
         $directory = $this->paths->site($this->name);
         $build = ['context' => $directory, 'dockerfile' => 'Dockerfile'];
+        $project = $this->name->value;
+        $link = 'quire-link-'.$project;
+        // Its addresses, as SiteLinks gave them
+        $subnet = (string) (new SiteNetworks($this->connection, $this->schema)->find($this->name)->project ?? '10.72.0.32/27');
+        $networks = ['default' => ['name' => $project.'_default', 'ipam' => ['config' => [['subnet' => $subnet]]]], $link => ['name' => $link, 'external' => true]];
+        $php = ['image' => 'quire-sites/'.$project.'/php-prod', 'build' => $build, 'cap_drop' => ['ALL'], 'security_opt' => ['no-new-privileges:true'], 'mem_limit' => '536870912', 'pids_limit' => 256, 'networks' => ['default' => null, $link => ['aliases' => ['jane.example.quire.internal', 'www.jane.example.quire.internal']]], 'volumes' => [['type' => 'volume', 'source' => 'storage_data', 'target' => '/app/storage']]];
 
         if ($this->ownDatabase) {
             return [
-                'name' => $this->name->value,
-                'networks' => ['default' => ['name' => $this->name->value.'_default'], 'quire-edge' => ['name' => 'quire-edge', 'external' => true]],
+                'name' => $project,
+                'networks' => $networks,
                 'services' => [
-                    'php' => ['image' => 'quire-sites/'.$this->name->value.'/php-prod', 'build' => $build, 'cap_drop' => ['ALL'], 'security_opt' => ['no-new-privileges:true'], 'mem_limit' => '536870912', 'pids_limit' => 256, 'networks' => ['default' => null, 'quire-edge' => ['aliases' => ['jane.example.quire.internal', 'www.jane.example.quire.internal']]], 'volumes' => [['type' => 'volume', 'source' => 'storage_data', 'target' => '/app/storage']]],
-                    'worker' => ['image' => 'quire-sites/'.$this->name->value.'/php-prod', 'build' => $build, 'cap_drop' => ['ALL'], 'security_opt' => ['no-new-privileges:true'], 'mem_limit' => '536870912', 'pids_limit' => 256, 'networks' => ['default' => null]],
+                    'php' => $php,
+                    'worker' => ['image' => 'quire-sites/'.$project.'/php-prod', 'build' => $build, 'cap_drop' => ['ALL'], 'security_opt' => ['no-new-privileges:true'], 'mem_limit' => '536870912', 'pids_limit' => 256, 'networks' => ['default' => null]],
                     'database' => ['image' => 'postgres:18-alpine', 'cap_drop' => ['ALL'], 'security_opt' => ['no-new-privileges:true'], 'mem_limit' => '536870912', 'pids_limit' => 256, 'networks' => ['default' => null], 'volumes' => [['type' => 'volume', 'source' => 'database_data', 'target' => '/var/lib/postgresql']]],
                 ],
-                'volumes' => ['storage_data' => ['name' => $this->name->value.'_storage_data'], 'database_data' => ['name' => $this->name->value.'_database_data']],
+                'volumes' => ['storage_data' => ['name' => $project.'_storage_data'], 'database_data' => ['name' => $project.'_database_data']],
             ];
         }
 
         return [
-            'name' => $this->name->value,
-            'networks' => ['default' => ['name' => $this->name->value.'_default'], 'quire-edge' => ['name' => 'quire-edge', 'external' => true], 'quire-data' => ['name' => 'quire-data', 'external' => true]],
+            'name' => $project,
+            'networks' => $networks,
             'services' => [
-                'php' => ['image' => 'quire-sites/'.$this->name->value.'/php-prod', 'build' => $build, 'cap_drop' => ['ALL'], 'security_opt' => ['no-new-privileges:true'], 'mem_limit' => '536870912', 'pids_limit' => 256, 'networks' => ['default' => null, 'quire-edge' => ['aliases' => ['jane.example.quire.internal', 'www.jane.example.quire.internal']], 'quire-data' => null], 'volumes' => [['type' => 'volume', 'source' => 'storage_data', 'target' => '/app/storage']]],
-                'worker' => ['image' => 'quire-sites/'.$this->name->value.'/php-prod', 'build' => $build, 'cap_drop' => ['ALL'], 'security_opt' => ['no-new-privileges:true'], 'mem_limit' => '536870912', 'pids_limit' => 256, 'networks' => ['default' => null, 'quire-data' => null]],
+                'php' => $php,
+                'worker' => ['image' => 'quire-sites/'.$project.'/php-prod', 'build' => $build, 'cap_drop' => ['ALL'], 'security_opt' => ['no-new-privileges:true'], 'mem_limit' => '536870912', 'pids_limit' => 256, 'networks' => ['default' => null, $link => null]],
             ],
-            'volumes' => ['storage_data' => ['name' => $this->name->value.'_storage_data']],
+            'volumes' => ['storage_data' => ['name' => $project.'_storage_data']],
         ];
     }
 

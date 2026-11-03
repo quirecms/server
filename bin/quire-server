@@ -52,12 +52,16 @@ fi
 
 # Compose reads COMPOSE_FILE (server.env) relative to where it runs.
 cd "$root/server"
+# shellcheck source=/dev/null
+. "$root/server/bin/site-range.sh"
 
 case "${1:-help}" in
 	up)
 		shift
 		quiet
 		for argument do shift; [ "$argument" = --force ] || set -- "$@" "$argument"; done
+		# A network added on the sites' range since the install (it starts anyway: said, not refused)
+		site_range_warn "$root/server"
 		compose up --detach --wait "$@"
 		# The front door has no health check: after a port was taken, it can run without its ports.
 		if ! front_ports; then
@@ -68,6 +72,9 @@ case "${1:-help}" in
 				exit 1
 			fi
 		fi
+		# Containers made again (the front door, PostgreSQL) are back on sites' links now, not at the
+		# agent's next round.
+		compose exec -T agent bin/console server:links --quiet || echo 'The agent couldn'\''t put sites'\'' links back yet: it does at its next round (within a minute).' >&2
 		;;
 	down)
 		shift
@@ -92,6 +99,7 @@ case "${1:-help}" in
 		# its name says so. Secrets for automation come from the environment, never from arguments.
 		command=$1
 		shift
+		if [ "$command" = update ]; then site_range_warn "$root/server"; fi
 		tty=-T
 		if [ -t 0 ] && [ -t 1 ]; then tty=; fi
 		if docker ps -a --format '{{.Names}}' | grep -qx quire-server-updater; then

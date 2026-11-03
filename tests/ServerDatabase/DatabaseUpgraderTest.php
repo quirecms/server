@@ -6,6 +6,7 @@ namespace Quire\Server\Tests\ServerDatabase;
 
 use Doctrine\DBAL\DriverManager;
 use Quire\Server\Backup\BackupSettings;
+use Quire\Server\Network\SiteLinks;
 use Quire\Server\Operation\OperationLog;
 use Quire\Server\Process\ProcessResult;
 use Quire\Server\Registry\SiteLock;
@@ -125,6 +126,8 @@ final class DatabaseUpgraderTest extends RegistryTestCase
             )).($this->agent ? "cccccccccccc quire-server-agent-1 quire-server\n" : '').(null !== $this->beside ? 'eeeeeeeeeeee '.DatabaseContainers::BESIDE." \n" : '')),
             'docker inspect --format' => fn (array $command): ProcessResult => match (end($command)) {
                 'dddddddddddd' => ScriptedRunner::ok($command, "volume quire-server_database_data\n"),
+                // PostgreSQL's networks: the server's, jane's link (D-34)
+                SiteLinks::DATABASE => ScriptedRunner::ok($command, "quire-data quire-link-jane \n"),
                 DatabaseContainers::BESIDE => null === $this->beside ? ScriptedRunner::failed($command, 'No such object') : ScriptedRunner::ok($command, "true\n"),
                 default => throw new \LogicException('Unexpected: '.implode(' ', $command)),
             },
@@ -284,7 +287,7 @@ final class DatabaseUpgraderTest extends RegistryTestCase
         $this->upgrader()->upgrade(19, 'cli', 'darko', $this->say(...));
 
         $listing = $this->lastRun('docker ps --filter');
-        self::assertSame('network=quire-data', $listing[3], 'Everything on PostgreSQL\'s network, whoever started it.');
+        self::assertSame(['--filter', 'network=quire-data', '--filter', 'network=quire-link-jane'], \array_slice($listing, 2, 4), 'Everything on PostgreSQL\'s networks, whoever started it: sites reach it on their links.');
         self::assertSame([self::JANE_PHP, self::JANE_WORKER], $this->upgrader()->latest()?->stopped, 'Not the agent (stopped on its own), nor the new major beside.');
     }
 

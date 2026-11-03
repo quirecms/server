@@ -21,6 +21,7 @@ services:
             - '../src/Process/{ProcessResult,ProcessFailed}.php'
             - '../src/Update/{Lock,UpdatePlan,SkeletonFiles,UpdateFailed}.php'
             - '../src/Git/Repository.php'
+            - '../src/Network/{Ipv4Cidr,SiteSubnets}.php'
             - '../src/Release/{Release,Version,ReleaseVerificationFailed,Feed}.php'
             - '../src/ServerUpdate/{ServerBackup,ServerUpdateFailed}.php'
             - '../src/ServerDatabase/{DatabaseUpgrade,DatabaseUpgradeFailed,DatabaseCheck,PostgresImages}.php'
@@ -49,6 +50,25 @@ services:
     Quire\Server\Docker\SandboxNetwork:
         arguments:
             $dockerHost: '%env(DOCKER_HOST)%'
+
+    # Sites' addresses (D-34): the range they come from, checked against Docker's networks
+    Quire\Server\Network\SiteNetworkRange:
+        arguments: ['%env(QUIRE_SERVER_SITE_NETWORKS)%']
+
+    Quire\Server\Network\DockerSubnets:
+        arguments:
+            $dockerHost: '%env(DOCKER_HOST)%'
+
+    Quire\Server\Network\SiteLinks:
+        arguments:
+            $dockerHost: '%env(DOCKER_HOST)%'
+
+    # Who may log in to PostgreSQL from where: files its pg_hba.conf includes (compose.yaml's volume)
+    Quire\Server\Database\DatabaseAccess:
+        arguments:
+            $connection: '@doctrine.dbal.default_connection'
+            $dockerHost: '%env(DOCKER_HOST)%'
+            $directory: /run/quire-database/access
 
     Quire\Server\Docker\RuntimeImages:
         arguments:

@@ -57,6 +57,8 @@ services:
       QUIRE_SERVER_ROOT: ${QUIRE_SERVER_ROOT:-/srv/quire}
       # Which release runs ("quire-server version")
       QUIRE_SERVER_IMAGE: ${QUIRE_SERVER_IMAGE:-}
+      # The private range sites' networks get their addresses from: a /26 per site
+      QUIRE_SERVER_SITE_NETWORKS: ${QUIRE_SERVER_SITE_NETWORKS:-10.72.0.0/16}
       # Git mode sites that deploy by themselves: how often their branch is asked for new commits
       QUIRE_SERVER_GIT_POLL_SECONDS: ${QUIRE_SERVER_GIT_POLL_SECONDS:-300}
       # The hour (UTC) from which sites get their automatic updates each night ("site:updates"), or "off"
@@ -80,6 +82,8 @@ services:
       - gate_scopes:/run/quire-gate/scopes
       # What host-setup found (the AppArmor profile sites' builders run under)
       - host_facts:/run/quire-host:ro
+      # Who may log in to PostgreSQL from where (DatabaseAccess): only the agent writes it
+      - database_access:/run/quire-database/access
       # The same paths inside as on the host: Compose resolves sites' paths for the Docker daemon.
       - ${QUIRE_SERVER_ROOT:-/srv/quire}/sites:${QUIRE_SERVER_ROOT:-/srv/quire}/sites
       - ${QUIRE_SERVER_ROOT:-/srv/quire}/backups:${QUIRE_SERVER_ROOT:-/srv/quire}/backups
@@ -184,6 +188,9 @@ services:
     volumes:
       - ./database/init.sh:/docker-entrypoint-initdb.d/10-quire-server.sh:ro
       - database_data:/var/lib/postgresql
+      # Its logins' rules, not the data folder's: the server's own, and the agent's (read-only here)
+      - ./database/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+      - database_access:/etc/postgresql/access:ro
     networks:
       quire-data:
         aliases: [quire-database]
@@ -195,15 +202,17 @@ services:
       start_period: 60s
     # Room for several sites' connections, and some kept for the server's own (its registry):
     # sites at their limit (32 each) can't lock the agent out.
-    command: [postgres, -c, max_connections=200, -c, reserved_connections=10]
+    # Logins by address (database/pg_hba.conf): each site's role only from its link.
+    command: [postgres, -c, max_connections=200, -c, reserved_connections=10, -c, hba_file=/etc/postgresql/pg_hba.conf]
     security_opt: [no-new-privileges:true]
     shm_size: 256m
 
 networks:
-  # The front door and sites' web containers
+  # The front door's own, its way out (certificates). Sites aren't on it: the front door reaches each
+  # on the site's link (quire-link-<project>, D-34), which the agent connects it to.
   quire-edge:
     name: quire-edge
-  # PostgreSQL, sites and the agent
+  # PostgreSQL, the agent and the updater. Sites reach PostgreSQL on their links.
   quire-data:
     name: quire-data
 
@@ -211,6 +220,7 @@ volumes:
   front_data:
   front_config:
   database_data:
+  database_access:
   gate_trusted:
   gate_sites:
   gate_scopes:

@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Quire\Server\Docker;
 
+use Quire\Server\Network\Ipv4Cidr;
+
 /**
  * What one site is allowed in its Compose configuration: its project name, its folder, and which of
  * its services may join which shared network with which aliases.
@@ -17,12 +19,14 @@ final readonly class PolicyContext
 
     /**
      * @param array<string, array<string, list<string>>> $sharedNetworks Shared network => service => the aliases it may have there, e.g.
-     *                                                                   ['quire-edge' => ['php' => ['jane.example']], 'quire-data' => ['php' => [], 'worker' => []]]
+     *                                                                   ['quire-link-jane' => ['php' => ['jane.example.quire.internal'], 'worker' => []]]
      */
     public function __construct(
         public string $project,
         string $directory,
         public array $sharedNetworks,
+        /** The addresses its own networks may have (its project's /27), or null for none chosen by it */
+        public ?Ipv4Cidr $subnet = null,
     ) {
         $real = realpath($directory);
 

@@ -8,6 +8,7 @@ use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use Quire\Server\Docker\ComposePolicy;
 use Quire\Server\Docker\PolicyContext;
+use Quire\Server\Network\Ipv4Cidr;
 
 /**
  * The agent's gate. The configurations are shaped like "docker compose config --format json
@@ -265,6 +266,36 @@ final class ComposePolicyTest extends TestCase
         $config = array_replace_recursive($this->site(), ['services' => ['php' => ['privileged' => false, 'gpus' => 'false', 'blkio_config' => ['weight' => 300], 'post_start' => [['command' => ['id'], 'privileged' => false]], 'isolation' => 'default', 'oom_kill_disable' => 'false', 'deploy' => ['resources' => ['limits' => ['cpus' => '1.5', 'memory' => '1073741824', 'pids' => 512]], 'restart_policy' => ['condition' => 'on-failure']], 'cap_add' => ['NET_BIND_SERVICE', 'cap_net_bind_service', 'CHOWN', 'SETUID'], 'scale' => 1, 'devices' => [], 'security_opt' => ['no-new-privileges:true'], 'cap_drop' => ['ALL'], 'oom_score_adj' => 0, 'logging' => ['driver' => 'json-file'], 'x-custom' => 'anything', 'build' => ['tags' => ['quire-sites/jane/php-prod:before-update']]], 'worker' => ['network_mode' => 'service:php']]]);
 
         self::assertSame([], $this->violations($config));
+    }
+
+    public function testASitesOwnNetworksKeepToItsAddresses(): void
+    {
+        $context = new PolicyContext('jane', $this->site, [], Ipv4Cidr::parse('10.72.0.32/27'));
+        $addresses = static fn (array $pool, ?PolicyContext $with = null): array => array_values(array_filter(
+            new ComposePolicy()->violations(['name' => 'jane', 'networks' => ['default' => ['name' => 'jane_default', 'ipam' => ['config' => [$pool]]]]], $with ?? $context),
+            static fn (string $violation): bool => str_contains($violation, 'ipam.config.'),
+        ));
+
+        self::assertSame([], $addresses(['subnet' => '10.72.0.32/27', 'ip_range' => '10.72.0.48/28', 'gateway' => '10.72.0.33', 'aux_addresses' => ['spare' => '10.72.0.62']]), 'Its own, as the server pins them.');
+        self::assertSame(['Network "default": "ipam.config.subnet: 10.72.0.64/27" isn\'t in the site\'s addresses (its own are 10.72.0.32/27).'], $addresses(['subnet' => '10.72.0.64/27']), 'The next site\'s.');
+        self::assertCount(1, $addresses(['subnet' => '10.0.0.0/8']), 'Around everyone\'s.');
+        self::assertCount(1, $addresses(['subnet' => '192.168.1.0/24']), 'A range the host may route (a VPN, the office).');
+        self::assertCount(1, $addresses(['subnet' => 'not-an-address']));
+        self::assertCount(1, $addresses(['subnet' => '10.72.0.32/27', 'gateway' => '10.72.0.1']), 'Its gateway outside them.');
+        self::assertCount(1, $addresses(['subnet' => '10.72.0.32/27', 'aux_addresses' => ['host' => '10.72.0.3']]), 'PostgreSQL\'s address on another network.');
+        self::assertCount(1, $addresses(['subnet' => '10.72.0.32/27'], new PolicyContext('jane', $this->site, [])), 'Without addresses of its own, none.');
+        self::assertSame([], $addresses([], new PolicyContext('jane', $this->site, [])), 'Docker\'s choice, as before the server planned them.');
+    }
+
+    public function testASitesNetworkNamesItsSubnetAsTheGateWantsIt(): void
+    {
+        $context = new PolicyContext('jane', $this->site, [], Ipv4Cidr::parse('10.72.0.32/27'));
+        $unnamed = 'Network "cache": it names no subnet: a site\'s networks get their addresses from its own (10.72.0.32/27), which its "default" network has already.';
+        $violations = static fn (array $network, ?PolicyContext $with = null): array => new ComposePolicy()->violations(['name' => 'jane', 'networks' => ['cache' => ['name' => 'jane_cache'] + $network]], $with ?? $context);
+
+        self::assertSame([$unnamed], $violations([]), 'A network of its own beside "default": Docker\'s pools would give it anyone\'s addresses.');
+        self::assertSame([$unnamed], $violations(['ipam' => ['config' => [['subnet' => '10.72.0.32/27'], ['gateway' => '10.72.0.33']]]]), 'Each pool names one.');
+        self::assertSame([], $violations([], new PolicyContext('jane', $this->site, [])), 'A site without addresses of its own yet: Docker\'s.');
     }
 
     /**

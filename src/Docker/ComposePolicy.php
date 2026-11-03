@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Quire\Server\Docker;
 
+use Quire\Server\Network\Ipv4Cidr;
+
 /**
  * The agent's gate before it builds or starts a site: the site's whole Compose configuration, as
  * "docker compose config --format json --no-env-resolution" resolves it (every file merged, paths
@@ -565,9 +567,18 @@ final readonly class ComposePolicy
 
         $ipam = $this->map($network['ipam'] ?? []);
         array_push($violations, ...$this->unknown($ipam, 'network.ipam', 'ipam.'));
+        $pools = $this->list($ipam['config'] ?? []);
 
-        foreach ($this->list($ipam['config'] ?? []) as $pool) {
-            array_push($violations, ...$this->unknown($this->map($pool), 'network.ipam.config', 'ipam.config.'));
+        // As the gate has it: with addresses of its own, each network names its subnet among them
+        // (Docker's pools would give it anyone's, and run out at about 30 networks)
+        if ($context->subnet instanceof Ipv4Cidr && ([] === $pools || [] !== array_filter($pools, fn (mixed $pool): bool => !isset($this->map($pool)['subnet'])))) {
+            $violations[] = \sprintf('it names no subnet: a site\'s networks get their addresses from its own (%s), which its "default" network has already.', $context->subnet);
+        }
+
+        foreach ($pools as $pool) {
+            $pool = $this->map($pool);
+            array_push($violations, ...$this->unknown($pool, 'network.ipam.config', 'ipam.config.'));
+            array_push($violations, ...$this->addresses($pool, $context));
         }
 
         $ipamDriver = $this->string($ipam['driver'] ?? '');
@@ -592,6 +603,51 @@ final readonly class ComposePolicy
 
         if ([] !== $this->map($network['driver_opts'] ?? [])) {
             $violations[] = '"driver_opts" aren\'t allowed.';
+        }
+
+        return $violations;
+    }
+
+    /**
+     * A pool's addresses stay in the site's own (its project's /27, which the server planned): any
+     * other could take another site's, or a range the host routes elsewhere (a VPN), off the machine.
+     *
+     * @param array<array-key, mixed> $pool
+     *
+     * @return list<string>
+     */
+    private function addresses(array $pool, PolicyContext $context): array
+    {
+        $violations = [];
+        $own = $context->subnet instanceof Ipv4Cidr ? 'its own are '.$context->subnet : 'none of its own yet';
+
+        foreach (['subnet', 'ip_range'] as $key) {
+            if (!isset($pool[$key])) {
+                continue;
+            }
+
+            try {
+                $cidr = Ipv4Cidr::parse($this->string($pool[$key]));
+                $inside = $context->subnet instanceof Ipv4Cidr && $context->subnet->contains($cidr);
+            } catch (\InvalidArgumentException) {
+                $inside = false;
+            }
+
+            if (!$inside) {
+                $violations[] = \sprintf('"ipam.config.%s: %s" isn\'t in the site\'s addresses (%s).', $key, $this->string($pool[$key]), $own);
+            }
+        }
+
+        foreach (['gateway' => $pool['gateway'] ?? null, ...array_map(static fn (mixed $address): mixed => $address, \is_array($pool['aux_addresses'] ?? null) ? $pool['aux_addresses'] : [])] as $key => $address) {
+            if (null === $address) {
+                continue;
+            }
+
+            $number = ip2long($this->string($address));
+
+            if (false === $number || !$context->subnet instanceof Ipv4Cidr || $number < $context->subnet->network || $number > $context->subnet->last()) {
+                $violations[] = \sprintf('"ipam.config.%s: %s" isn\'t in the site\'s addresses (%s).', 'gateway' === $key ? 'gateway' : 'aux_addresses', $this->string($address), $own);
+            }
         }
 
         return $violations;

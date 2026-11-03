@@ -18,6 +18,7 @@ use Quire\Server\Git\DeployKeys;
 use Quire\Server\Git\Git;
 use Quire\Server\Git\GitPoller;
 use Quire\Server\Git\Repository;
+use Quire\Server\Network\SiteNetworkRange;
 use Quire\Server\Operation\OperationLog;
 use Quire\Server\Operation\SiteManager;
 use Quire\Server\Process\ProcessResult;
@@ -25,6 +26,7 @@ use Quire\Server\Registry\RuntimeBuilds;
 use Quire\Server\Registry\RuntimeFloors;
 use Quire\Server\Registry\SiteGit;
 use Quire\Server\Registry\SiteLock;
+use Quire\Server\Registry\SiteNetworks;
 use Quire\Server\Registry\SiteRegistry;
 use Quire\Server\Registry\SiteUpdates;
 use Quire\Server\Site\Domain;
@@ -106,6 +108,8 @@ final class SiteUpdaterTest extends RegistryTestCase
         $this->updates = new SiteUpdates($this->connection, $this->schema);
         $this->operations = new OperationLog($this->connection, $this->schema);
         $this->registry->add($this->name, [new Domain('jane.example')], Site::SHARED_DATABASE, 'jane');
+        // Its addresses, as adding it gave them (D-34)
+        new SiteNetworks($this->connection, $this->schema)->allocate($this->name, new SiteNetworkRange(SiteNetworkRange::DEFAULT), []);
         $this->registry->setStatus($this->name, Site::RUNNING);
 
         $site = $this->paths->site($this->name);
@@ -116,6 +120,7 @@ final class SiteUpdaterTest extends RegistryTestCase
         $filesystem->dumpFile($site.'/'.SiteFiles::ENV_FILE, "COMPOSE_PROJECT_NAME='jane'\nQUIRE_DATABASE_PASSWORD='the-site-password'\n");
 
         $this->runner = new ScriptedRunner([
+            ...GateFixture::networkScript(),
             'docker compose config' => fn (array $command): ProcessResult => ScriptedRunner::ok($command, json_encode($this->config(), \JSON_THROW_ON_ERROR)),
             'docker buildx inspect' => static fn (array $command): ProcessResult => ScriptedRunner::ok($command),
             'docker container ls' => static fn (array $command): ProcessResult => ScriptedRunner::ok($command),
@@ -702,6 +707,8 @@ final class SiteUpdaterTest extends RegistryTestCase
             $this->repositories,
             $this->keys,
             new SiteDatabaseDumps($this->runner, $compose, GateFixture::TRUSTED),
+            GateFixture::links($this->runner, $this->connection, $this->schema),
+            new SiteNetworks($this->connection, $this->schema),
             '',
         );
 
@@ -730,12 +737,14 @@ final class SiteUpdaterTest extends RegistryTestCase
         $directory = $this->paths->site($this->name);
         $build = ['context' => $directory, 'dockerfile' => 'Dockerfile'];
 
+        $subnets = new SiteNetworks($this->connection, $this->schema)->find($this->name) ?? throw new \LogicException('jane has its addresses.');
+
         return [
             'name' => 'jane',
-            'networks' => ['default' => ['name' => 'jane_default'], 'quire-edge' => ['name' => 'quire-edge', 'external' => true], 'quire-data' => ['name' => 'quire-data', 'external' => true]],
+            'networks' => ['default' => ['name' => 'jane_default', 'ipam' => ['config' => [['subnet' => (string) $subnets->project]]]], 'quire-link-jane' => ['name' => 'quire-link-jane', 'external' => true]],
             'services' => [
-                'php' => ['image' => 'quire-sites/jane/php-prod', 'build' => $build, 'cap_drop' => ['ALL'], 'security_opt' => ['no-new-privileges:true'], 'mem_limit' => '536870912', 'pids_limit' => 256, 'networks' => ['default' => null, 'quire-edge' => ['aliases' => ['jane.example.quire.internal']], 'quire-data' => null]],
-                'worker' => ['image' => 'quire-sites/jane/php-prod', 'build' => $build, 'cap_drop' => ['ALL'], 'security_opt' => ['no-new-privileges:true'], 'mem_limit' => '536870912', 'pids_limit' => 256, 'networks' => ['default' => null, 'quire-data' => null]],
+                'php' => ['image' => 'quire-sites/jane/php-prod', 'build' => $build, 'cap_drop' => ['ALL'], 'security_opt' => ['no-new-privileges:true'], 'mem_limit' => '536870912', 'pids_limit' => 256, 'networks' => ['default' => null, 'quire-link-jane' => ['aliases' => ['jane.example.quire.internal']]]],
+                'worker' => ['image' => 'quire-sites/jane/php-prod', 'build' => $build, 'cap_drop' => ['ALL'], 'security_opt' => ['no-new-privileges:true'], 'mem_limit' => '536870912', 'pids_limit' => 256, 'networks' => ['default' => null, 'quire-link-jane' => null]],
             ],
         ];
     }
