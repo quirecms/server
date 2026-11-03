@@ -27,5 +27,5 @@ if ('login' === ($argv[1] ?? '')) {
     exit(0);
 }
 
-fwrite(STDERR, "Usage: php try-links.php tcp <host:port>... | login <database> <user> <password>\n");
+fwrite(\STDERR, "Usage: php try-links.php tcp <host:port>... | login <database> <user> <password>\n");
 exit(2);
