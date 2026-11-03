@@ -173,7 +173,7 @@ A site's versions are recorded in its folder's `composer.lock` (taken from its i
 
 `quire-server update` moves the server itself (its agent, front door, Docker gate and PostgreSQL's settings) to the latest release; `--to=0.2.0` to another one, `--check` only says whether there's a newer one. It runs in the **updater**, a container of the release that runs now: the new release is checked before any of it is used, and the agent isn't asked to replace itself.
 
-1. **Gets the release and checks it as the installer does:** `release.env` signed by Quire Server's release workflow for exactly that version's tag (Sigstore), the archive's checksum, the image by digest. Its Compose files must work with this server's settings. Its image is pulled. Nothing has changed yet.
+1. **Gets the release and checks it as the installer does:** `release.env` signed by Quire Server's release workflow for exactly that version's tag (Sigstore), the archive's checksum, the image by digest. Its Compose files must work with this server's settings, and its Docker gate must accept every site's scope (`yorvogate check`: a newer gate may refuse what an older one took). Its image is pulled. Nothing has changed yet.
 2. **Waits for operations on sites to finish** (none starts meanwhile), and stops the agent. Sites keep running.
 3. **Backs the server up** to `/srv/quire/backups/server/<time>/`: its files and `server.env`, and its database.
 4. **Replaces the server's files** with the release's (its `server.env`, the front door's domains and the deploy keys stay), names the new image in `server.env`, and starts it. Sites are offline only for the seconds the front door is replaced, when the release changes it.

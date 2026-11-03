@@ -277,6 +277,12 @@ start_core() {
 		note 'Building the agent (a few minutes)'
 		compose build --pull --quiet agent
 	fi
+	# On a server that has sites: this release's Docker gate must accept each site's scope before it
+	# replaces the running one (a newer gate may refuse what an older one took). It only reads them.
+	if docker volume inspect quire-server_gate_scopes >/dev/null 2>&1; then
+		refused=$(compose run --rm --no-deps --quiet-pull -T gate check --config /etc/yorvogate/yorvogate.yaml 2>&1) \
+			|| die "This release's Docker gate refuses a site's scope, so the server wasn't changed: $refused"
+	fi
 	# Every container and network created (sites join the front door's network before it starts),
 	# nothing started that would take a port.
 	compose create --quiet-pull >/dev/null

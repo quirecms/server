@@ -135,7 +135,7 @@ services:
   # network at all: only the agent mounts its sockets. Root without capabilities, as Docker's socket
   # is root's (whoever holds that socket is root on the host anyway).
   gate:
-    image: ghcr.io/yorvolabs/yorvogate:0.2.0@sha256:88d20a16a2a6f3f840b0ea9596971babf626d53d1bea788d3388e18747f08529
+    image: ghcr.io/yorvolabs/yorvogate:0.2.1@sha256:7bedfd8c5cf443e4db63ab519ea4ed19a0d72048e626440cdd1378f11f84dccd
     restart: unless-stopped
     user: "0:0"
     volumes:
