@@ -132,6 +132,8 @@ quire-server backups:restore jane [--snapshot=…]   # put a site back as a back
 quire-server backups:restore jane --as=copy --domain=…   # a new site from it (--from-server: another server's)
 quire-server backups:restore-server --from-server=old   # every site of another server, from its backups
 quire-server backups:check [--read=5]   # check the stored backups
+quire-server status [--dismiss=<key>]  # what needs you, the nightly work, sites' certificates (see "Problems")
+quire-server notify:test                # a test notification, by email and to the webhook
 quire-server operations [--site=jane]  # what was done, by whom, and how it ended
 quire-server operations <id>           # an operation's log
 quire-server up | down | ps | logs     # the server itself ("down -v" is refused: it would delete every site's database;
@@ -143,6 +145,18 @@ quire-server up | down | ps | logs     # the server itself ("down -v" is refused
 - **Sites that keep their own PostgreSQL** (adopted ones) have it removed with them; the server's PostgreSQL holds the others' databases.
 - **Removing** backs the site up to `/srv/quire/backups/<site>/final-<time>.tar`, closes its domains, removes its containers, volumes and database, and moves its folder to `/srv/quire/sites/.removed/`. A site that can't start can't be backed up: `--skip-backup` removes it anyway, and its data is gone.
 - Point each domain's DNS at the server. Its certificate comes at the first visit (from Let's Encrypt).
+
+## Problems
+
+The agent watches what nobody else does, and tells you (`quire-server status` lists it all, and every other command says when something needs you):
+
+- **its own work that failed:** last night's backups off the server, a site's automatic update, its rebuild on a newer runtime, a Git mode site's automatic deploy. Each says what was done about it and what to do, with the operation whose log says why (`quire-server operations <id>`). It's over when that kind of work succeeds again, whoever runs it;
+- **nightly backups that stopped running** (none for 36 hours);
+- **certificates:** a domain without one an hour after it was added (its DNS doesn't point here, or ports 80 and 443 are closed), or one that isn't renewed in time;
+- **a disk filling up** (under a tenth, or 5 GB, free);
+- **notifications that couldn't be sent.**
+
+Each problem is told **once when it starts, again each week while it lasts, and once when it's over**, never every night: a channel nobody filters. By email to `QUIRE_SERVER_NOTIFY_EMAIL` (or Let's Encrypt's address, `QUIRE_SERVER_ACME_EMAIL`), through `QUIRE_SERVER_MAILER_DSN`; and to a webhook, `QUIRE_SERVER_NOTIFY_WEBHOOK` (HTTPS). The webhook's JSON body has a `text` that Slack's and Discord's incoming webhooks show as it is, the problems as data, and `sent_at`; each request is signed as GitHub signs its webhooks, `X-Quire-Signature-256: sha256=<HMAC-SHA256 of the body>` with `QUIRE_SERVER_NOTIFY_SECRET`. Messages hold names, times, advice and operation IDs, never a secret or a tool's output (the operations' log on the server has that). The agent sends them itself, with settings only it reads. `quire-server status --dismiss=<key>` stops telling of one you know about, until it's over or happens again.
 
 ## Updating a site
 

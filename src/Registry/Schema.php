@@ -223,4 +223,32 @@ final class Schema
                 SQL,
         ];
     }
+
+    /**
+     * What needs the owner (D-35): problems the agent found, until they're over and the owner was told.
+     * One row per problem; the operations' record keeps the history.
+     *
+     * @return list<string>
+     */
+    public static function version9(string $schema = self::NAME): array
+    {
+        $s = '"'.str_replace('"', '""', $schema).'"';
+
+        return [
+            <<<SQL
+                CREATE TABLE {$s}.problem (
+                    key text PRIMARY KEY,
+                    site text,
+                    summary text NOT NULL,
+                    advice text NOT NULL,
+                    operation_id uuid,
+                    since timestamptz NOT NULL DEFAULT now(),
+                    seen_at timestamptz NOT NULL DEFAULT now(),
+                    notified_at timestamptz,
+                    resolved_at timestamptz,
+                    dismissed boolean NOT NULL DEFAULT false
+                )
+                SQL,
+        ];
+    }
 }

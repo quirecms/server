@@ -17,6 +17,7 @@ services:
             - '../src/Site/{Site,SiteName,Domain,ServerPaths,EnvFile}.php'
             - '../src/Docker/{PolicyContext,SiteProject,PolicyViolation,RuntimeImageNotTrusted}.php'
             - '../src/Backup/BackupFailed.php'
+            - '../src/Notify/{Problem,EmailChannel,WebhookChannel}.php'
             - '../src/Operation/{Operation,SiteRequest,AddedSite}.php'
             - '../src/Process/{ProcessResult,ProcessFailed}.php'
             - '../src/Update/{Lock,UpdatePlan,SkeletonFiles,UpdateFailed}.php'
@@ -179,3 +180,23 @@ services:
     Quire\Server\Console\AddSiteCommand:
         arguments:
             $defaultVersion: '%env(QUIRE_SERVER_QUIRE_VERSION)%'
+
+    # Who hears of problems, and how (D-35)
+    Quire\Server\Notify\NotifySettings:
+        arguments:
+            $email: '%env(QUIRE_SERVER_NOTIFY_EMAIL)%'
+            $from: '%env(QUIRE_SERVER_NOTIFY_FROM)%'
+            $mailerDsn: '%env(QUIRE_SERVER_MAILER_DSN)%'
+            $webhook: '%env(QUIRE_SERVER_NOTIFY_WEBHOOK)%'
+            $secret: '%env(QUIRE_SERVER_NOTIFY_SECRET)%'
+            $name: '%env(QUIRE_SERVER_NAME)%'
+            $acmeEmail: '%env(QUIRE_SERVER_ACME_EMAIL)%'
+
+    Quire\Server\Notify\Notifier:
+        factory: ['Quire\Server\Notify\Notifier', 'create']
+        arguments:
+            $version: '%env(QUIRE_SERVER_VERSION)%'
+
+    # The front door's certificates (its data volume, read-only: compose.yaml)
+    Quire\Server\Notify\Certificates:
+        arguments: ['/run/quire-front/caddy/certificates']

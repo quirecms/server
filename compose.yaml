@@ -53,6 +53,13 @@ services:
       DATABASE_URL: postgresql://quire_server:${QUIRE_SERVER_DATABASE_PASSWORD:?Set QUIRE_SERVER_DATABASE_PASSWORD in server.env}@quire-database:5432/quire_server?serverVersion=18&charset=utf8
       QUIRE_SERVER_POSTGRES_ADMIN_URL: postgresql://postgres:${QUIRE_SERVER_POSTGRES_PASSWORD:?Set QUIRE_SERVER_POSTGRES_PASSWORD in server.env}@quire-database:5432/postgres?serverVersion=18&charset=utf8
       QUIRE_SERVER_MAILER_DSN: ${QUIRE_SERVER_MAILER_DSN:-}
+      # Who hears of problems (D-35): an email (Let's Encrypt's address unless another is set), a webhook
+      QUIRE_SERVER_ACME_EMAIL: ${QUIRE_SERVER_ACME_EMAIL:-}
+      QUIRE_SERVER_NOTIFY_EMAIL: ${QUIRE_SERVER_NOTIFY_EMAIL:-}
+      QUIRE_SERVER_NOTIFY_FROM: ${QUIRE_SERVER_NOTIFY_FROM:-}
+      QUIRE_SERVER_NOTIFY_WEBHOOK: ${QUIRE_SERVER_NOTIFY_WEBHOOK:-}
+      QUIRE_SERVER_NOTIFY_SECRET: ${QUIRE_SERVER_NOTIFY_SECRET:-}
+      QUIRE_SERVER_NAME: ${QUIRE_SERVER_NAME:-}
       QUIRE_SERVER_QUIRE_VERSION: ${QUIRE_SERVER_QUIRE_VERSION:-^0.1}
       QUIRE_SERVER_ROOT: ${QUIRE_SERVER_ROOT:-/srv/quire}
       # Which release runs ("quire-server version")
@@ -84,6 +91,9 @@ services:
       - host_facts:/run/quire-host:ro
       # Who may log in to PostgreSQL from where (DatabaseAccess): only the agent writes it
       - database_access:/run/quire-database/access
+      # The front door's certificates, to tell when one doesn't come or isn't renewed (D-35). The whole
+      # volume, read-only: the agent could read it through Docker anyway.
+      - front_data:/run/quire-front:ro
       # The same paths inside as on the host: Compose resolves sites' paths for the Docker daemon.
       - ${QUIRE_SERVER_ROOT:-/srv/quire}/sites:${QUIRE_SERVER_ROOT:-/srv/quire}/sites
       - ${QUIRE_SERVER_ROOT:-/srv/quire}/backups:${QUIRE_SERVER_ROOT:-/srv/quire}/backups

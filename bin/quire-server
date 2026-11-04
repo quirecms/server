@@ -5,7 +5,7 @@
 #   quire-server site:adopt demo                (a site installed before the server)
 #   quire-server site:update jane | site:undo jane | site:audit jane
 #   quire-server site:key blog | site:deploy blog | site:poll blog on   (Git mode)
-#   quire-server site:list | site:remove jane | operations
+#   quire-server site:list | site:remove jane | operations | status (what needs you) | notify:test
 #   quire-server update [--to=X.Y.Z] [--check] [--undo]   (the server itself, to a newer release)
 #   quire-server database:upgrade [--check] [--to=19] [--undo] [--clean]   (its PostgreSQL, to a newer major)
 #   quire-server backups:setup | backups jane | backups:now [jane] | backups:restore jane | backups:check

@@ -166,6 +166,30 @@ fi
 postgres_password=$(inside "sed -n 's/^QUIRE_SERVER_POSTGRES_PASSWORD=//p' /srv/quire/server/server.env" | tr -d "'")
 pg() { inside "docker exec -e PGPASSWORD=$postgres_password quire-server-database-1 psql -U postgres -Atc \"$1\""; }
 
+if want adopt && ! from_release; then
+echo '== Problems reach the owner (D-35): once when they start, once when they are over'
+# The owner's mailbox: Mailpit, where the agent reaches it (the server's network)
+inside 'docker run -d --name mailpit --network quire-data --network-alias mailpit -p 127.0.0.1:8025:8025 axllent/mailpit:v1.33.0@sha256:9b3a463be15354c0f0eba91697d80e3e0d8a5623ef0e627cacc836bc17fd5231 >/dev/null'
+inside 'cp -p /srv/quire/server/server.env /root/server.env.before-notify && sed -i -e "s#^QUIRE_SERVER_MAILER_DSN=.*#QUIRE_SERVER_MAILER_DSN=smtp://mailpit:1025#" -e "s#^QUIRE_SERVER_NOTIFY_EMAIL=.*#QUIRE_SERVER_NOTIFY_EMAIL=owner@example.com#" -e "s#^QUIRE_SERVER_NAME=.*#QUIRE_SERVER_NAME=e2e#" /srv/quire/server/server.env && grep -q "^QUIRE_SERVER_NOTIFY_EMAIL=owner@example.com" /srv/quire/server/server.env && quire-server up >/dev/null 2>&1'
+# Subjects of the mails Mailpit got, one per line
+mails() { inside "curl -s 'http://127.0.0.1:8025/api/v1/messages?limit=50'" | tr ',' '\n' | sed -n 's/^"Subject":"\(.*\)"$/\1/p'; }
+# Waits (up to 3 minutes: the agent's rounds are a minute apart) for a mail whose subject has this
+mailed() { for _ in $(seq 36); do if mails | grep -qF "$1"; then return 0; fi; sleep 5; done; return 1; }
+check 'a test notification arrives by email' "inside 'quire-server notify:test' | grep -q 'Sent: email to owner@example.com' && mailed 'Quire Server e2e: a test'"
+# Last night, as the agent records it: demo's automatic update failed
+inside "docker exec -e PGPASSWORD=$postgres_password quire-server-database-1 psql -U postgres -d quire_server -qc \"INSERT INTO server.operation (id, action, site, channel, requested_by, status, error, finished_at) VALUES (gen_random_uuid(), 'site.update', 'demo', 'agent', 'automatic', 'failed', 'planted-error-text', now())\""
+check 'the agent tells of it, by itself' "mailed 'Quire Server e2e: The automatic update of demo failed'"
+check 'the mail says what to do, and no tool output' "inside \"curl -s 'http://127.0.0.1:8025/api/v1/message/latest'\" > $logs/problem-mail.json && grep -q 'quire-server operations' $logs/problem-mail.json && ! grep -q planted-error-text $logs/problem-mail.json && ! grep -qF \"$postgres_password\" $logs/problem-mail.json"
+check 'quire-server status lists it, with its key' "inside 'quire-server status' | grep -q 'The automatic update of demo failed.*key operation:site.update:demo'"
+check 'every other command says a problem needs you' "inside 'quire-server site:list 2>&1 >/dev/null' | grep -q '1 problem needs you'"
+check 'status reads the front door'\''s certificates' "inside 'quire-server status' | grep -q 'demo.test  certificate until'"
+# The owner updates demo by hand, and it works
+inside "docker exec -e PGPASSWORD=$postgres_password quire-server-database-1 psql -U postgres -d quire_server -qc \"INSERT INTO server.operation (id, action, site, channel, requested_by, status, finished_at) VALUES (gen_random_uuid(), 'site.update', 'demo', 'cli', 'root', 'succeeded', now())\""
+check 'it is told once more when it is over, and only then' "mailed 'Quire Server e2e: Fixed: The automatic update of demo failed' && [ \"\$(mails | grep -cF 'The automatic update of demo failed')\" = 2 ]"
+check 'and then nothing needs you' "inside 'quire-server status' | grep -q '^No problems' && ! inside 'quire-server site:list 2>&1 >/dev/null' | grep -q 'needs you'"
+inside 'docker rm -f mailpit >/dev/null && cp -p /root/server.env.before-notify /srv/quire/server/server.env && quire-server up >/dev/null 2>&1'
+fi
+
 if linking; then
 echo '== A site of a release before links (D-34): on the networks every site shares'
 inside 'quire-server site:add jane --domain=jane.test --admin-email=jane@example.com --title="Jane" 2>&1' > "$logs"/add-jane.log || true
