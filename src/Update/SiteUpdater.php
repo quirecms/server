@@ -273,9 +273,9 @@ final readonly class SiteUpdater
      *
      * @throws UpdateFailed When it failed (the site as it was, or not even that: see its message)
      */
-    public function restoreBackup(SiteName $name, string $backup, array $parameters, string $channel, string $requestedBy, \Closure $say): void
+    public function restoreBackup(SiteName $name, string $backup, array $parameters, string $channel, string $requestedBy, \Closure $say): string
     {
-        $this->lock->run($name, function () use ($name, $backup, $parameters, $channel, $requestedBy, $say): void {
+        return $this->lock->run($name, function () use ($name, $backup, $parameters, $channel, $requestedBy, $say): string {
             $site = $this->running($name);
             $project = $this->sites->projectOf($site);
             $operation = $this->operations->start('site.restore', $name, $parameters, $channel, $requestedBy);
@@ -319,6 +319,9 @@ final readonly class SiteUpdater
             }
 
             $operation->succeed();
+
+            // The way back (M-19): the site as it was before this restore
+            return $current;
         });
     }
 
@@ -328,10 +331,12 @@ final readonly class SiteUpdater
      *
      * @param bool                   $loseChanges Whether the site's changes since may be lost (when its backup must be restored)
      * @param \Closure(string): void $say
+     *
+     * @return string The backup of the site as it was before the undo
      */
-    public function undo(SiteName $name, bool $loseChanges, string $channel, string $requestedBy, \Closure $say): void
+    public function undo(SiteName $name, bool $loseChanges, string $channel, string $requestedBy, \Closure $say): string
     {
-        $this->lock->run($name, function () use ($name, $loseChanges, $channel, $requestedBy, $say): void {
+        return $this->lock->run($name, function () use ($name, $loseChanges, $channel, $requestedBy, $say): string {
             $site = $this->running($name);
             $update = $this->updates->undoable($name) ?? throw new \DomainException('The site has nothing to undo (only its last update or deploy can be undone, for a week).');
             $what = SiteUpdates::DEPLOY === $update['kind'] ? 'deploy' : 'update';
@@ -405,6 +410,9 @@ final readonly class SiteUpdater
             }
 
             $operation->succeed();
+
+            // The way back (M-19): the site as it was before the undo
+            return $current;
         });
     }
 

@@ -77,7 +77,7 @@ final readonly class UndoCommand
         }
 
         try {
-            $this->updater->undo($site, true, Requester::CHANNEL, Requester::name(), static fn (string $step) => $io->writeln('  '.$step.'…'));
+            $before = $this->updater->undo($site, true, Requester::CHANNEL, Requester::name(), static fn (string $step) => $io->writeln('  '.$step.'…'));
         } catch (UpdateFailed $e) {
             $io->error($e->restored
                 ? [\sprintf('Undoing the %s failed, and the site is as it was:', $what), $e->getMessage(), 'Its log: quire-server operations '.$e->operationId]
@@ -91,6 +91,8 @@ final readonly class UndoCommand
         }
 
         $io->success(\sprintf('"%s" is as it was before its %s.', $site, $what));
+
+        $io->writeln(\sprintf('As it was just before the undo: "quire-server backups:restore %s --file=%s" puts it back.', $site, basename($before)));
 
         return Command::SUCCESS;
     }

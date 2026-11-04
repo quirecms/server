@@ -36,6 +36,11 @@ use Symfony\Component\Console\Style\SymfonyStyle;
         A Git mode site's code is in its repository, not its backups: add it from there, then restore
         its data in place.
 
+        Any of its backups on the server too ("quire-server backups jane --local" lists them), e.g.
+        the one made before a restore or an undo, to go back on it:
+
+          <info>quire-server backups:restore jane --file=before-restore-20261104-101500.tar</info>
+
         Only a backup this server made is restored, or one the other server signed: give its public
         key (it's shown by "quire-server status" there) with --signed-by. Anyone with the backups'
         password can put a snapshot in the bucket; --unsigned restores one anyway, for backups made
@@ -46,6 +51,8 @@ final readonly class BackupsRestoreCommand
 {
     public function __construct(
         private OffsiteBackups $backups,
+        private \Quire\Server\Backup\LocalBackups $local,
+        private \Quire\Server\Update\SiteUpdater $updater,
     ) {
     }
 
@@ -70,7 +77,13 @@ final readonly class BackupsRestoreCommand
         ?string $signedBy = null,
         #[Option(description: 'Restore a backup this server can\'t verify (made before servers recorded theirs, or by another): only one you know the origin of')]
         bool $unsigned = false,
+        #[Option(description: 'One of its backups on the server instead, by name ("quire-server backups <site> --local"), e.g. the one made before a restore')]
+        ?string $file = null,
     ): int {
+        if (null !== $file) {
+            return $this->fromFile($io, $name, $file, $yes);
+        }
+
         if (!$this->backups->configured()) {
             $io->error('Backups off the server aren\'t set up: "quire-server backups:setup".');
 
@@ -104,8 +117,50 @@ final readonly class BackupsRestoreCommand
         }
 
         $io->success(\sprintf('"%s" is as it was on %s (backup %s).', $site, $restored['time'], substr($restored['id'], 0, 8)));
+        $this->wayBack($io, $site, $restored['before']);
 
         return Command::SUCCESS;
+    }
+
+    /**
+     * From one of the site's backups on the server (M-19): the one made before a restore or an undo,
+     * or any it keeps.
+     */
+    private function fromFile(SymfonyStyle $io, string $name, string $file, bool $yes): int
+    {
+        try {
+            $site = new SiteName($name);
+            $backup = $this->local->find($site, $file);
+
+            if (!$yes && !$io->confirm(\sprintf('Restore "%s" from %s? What changed on it since is lost.', $site, basename($backup)), false)) {
+                $io->writeln('Nothing changed.');
+
+                return Command::SUCCESS;
+            }
+
+            $before = $this->updater->restoreBackup($site, $backup, ['from' => 'on the server', 'file' => basename($backup)], Requester::CHANNEL, Requester::name(), static fn (string $step) => $io->writeln('  '.$step.'…'));
+        } catch (UpdateFailed $e) {
+            $io->error($e->restored
+                ? ['Restoring it failed, and the site is as it was before:', $e->getMessage(), 'Its log: quire-server operations '.$e->operationId]
+                : ['Restoring it failed, and so did putting the site back: it needs you.', $e->getMessage(), 'Its log (and where its backup is): quire-server operations '.$e->operationId]);
+
+            return Command::FAILURE;
+        } catch (\Throwable $e) {
+            $io->error($e->getMessage());
+
+            return Command::FAILURE;
+        }
+
+        $io->success(\sprintf('"%s" is as %s has it.', $site, basename($backup)));
+        $this->wayBack($io, $site, $before);
+
+        return Command::SUCCESS;
+    }
+
+    /** How to undo what was just done: the backup made before it */
+    private function wayBack(SymfonyStyle $io, SiteName $site, string $before): void
+    {
+        $io->writeln(\sprintf('As it was just before: "quire-server backups:restore %s --file=%s" puts it back.', $site, basename($before)));
     }
 
     /**

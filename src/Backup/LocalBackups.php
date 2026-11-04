@@ -95,6 +95,55 @@ final readonly class LocalBackups
     }
 
     /**
+     * A site's backups on the server, newest first: what can bring it back as it was before an
+     * operation ("final": before it was removed; "before-restore", "before-undo", "before-update"…).
+     *
+     * @return list<array{file: string, kind: string, made: \DateTimeImmutable, size: int}>
+     */
+    public function of(\Quire\Server\Site\SiteName $site): array
+    {
+        $folder = $this->root.'/'.$site->value;
+        $backups = [];
+
+        foreach ($this->entries($folder) as $entry) {
+            if (1 === preg_match(self::ENTRY, $entry, $match) && '.tar' === ($match[3] ?? '') && !is_link($folder.'/'.$entry) && is_file($folder.'/'.$entry)) {
+                $made = \DateTimeImmutable::createFromFormat('Ymd-His', $match[2], new \DateTimeZone('UTC'));
+
+                if (false !== $made) {
+                    $backups[] = ['file' => $entry, 'kind' => $match[1], 'made' => $made, 'size' => (int) filesize($folder.'/'.$entry)];
+                }
+            }
+        }
+
+        usort($backups, static fn (array $a, array $b): int => $b['made'] <=> $a['made']);
+
+        return $backups;
+    }
+
+    /**
+     * One of a site's backups on the server, by its name ("final-20261104-120000.tar"): only a plain
+     * file in its own folder (never another's, a path elsewhere or a link).
+     *
+     * @throws \DomainException When it isn't one
+     */
+    public function find(\Quire\Server\Site\SiteName $site, string $file): string
+    {
+        $name = basename($file);
+
+        if ($name !== $file && $this->root.'/'.$site->value.'/'.$name !== $file) {
+            throw new \DomainException(\sprintf('"%s" isn\'t one of "%s"\'s backups: give its name, as "quire-server backups %2$s --local" lists them.', $file, $site));
+        }
+
+        foreach ($this->of($site) as $backup) {
+            if ($backup['file'] === $name) {
+                return $this->root.'/'.$site->value.'/'.$name;
+            }
+        }
+
+        throw new \DomainException(\sprintf('"%s" has no backup "%s" on the server ("quire-server backups %1$s --local" lists them).', $site, $name));
+    }
+
+    /**
      * @return list<string>
      */
     private function entries(string $folder): array

@@ -125,10 +125,13 @@ quire-server site:key blog              # Git mode: a site's deploy key (see "Si
 quire-server site:deploy blog [--commit=…]
 quire-server site:poll blog on|off      # Git mode: deploy new commits by itself
 quire-server site:remove jane          # asks you to type its name; backs it up first
+quire-server site:restore-removed jane  # brings it back, with its data as it was (see "Backups")
 quire-server backups:setup              # backups off the server: where, and their password (see "Backups")
 quire-server backups jane | backups server      # what's stored off the server
+quire-server backups jane --local       # its backups on the server: before an update, a restore, an undo; its final one
 quire-server backups:now [jane]         # back up now (everything, or one site)
 quire-server backups:restore jane [--snapshot=…]   # put a site back as a backup has it
+quire-server backups:restore jane --file=before-restore-<time>.tar   # or as one on the server has it
 quire-server backups:restore jane --as=copy --domain=…   # a new site from it (--from-server: another server's)
 quire-server backups:restore-server --from-server=old   # every site of another server, from its backups
 quire-server backups:check [--read=5]   # check the stored backups
@@ -240,7 +243,7 @@ The old major's data stays on the server. `quire-server database:upgrade --undo`
 
 ## Backups
 
-Every site is backed up on the server before anything risky (an update, a restore, removing it), in `/srv/quire/backups/<site>/`, and kept for two weeks (each site's newest one, and the final one of a site that was removed, for good). **Backups off the server** are what survive losing the server itself: set them up once.
+Every site is backed up on the server before anything risky (an update, a restore, an undo, removing it), in `/srv/quire/backups/<site>/`, and kept for two weeks (each site's newest one, and the final one of a site that was removed, for good). **Each is a way back:** every such operation ends by naming the one it made and the command that puts the site back as it was. `quire-server backups jane --local` lists them; `quire-server backups:restore jane --file=<name>` restores one, as a restore from off the server does (the site is backed up as it is first, and put back if it doesn't answer after). Only the site's own, as plain files in its folder, are taken. **A removed site comes back** with `quire-server site:restore-removed jane`: its code and files from its folder, archived in `/srv/quire/sites/.removed/`, its data from its final backup, its domains as it had them (or `--domain=…`, if another site took one). It gets settings of its own, so everyone signs in again. A Git mode site comes from its repository instead: add it again, then restore its final backup into it. **Backups off the server** are what survive losing the server itself: set them up once.
 
 ```bash
 quire-server backups:setup

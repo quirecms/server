@@ -78,6 +78,10 @@ final readonly class RemoveSiteCommand
 
         $io->success(\sprintf('"%s" is removed.%s', $site, null === $backup ? '' : ' Its final backup: '.$backup));
 
+        if (null !== $backup) {
+            $io->writeln(\sprintf('"quire-server site:restore-removed %s" brings it back, with its data as it was.', $site));
+        }
+
         return Command::SUCCESS;
     }
 }
