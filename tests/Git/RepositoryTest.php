@@ -88,4 +88,14 @@ final class RepositoryTest extends TestCase
         self::assertFalse(Repository::isCommit('--upload-pack='.str_repeat('a', 40)), 'An option Git would read.');
         self::assertFalse(Repository::isCommit(str_repeat('a', 40).'b'));
     }
+
+    public function testItsHostIsPinnedToAnAddress(): void
+    {
+        self::assertSame('ssh://git@140.82.121.4/me/blog.git', new Repository('ssh://git@github.com/me/blog.git')->at('140.82.121.4'));
+        self::assertSame('ssh://[2606:50c0::1]:2222/me/blog.git', new Repository('ssh://git.example.com:2222/me/blog.git')->at('2606:50c0::1'));
+        self::assertSame('git@140.82.121.4:me/blog.git', new Repository('git@github.com:me/blog.git')->at('140.82.121.4'));
+        self::assertSame('github.com', new Repository('git@github.com:me/blog.git')->host);
+        self::assertSame(2222, new Repository('ssh://git.example.com:2222/me/blog.git')->port);
+        self::assertNull(new Repository('https://github.com/me/blog.git')->port);
+    }
 }

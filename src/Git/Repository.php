@@ -11,6 +11,9 @@ namespace Quire\Server\Git;
  */
 final readonly class Repository
 {
+    /** The host Git connects to, and its port (null: the protocol's own) */
+    public string $host;
+    public ?int $port;
     /** git@host:path, user@host:path */
     private const string SCP = '#^[a-z0-9][a-z0-9._-]{0,31}@[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?:[A-Za-z0-9][A-Za-z0-9._~/-]{0,250}\z#';
 
@@ -39,6 +42,9 @@ final readonly class Repository
             throw new \InvalidArgumentException(\sprintf('"%s": a port is 1 to 65535.', $this->printable($url)));
         }
 
+        $this->host = strtolower($host);
+        $this->port = '' === $port ? null : (int) $port;
+
         // A host on the internet, not one of this machine's: no single-label name (the server's own
         // containers: quire-database…), no private, loopback or link-local address (cloud metadata)
         if (!str_contains($host, '.') || (false !== filter_var($host, \FILTER_VALIDATE_IP) && false === filter_var($host, \FILTER_VALIDATE_IP, \FILTER_FLAG_NO_PRIV_RANGE | \FILTER_FLAG_NO_RES_RANGE))) {
@@ -60,6 +66,19 @@ final readonly class Repository
     public function overSsh(): bool
     {
         return !str_starts_with($this->url, 'https://');
+    }
+
+    /**
+     * The address with its host replaced by one of its IP addresses, for SSH (which then checks the
+     * host's key by its name: HostKeyAlias).
+     */
+    public function at(string $address): string
+    {
+        $literal = str_contains($address, ':') ? '['.$address.']' : $address;
+
+        return str_starts_with($this->url, 'ssh://')
+            ? (string) preg_replace('#^(ssh://(?:[^@/]+@)?)[^:/]+#', '${1}'.$literal, $this->url)
+            : (string) preg_replace('#^([^@]+@)[^:]+#', '${1}'.$literal, $this->url);
     }
 
     /**

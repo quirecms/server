@@ -246,6 +246,14 @@ fetch() {
 install_files() {
 	if [ -f "$root/server/server.env" ]; then
 		say "Quire Server is installed in $root/server already: finishing what's left"
+		# Its files as the release (or the last update) left them, before any of them runs as root
+		# (SUPPLY-08): one changed since is said, not run
+		if [ -f "$root/server/.installed-files" ]; then
+			changed=$(cd "$root/server" && sha256sum -c --quiet .installed-files 2>/dev/null | sed 's/: .*//' | head -n 20)
+			[ -z "$changed" ] || die "Files of the installed server changed since it was installed or updated: $(echo "$changed" | tr '\n' ' ')
+       Not running them. If you changed them, put them back; to start from a clean copy of the release, move $root/server away (mv $root/server $root/server.old, keeping server.env, keys and domains) and run this again."
+			note 'Its files are as installed'
+		fi
 
 		return
 	fi
@@ -268,6 +276,10 @@ install_files() {
 	if [ "$from" != "$source" ]; then rm -rf "$work"; fi
 	chown -R root:root "$staging"
 	chmod -R go-w "$staging"
+	# Each of the release's files and its checksum, as the updater writes them: checked when this runs again
+	(cd "$staging" && find . -type f ! -name 'server.env*' ! -name .installed ! -name .installed-files ! -path './domains/*' ! -path './keys/*' -print0 | xargs -0 sha256sum | LC_ALL=C sort) >"$staging/.installed-files.new"
+	mv "$staging/.installed-files.new" "$staging/.installed-files"
+	chmod 600 "$staging/.installed-files"
 
 	# server.env last: its presence says the files are in place.
 	umask 077

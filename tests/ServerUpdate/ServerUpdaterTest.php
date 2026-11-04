@@ -196,6 +196,9 @@ final class ServerUpdaterTest extends RegistryTestCase
         self::assertSame('command: 0.2.0', file_get_contents($this->server.'/bin/quire-server'));
         self::assertFileDoesNotExist($this->server.'/only-in-0.1.1.txt', 'The old release\'s files are gone.');
         self::assertFileExists($this->server.'/only-in-0.2.0.txt');
+        // What install.sh checks when it's run again: the files as this update left them (SUPPLY-08)
+        self::assertStringContainsString(hash('sha256', self::COMPOSE_020).'  ./compose.yaml', (string) file_get_contents($this->server.'/.installed-files'));
+        self::assertStringNotContainsString('server.env', (string) file_get_contents($this->server.'/.installed-files'), 'The machine\'s own files aren\'t the release\'s.');
 
         // The machine's own files stay as they were; the release's copies of them are never used.
         self::assertSame('jane', file_get_contents($this->server.'/domains/jane.example'));
@@ -414,6 +417,10 @@ final class ServerUpdaterTest extends RegistryTestCase
         self::assertSame('a deploy key', file_get_contents($this->server.'/keys/blog'));
         self::assertSame(['server.undo', 'succeeded'], [$this->operations->latest()[0]['action'], $this->operations->latest()[0]['status']]);
 
+        // The seal's key is the machine's: an update keeps it (else every update would leave the
+        // updater taking any record, as before its first seal)
+        self::assertFileExists($this->server.'/.updater-key');
+
         // Once: it's undone, and the release that runs now was never updated to.
         self::assertNull($this->updater('0.1.1')->undoable());
         self::assertNull($updated->undoable());
@@ -581,5 +588,18 @@ final class ServerUpdaterTest extends RegistryTestCase
         self::assertIsInt($at, $option.' is given');
 
         return $command[$at + 1] ?? '';
+    }
+
+    public function testABackupChangedAfterTheUpdateIsntUndoneTo(): void
+    {
+        $this->update();
+        $updated = $this->updater('0.2.0');
+        $backup = $updated->undoable();
+        self::assertInstanceOf(ServerBackup::class, $backup);
+
+        // What the agent could write: the backup's own files
+        file_put_contents($backup->directory.'/backup.json', str_replace('0.1.1', '0.1.0', (string) file_get_contents($backup->directory.'/backup.json')));
+
+        self::assertNull($updated->undoable(), 'Not sealed by the updater any more: not one to undo to.');
     }
 }

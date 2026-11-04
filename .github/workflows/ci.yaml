@@ -35,8 +35,11 @@ jobs:
         run: docker compose -f compose.dev.yaml build php
       - name: Install dependencies
         run: docker compose -f compose.dev.yaml run --rm php composer install --no-interaction --no-progress
-      - name: Code style, Rector, PHPStan, tests
-        run: docker compose -f compose.dev.yaml run --rm php composer qa
+      - name: Code style, Rector, PHPStan
+        run: docker compose -f compose.dev.yaml run --rm php sh -c 'composer cs && composer rector && composer phpstan'
+      - name: Tests, and the coverage they may not fall below
+        # In all, and in each part that keeps sites apart (STATIC-10): tests/ci/coverage-floor.php
+        run: docker compose -f compose.dev.yaml run --rm php composer coverage
       - name: Audit dependencies
         run: docker compose -f compose.dev.yaml run --rm php composer audit
 

@@ -167,7 +167,7 @@ final class GitCheckoutTest extends TestCase
     {
         $runner = new SymfonyProcessRunner();
 
-        return new Git($runner, new DeployKeys($runner, new ServerPaths($this->root)));
+        return new Git($runner, new DeployKeys($runner, new ServerPaths($this->root)), new \Quire\Server\Git\GitHosts(resolve: static fn (): array => ['140.82.121.4']));
     }
 
     private function repository(): Repository

@@ -83,12 +83,20 @@ final class OperationLogTest extends RegistryTestCase
         $operation->line('In JSON: '.json_encode(['password' => 'p@ss/w0rd+"x']));
         $operation->line('An address: smtp://mailer:an-unregistered-pass@mail.example:587 and postgresql://u:pw@db/x');
         $operation->line('Six: sixsix; five: five5');
+        // In a longer encoding, at whatever alignment: an Authorization header, a JSON blob
+        $operation->line('Authorization: Basic '.base64_encode('mailer:p@ss/w0rd+"x'));
+        $operation->line('blob: '.base64_encode('{"key":"p@ss/w0rd+\"x","more":1}'));
         $operation->succeed();
 
         $lines = $log->lines($operation->id);
         self::assertStringNotContainsString('w0rd', implode("\n", $lines));
         self::assertSame('An address: smtp://mailer:[secret]@mail.example:587 and postgresql://u:[secret]@db/x', $lines[2], 'Whoever\'s password it is.');
         self::assertSame('Six: [secret]; five: five5', $lines[3], '6 characters are a secret; 5 aren\'t (they\'d blank common words).');
+        foreach ([4, 5] as $line) {
+            $left = (string) preg_replace('/^.*?: (?:Basic )?/', '', $lines[$line]);
+            self::assertStringContainsString('[secret]', $left);
+            self::assertStringNotContainsString('w0rd', (string) base64_decode(str_replace('[secret]', '', $left), true), 'Nothing of it decodes any more.');
+        }
     }
 
     public function testAnOperationOnASiteIsScrubbedOfItsSettingsSecretsAndTheAgents(): void

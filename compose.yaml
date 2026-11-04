@@ -68,6 +68,9 @@ services:
       QUIRE_SERVER_SITE_NETWORKS: ${QUIRE_SERVER_SITE_NETWORKS:-10.72.0.0/16}
       # Git mode sites that deploy by themselves: how often their branch is asked for new commits
       QUIRE_SERVER_GIT_POLL_SECONDS: ${QUIRE_SERVER_GIT_POLL_SECONDS:-300}
+      # Git servers on the owner's own network that sites may follow (by name, comma-separated): any
+      # other repository's host must be on the internet
+      QUIRE_SERVER_GIT_PRIVATE_HOSTS: ${QUIRE_SERVER_GIT_PRIVATE_HOSTS:-}
       # The hour (UTC) from which sites get their automatic updates each night ("site:updates"), or "off"
       QUIRE_SERVER_UPDATE_HOUR: ${QUIRE_SERVER_UPDATE_HOUR:-3}
       # Backups off the server ("quire-server backups:setup"): restic, on S3-compatible storage

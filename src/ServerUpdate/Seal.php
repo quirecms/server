@@ -48,8 +48,10 @@ final readonly class Seal
         $key = $this->key(false);
         $seal = is_file($directory.'/'.self::FILE) && !is_link($directory.'/'.self::FILE) ? trim((string) file_get_contents($directory.'/'.self::FILE)) : null;
 
+        // No key: taken only if it was never sealed (an older release's). A sealed one without the
+        // key that sealed it can't be checked, so it isn't taken.
         if (null === $key) {
-            return true;
+            return null === $seal;
         }
 
         return null !== $seal && hash_equals($this->mac($directory, $files, $key), $seal);

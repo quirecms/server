@@ -216,6 +216,7 @@ check 'it trusts only the front door'\''s address as its proxy' "[ \"\$(inside '
 echo '== A second site, added on a link of its own'
 inside 'quire-server site:add kim --domain=kim.test --admin-email=kim@example.com --title="Kim" 2>&1' > "$logs"/add-kim.log || true
 check 'kim runs, on its own link and addresses' "inside 'quire-server site:list' | grep kim | grep -q running && attached kim-php-1 | grep -Eq 'quire-link-kim=10\.72\.0\.(8[0-9]|9[0-5]) ' && attached quire-server-front-1 | grep -q 'quire-link-kim=10.72.0.66 '"
+inside 'test -d /srv/quire/sites/kim' || sed 's/^/    /' "$logs"/add-kim.log
 docker cp "$here/tests/e2e/try-links.php" "$dind:/root/try-links.php"
 inside 'docker cp /root/try-links.php jane-php-1:/app/var/try-links.php'
 from_jane() { inside "docker exec jane-php-1 php /app/var/try-links.php $1"; }
@@ -625,6 +626,10 @@ key=$(inside 'quire-server site:key blog' | grep '^ssh-ed25519 ')
 inside "docker exec git-server sh -c 'echo \"$key\" >> /home/git/.ssh/authorized_keys'"
 check 'its deploy key is root'\''s only, outside its folder' "[ \"\$(inside 'stat -c %a /srv/quire/server/keys/blog /srv/quire/server/keys/blog/id_ed25519' | tr '\n' ' ')\" = '700 600 ' ]"
 check 'a repository on one of this machine'\''s own names is refused' "inside 'quire-server site:add blog --git=ssh://git@git-server/home/git/blog.git --branch=main --domain=blog.test --admin-email=dev@example.com 2>&1' | tr -s ' \n' ' ' | grep -q 'on a host on the internet'"
+# git.e2e.test is on one of the machine's own networks, as a public name could be made to point
+check 'a name on a private address is refused, saying how to allow one' "inside 'quire-server site:add blog --git=ssh://git@git.e2e.test/home/git/blog.git --branch=main --domain=blog.test --admin-email=dev@example.com 2>&1' | tr -s ' \n' ' ' | grep -q 'QUIRE_SERVER_GIT_PRIVATE_HOSTS' && ! inside 'test -e /srv/quire/sites/blog'"
+# The owner's own Git server, allowed by name
+inside "printf 'QUIRE_SERVER_GIT_PRIVATE_HOSTS=git.e2e.test\\n' >> /srv/quire/server/server.env && quire-server up >/dev/null 2>&1"
 inside 'quire-server site:add blog --git=ssh://git@git.e2e.test/home/git/blog.git --branch=main --domain=blog.test --admin-email=dev@example.com 2>&1' | tee "$logs"/git-add.log | sed 's/^/    /'
 gresolve='--resolve blog.test:443:127.0.0.1'
 check 'it runs its repository'\''s branch' "[ \"\$(inside \"curl -sk $gresolve -o /dev/null -w '%{http_code}' https://blog.test/\")\" = 200 ]"

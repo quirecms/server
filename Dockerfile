@@ -78,6 +78,9 @@ CMD ["bin/console", "server:agent"]
 FROM agent AS dev
 ENV APP_ENV=test APP_DEBUG=1
 COPY --from=yorvogate /usr/local/bin/yorvogate /usr/local/bin/yorvogate
+# Coverage, for the tests' floor and mutation testing (STATIC-10): in development only
+COPY --from=php_extension_installer /usr/bin/install-php-extensions /usr/local/bin/
+RUN install-php-extensions pcov && rm /usr/local/bin/install-php-extensions
 WORKDIR /app
 ENTRYPOINT []
 CMD ["composer", "qa"]

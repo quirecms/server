@@ -304,6 +304,7 @@ quire-server site:poll blog on           # or let the agent deploy new commits b
 ```
 
 - **A deploy works like an update:** the commit is built while the site keeps running, the site is backed up, the new version started and checked, and rolled back by itself if it fails. `quire-server site:undo blog` goes back to the commit before, within a week.
+- **Where the repository is:** its host must be on the internet. A name that points at this machine or a private network is refused (checked each time Git connects, and Git is held to the address checked; HTTPS redirects aren't followed). A Git server on your own network, e.g. a Gitea in the same VPC, is allowed by name: `QUIRE_SERVER_GIT_PRIVATE_HOSTS=git.internal.example` in `server.env`, then `quire-server up`.
 - **With polling on,** the agent asks the repository for new commits every 5 minutes (`QUIRE_SERVER_GIT_POLL_SECONDS` in `server.env`, at least 60). A commit that fails isn't tried again by itself, nor is one you undid: the next commit is.
 - **Public repositories** can be followed over HTTPS without a key (`--git=https://github.com/me/blog.git`).
 - **Updates are made in the repository:** run `composer update` there and commit `composer.lock`. `quire-server site:update blog --dry-run` shows what's available. Commit a `composer.lock`, or every build resolves the versions anew.

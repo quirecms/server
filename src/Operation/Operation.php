@@ -45,7 +45,11 @@ final class Operation
             return;
         }
 
-        foreach ([$value, rawurlencode($value), urlencode($value), substr((string) json_encode($value, \JSON_UNESCAPED_UNICODE), 1, -1), substr((string) json_encode($value), 1, -1)] as $form) {
+        $plain = array_values(array_unique([$value, rawurlencode($value), urlencode($value), substr((string) json_encode($value, \JSON_UNESCAPED_UNICODE), 1, -1), substr((string) json_encode($value), 1, -1), substr((string) json_encode($value, \JSON_UNESCAPED_UNICODE | \JSON_UNESCAPED_SLASHES), 1, -1)]));
+        // And each of those base64-encoded, as a header or an encoded JSON blob would carry it
+        $encoded = array_merge(...array_map($this->base64(...), $plain));
+
+        foreach ([...$plain, ...$encoded] as $form) {
             if (\strlen($form) >= 6 && !\in_array($form, $this->secrets, true)) {
                 $this->secrets[] = $form;
             }
@@ -53,6 +57,35 @@ final class Operation
 
         // The longest first: a form that contains another is replaced whole
         usort($this->secrets, static fn (string $a, string $b): int => \strlen($b) <=> \strlen($a));
+    }
+
+    /**
+     * The base64 characters that only the value decides, wherever it starts in what's encoded (at
+     * each of the 3 byte alignments), in both alphabets: so it's found inside a longer encoding too
+     * (a "user:password" in an Authorization header, a key in a JSON blob). Those shorter than 8
+     * characters aren't kept: they'd match by chance.
+     *
+     * @return list<string>
+     */
+    private function base64(string $value): array
+    {
+        $forms = [];
+
+        for ($offset = 0; $offset < 3; ++$offset) {
+            $encoded = rtrim(base64_encode(str_repeat("\0", $offset).$value), '=');
+            $bits = 8 * ($offset + \strlen($value));
+            // From the first character all of whose bits are the value's, to the last
+            $start = intdiv(8 * $offset + 5, 6);
+            $end = intdiv($bits, 6);
+            $form = substr($encoded, $start, $end - $start);
+
+            if (\strlen($form) >= 8) {
+                $forms[] = $form;
+                $forms[] = strtr($form, '+/', '-_');
+            }
+        }
+
+        return $forms;
     }
 
     /**

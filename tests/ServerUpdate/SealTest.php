@@ -51,6 +51,15 @@ final class SealTest extends TestCase
         self::assertNull(ServerBackup::load($planted->directory), 'Once the updater seals: one without a seal isn\'t its own.');
     }
 
+    public function testASealedOneWhoseKeyIsGoneIsntTaken(): void
+    {
+        $backup = $this->backup('20261104-100000-000000');
+        $backup->save();
+        unlink($this->root.'/server/.updater-key');
+
+        self::assertNull(ServerBackup::load($backup->directory), 'Its seal can\'t be checked any more: not taken as if it had none.');
+    }
+
     private function backup(string $name): ServerBackup
     {
         $directory = $this->root.'/backups/server/'.$name;

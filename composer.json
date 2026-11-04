@@ -83,6 +83,10 @@
             "@phpstan",
             "@test"
         ],
+        "coverage": [
+            "phpunit --coverage-clover var/clover.xml",
+            "@php tests/ci/coverage-floor.php var/clover.xml"
+        ],
         "fix": [
             "rector process",
             "php-cs-fixer fix"
