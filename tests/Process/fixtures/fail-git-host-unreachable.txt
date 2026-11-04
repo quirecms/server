@@ -1,0 +1,21 @@
+$ time quire-server site:deploy blog
+
+Deploying "blog"
+================
+
+ [ERROR] The site wasn't deployed:                                              
+                                                                                
+         Asking the repository for its branch (git ls-remote) failed (exit code 
+         128):                                                                  
+         Connection timed out during banner exchange                            
+         Connection to 172.21.0.5 port 22 timed out                             
+         fatal: Could not read from remote repository.                          
+                                                                                
+         Please make sure you have the correct access rights                    
+         and the repository exists.                                             
+
+Command exited with non-zero status 1
+real	0m 20.26s
+user	0m 0.05s
+sys	0m 0.06s
+[exit 1]

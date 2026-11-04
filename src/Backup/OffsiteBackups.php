@@ -190,7 +190,7 @@ final readonly class OffsiteBackups
                 }
             }
         } catch (\Throwable $e) {
-            $operation->fail($e->getMessage());
+            $operation->fail($e);
 
             throw $e instanceof BackupFailed ? $e : new BackupFailed($e->getMessage(), 0, $e);
         }[] === $outcome['failed'] ? $operation->succeed() : $operation->fail('Not backed up: '.implode(', ', $outcome['failed']));
@@ -222,7 +222,7 @@ final readonly class OffsiteBackups
             $operation->line('Snapshot '.$snapshot);
             $this->vouch();
         } catch (\Throwable $e) {
-            $operation->fail($e->getMessage());
+            $operation->fail($e);
 
             throw $e;
         }

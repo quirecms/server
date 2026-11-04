@@ -1,0 +1,9 @@
+$ quire-server operations 474fd357-cc3c-4027-8cb5-f0daf2a60742 | grep -n -i "does-not-exist\|could not be found\|Problem" | head
+147:#18 3.786   Problem 1
+148:#18 3.786     - Root composer.json requires quire/does-not-exist, it could not be found in any version, there may be a typo in the package name.
+156:#18 3.786 Read <https://getcomposer.org/doc/articles/troubleshooting.md> for further common problems.
+157:#18 3.786 Running update with --no-dev does not mean require-dev is ignored, it just means the packages will not be installed. If dev requirements are blocking the update you have to resolve those problems.
+163:3.786     - Root composer.json requires quire/does-not-exist, it could not be found in any version, there may be a typo in the package name.
+171:3.786 Read <https://getcomposer.org/doc/articles/troubleshooting.md> for further common problems.
+172:3.786 Running update with --no-dev does not mean require-dev is ignored, it just means the packages will not be installed. If dev requirements are blocking the update you have to resolve those problems.
+[exit 0]

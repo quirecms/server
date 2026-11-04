@@ -8,6 +8,9 @@ use Symfony\Component\Process\Process;
 
 final readonly class SymfonyProcessRunner implements ProcessRunner
 {
+    /** How often a quiet program's output closure is called with nothing (seconds) */
+    private const int TICK = 10;
+
     /**
      * What a program gets of the agent's own environment: enough to run, nothing that configures or
      * authenticates anything.
@@ -34,9 +37,31 @@ final readonly class SymfonyProcessRunner implements ProcessRunner
 
         try {
             $process = new Process($command, $directory, $this->environment($env), $stream ?? $input, $timeout);
-            $process->run($output instanceof \Closure ? static function (string $type, string $buffer) use ($output): void {
-                $output($buffer);
-            } : null);
+
+            if ($output instanceof \Closure) {
+                // Its output as it comes, and a tick (nothing) while it's quiet: a heartbeat needs no output
+                $process->start(static function (string $type, string $buffer) use ($output): void {
+                    $output($buffer);
+                });
+                $ticked = time();
+
+                while ($process->isRunning()) {
+                    $process->checkTimeout();
+                    usleep(200_000);
+
+                    if (time() - $ticked >= self::TICK) {
+                        $ticked = time();
+                        $output('');
+                    }
+                }
+
+                $process->wait();
+            } else {
+                $process->run();
+            }
+        } catch (\Symfony\Component\Process\Exception\ProcessTimedOutException $e) {
+            // Said as what it is, not as its command line (its arguments may be long, or secret)
+            throw new ProcessTimedOut($command, $timeout, $e);
         } finally {
             if (\is_resource($stream)) {
                 fclose($stream);

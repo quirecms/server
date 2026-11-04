@@ -241,6 +241,7 @@ final readonly class SiteUpdater
                         $this->check($project, $site);
                     } catch (\Throwable $e) {
                         $this->registry->setStatus($site->name, Site::FAILED);
+                        $operation->cause($e);
                         $operation->fail(\sprintf('Putting it back failed: %s. Its release record: %s.', $e->getMessage(), $file));
 
                         throw $e;
@@ -296,6 +297,7 @@ final readonly class SiteUpdater
                 $operation->line('!! '.$e->getMessage());
 
                 if (null === $current) {
+                    $operation->cause($e);
                     $operation->fail('Restoring it failed before anything changed: '.$e->getMessage());
 
                     throw new UpdateFailed($operation->id, true, $e->getMessage(), $e);
@@ -308,10 +310,13 @@ final readonly class SiteUpdater
                     $this->check($project, $site);
                 } catch (\Throwable $failure) {
                     $this->registry->setStatus($name, Site::FAILED);
+                    $operation->cause($e);
                     $operation->fail(\sprintf('Restoring the backup failed (%s), and putting the site back failed too (%s). Its backup from before: %s.', $e->getMessage(), $failure->getMessage(), $current));
 
                     throw new UpdateFailed($operation->id, false, $e->getMessage(), $e);
                 }
+
+                $operation->cause($e);
 
                 $operation->fail('Restoring the backup failed, and the site is as it was before: '.$e->getMessage());
 
@@ -391,10 +396,13 @@ final readonly class SiteUpdater
                     $this->check($project, $site);
                 } catch (\Throwable $failure) {
                     $this->registry->setStatus($name, Site::FAILED);
+                    $operation->cause($e);
                     $operation->fail(\sprintf('Undoing the %s failed (%s), and putting the site back failed too (%s). Its backups: %s, %s.', $what, $e->getMessage(), $failure->getMessage(), $update['backup'], $current ?? '-'));
 
                     throw new UpdateFailed($operation->id, false, $e->getMessage(), $e);
                 }
+
+                $operation->cause($e);
 
                 $operation->fail(\sprintf('Undoing the %s failed, and the site is as it was before: %s', $what, $e->getMessage()));
 
@@ -523,7 +531,7 @@ final readonly class SiteUpdater
             $change();
 
             $step('Checking and building the new version (a few minutes; it keeps running meanwhile)');
-            $this->compose->build($project, $operation->output(...));
+            $this->compose->build($project, \Quire\Server\Operation\Progress::of($operation->output(...), $step));
         } catch (\Throwable $e) {
             if ($changed) {
                 $revert();
@@ -535,6 +543,7 @@ final readonly class SiteUpdater
             }
 
             $this->filesystem->remove($this->paths->backups($site->name).'/'.self::INTENT);
+            $operation->cause($e);
             $operation->fail(\sprintf('The %s was stopped before the site was touched: %s', $what, $e->getMessage()));
 
             throw new UpdateFailed($operation->id, true, $e->getMessage(), $e);
@@ -601,10 +610,13 @@ final readonly class SiteUpdater
             $this->check($project, $site);
         } catch (\Throwable $failure) {
             $this->registry->setStatus($site->name, Site::FAILED);
+            $operation->cause($cause);
             $operation->fail(\sprintf('The %s failed (%s), and rolling it back failed too (%s). Its backup: %s.', $what, $cause->getMessage(), $failure->getMessage(), $backup ?? '-'));
 
             throw new UpdateFailed($operation->id, false, $cause->getMessage(), $cause);
         }
+
+        $operation->cause($cause);
 
         $operation->fail(\sprintf('The %s failed and was rolled back: %s', $what, $cause->getMessage()));
 

@@ -76,7 +76,7 @@ final class ResticTest extends TestCase
         }
 
         $this->answers['cat'] = [1, '', "Fatal: unable to open config file: Stat: The AWS Access Key Id you provided does not exist in our records.\n"];
-        $this->expectExceptionMessageIsOrContains('can\'t be reached: Fatal: unable to open config file');
+        $this->expectExceptionMessageIsOrContains('can\'t be opened: the bucket refused the server\'s keys (access denied). Check QUIRE_SERVER_BACKUP_ACCESS_KEY');
         $this->restic()->opens();
     }
 

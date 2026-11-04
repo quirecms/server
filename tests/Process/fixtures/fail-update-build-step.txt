@@ -1,0 +1,37 @@
+$ quire-server site:deploy blog
+
+Deploying "blog"
+================
+
+  Getting commit f282aaec872e…
+  Checking and building the new version (a few minutes; it keeps running meanwhile)…
+
+ [ERROR] The deploy failed, and the site is as it was before:                   
+                                                                                
+         Building the site failed (exit code 1):                                
+           72 | >>> 		php bin/console asset-map:compile                       
+                                                                                
+           73 | >>> 	fi                                                      
+                                                                                
+           74 | >>> 	chmod +x bin/console; echo "asset build failed: out of  
+         memory" >&2; exit 3                                                   
+                                                                                
+           75 | >>> 	chmod -R g=u var                                        
+                                                                                
+           76 | >>> EOF                                                      
+                                                                                
+           77 |                                                                 
+                                                                                
+         --------------------                                                   
+                                                                                
+         target php: failed to solve: process "/bin/bash -euxo pipefail -c mkdir
+         -p var/cache var/log var/share public/assets\ncomposer dump-autoload   
+         --classmap-authoritative --no-dev\ncomposer dump-env prod\ncomposer    
+         run-script --no-dev post-install-cmd\nif [ -f importmap.php ];         
+         then\nphp bin/console asset-map:compile\nfi\nchmod +x bin/console; echo
+         \"asset build failed: out of memory\" >&2; exit 3\nchmod -R g=u var\n"
+         did not complete successfully: exit code: 3                            
+                                                                                
+         Its log: quire-server operations e896de3d-7c2e-47eb-a017-4f84df2b6155  
+
+[exit 1]
