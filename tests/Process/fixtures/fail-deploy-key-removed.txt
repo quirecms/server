@@ -1,0 +1,17 @@
+$ quire-server site:deploy blog
+
+Deploying "blog"
+================
+
+ [ERROR] The site wasn't deployed:                                              
+                                                                                
+         Asking the repository for its branch (git ls-remote) failed (exit code 
+         128):                                                                  
+         git@git-server: Permission denied                                      
+         (publickey,password,keyboard-interactive).                             
+         fatal: Could not read from remote repository.                          
+                                                                                
+         Please make sure you have the correct access rights                    
+         and the repository exists.                                             
+
+[exit 1]

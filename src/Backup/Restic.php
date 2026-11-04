@@ -42,7 +42,7 @@ final readonly class Restic
             return false;
         }
 
-        throw new BackupFailed(12 === $result->exitCode ? 'The backup repository doesn\'t open with this password.' : 'The backup repository can\'t be reached: '.$this->reason($result));
+        throw new BackupFailed(12 === $result->exitCode ? 'The backup repository doesn\'t open with this password: nothing was backed up or changed. The password it was made with (shown when backups were set up) goes in server.env (QUIRE_SERVER_BACKUP_PASSWORD), then "quire-server up".' : 'The backup repository can\'t be opened: '.$this->reason($result));
     }
 
     public function init(): void
@@ -253,7 +253,7 @@ final readonly class Restic
     {
         try {
             return $this->run($arguments, $timeout);
-        } catch (\Symfony\Component\Process\Exception\ProcessTimedOutException) {
+        } catch (\Quire\Server\Process\ProcessTimedOut|\Symfony\Component\Process\Exception\ProcessTimedOutException) {
             throw new BackupFailed(\sprintf('restic got no answer from the bucket in %d seconds: check its address and region.', (int) $timeout));
         }
     }
@@ -291,6 +291,12 @@ final readonly class Restic
 
     private function reason(ProcessResult $result): string
     {
+        $explained = \Quire\Server\Process\Failures::explain($result->output."\n".$result->errorOutput);
+
+        if (null !== $explained) {
+            return $explained['why'].'. '.$explained['next'];
+        }
+
         $lines = array_values(array_filter(array_map(trim(...), explode("\n", $result->errorOutput)), static fn (string $line): bool => '' !== $line));
 
         return '' === ($lines[0] ?? '') ? 'exit code '.$result->exitCode : implode(' ', \array_slice($lines, -3));

@@ -75,9 +75,37 @@ final class Operation
         $this->end(true, null);
     }
 
-    public function fail(string $error): void
+    /**
+     * Fails it, with why: a sentence, or what failed, whose program's own output goes to the log (the
+     * owner reads its message, M-20).
+     */
+    public function fail(string|\Throwable $error): void
     {
+        if ($error instanceof \Throwable) {
+            $this->cause($error);
+            $error = $error->getMessage();
+        }
+
         $this->end(false, $this->clean($error, 4000));
+    }
+
+    /**
+     * What the program behind a failure said (its output's end), for the log: the message an owner
+     * reads says what it means instead.
+     */
+    public function cause(\Throwable $error): void
+    {
+        for ($cause = $error; $cause instanceof \Throwable; $cause = $cause->getPrevious()) {
+            if ($cause instanceof \Quire\Server\Process\ProcessFailed && '' !== $cause->detail()) {
+                $this->line('-- What '.$cause->result->command[0].' said:');
+
+                foreach (explode("\n", $cause->detail()) as $line) {
+                    $this->line('   '.$line);
+                }
+
+                return;
+            }
+        }
     }
 
     public function scrub(string $text): string

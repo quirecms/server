@@ -19,7 +19,7 @@ services:
             - '../src/Backup/BackupFailed.php'
             - '../src/Notify/{Problem,EmailChannel,WebhookChannel}.php'
             - '../src/Operation/{Operation,SiteRequest,AddedSite}.php'
-            - '../src/Process/{ProcessResult,ProcessFailed}.php'
+            - '../src/Process/{ProcessResult,ProcessFailed,ProcessTimedOut,Failures}.php'
             - '../src/Update/{Lock,UpdatePlan,SkeletonFiles,UpdateFailed,CodeNotReleased}.php'
             - '../src/Git/Repository.php'
             - '../src/Network/{Ipv4Cidr,SiteSubnets}.php'
@@ -204,3 +204,7 @@ services:
     # The front door's certificates (its data volume, read-only: compose.yaml)
     Quire\Server\Notify\Certificates:
         arguments: ['/run/quire-front/caddy/certificates']
+
+    # Symfony's console error listener prints "[critical] Error thrown…" on the owner's screen: this one
+    # sends errors the server didn't expect to the agent's log instead (M-20)
+    console.error_listener: '@Quire\Server\Console\ErrorLog'

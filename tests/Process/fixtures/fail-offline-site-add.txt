@@ -1,0 +1,42 @@
+$ time quire-server site:add offline --domain=offline.test --admin-email=o@example.com
+
+Adding the site "offline"
+=========================
+
+  Recording the site…
+  Getting Quire ^0.1…
+
+ [ERROR] Adding the site failed, and what was done is undone:                   
+                                                                                
+         Getting the site's files (composer create-project quire/skeleton)      
+         failed (exit code 100):                                                
+         Creating a "quire/skeleton" project at "/srv/quire/sites/offline"      
+         Plugins have been disabled automatically as you are running as root,   
+         this may be the cause of the following exception. See also https://getcomposer.org/root
+                                                                                
+         In CurlDownloader.php line 407:                                        
+                                                                                
+                                                                                
+           curl error 7 while downloading https://repo.packagist.org/packages.json: Fa 
+           iled to connect to repo.packagist.org:443 after 0 ms: Could not      
+         connect to                                                             
+           server                                                               
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+         create-project [-s|--stability STABILITY] [--prefer-source]            
+         [--prefer-dist] [--prefer-install PREFER-INSTALL] [--repository        
+         REPOSITORY] [--repository-url REPOSITORY-URL] [--add-repository]       
+         [--require REQUIRE] [--dev] [--no-dev] [--no-custom-installers]        
+         [--no-scripts] [--no-progress] [--no-secure-http] [--keep-vcs]         
+         [--remove-vcs] [--no-install] [--no-audit] [--audit-format             
+         AUDIT-FORMAT] [--no-security-blocking] [--no-blocking]                 
+         [--ignore-platform-req IGNORE-PLATFORM-REQ] [--ignore-platform-reqs]   
+         [--ask] [--] [<package> [<directory> [<version>]]]                     
+
+Command exited with non-zero status 1
+real	0m 1.03s
+user	0m 0.04s
+sys	0m 0.09s
+[exit 1]

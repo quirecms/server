@@ -163,7 +163,7 @@ final readonly class SiteManager
 
                 $step('Checking and building it (a few minutes)');
                 $undo[] = fn () => $this->compose->down($project, volumes: true);
-                $this->compose->build($project, $operation->output(...));
+                $this->compose->build($project, Progress::of($operation->output(...), $say));
 
                 $step('Starting it');
                 $this->compose->up($project, $operation->output(...));
@@ -287,7 +287,7 @@ final readonly class SiteManager
 
                 $step('Checking and building it (a few minutes)');
                 $undo[] = fn () => $this->compose->down($project, volumes: true);
-                $this->compose->build($project, $operation->output(...));
+                $this->compose->build($project, Progress::of($operation->output(...), $say));
 
                 $step('Starting it');
                 $this->compose->up($project, $operation->output(...));
@@ -343,7 +343,7 @@ final readonly class SiteManager
             $this->frontDoor->revoke($domain);
         }
 
-        $operation->fail($e->getMessage());
+        $operation->fail($e);
 
         throw $e;
     }
@@ -436,7 +436,7 @@ final readonly class SiteManager
                 // Its image gets the site's own name (two sites would share "quire-php-prod" otherwise):
                 // built while the site still runs as it was, so it's offline only while it restarts.
                 $step('Checking and building it (a few minutes; it keeps running meanwhile)');
-                $this->compose->build($site, $operation->output(...));
+                $this->compose->build($site, Progress::of($operation->output(...), $say));
 
                 $step('Moving it behind the front door (a few seconds offline)');
                 $this->compose->up($site, $operation->output(...));
@@ -464,7 +464,7 @@ final readonly class SiteManager
                     }
                 }
 
-                $operation->fail($e->getMessage());
+                $operation->fail($e);
 
                 throw $e;
             }
@@ -564,7 +564,7 @@ final readonly class SiteManager
 
                 return $file;
             } catch (\Throwable $e) {
-                $operation->fail($e->getMessage());
+                $operation->fail($e);
 
                 throw $e;
             }

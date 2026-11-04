@@ -677,7 +677,7 @@ final readonly class DatabaseUpgrader
                 $operation->line($line);
             }
 
-            $error instanceof \Throwable ? $operation->fail($error->getMessage()) : $operation->succeed();
+            $error instanceof \Throwable ? $operation->fail($error) : $operation->succeed();
 
             return true;
         });

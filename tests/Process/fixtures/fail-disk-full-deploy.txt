@@ -1,0 +1,21 @@
+$ quire-server site:deploy blog
+
+Deploying "blog"
+================
+
+  Getting commit 07145711dcc0…
+  Checking and building the new version (a few minutes; it keeps running meanwhile)…
+  Backing it up…
+  Rolling it back…
+
+ [ERROR] The deploy failed, and the site is as it was before:                   
+                                                                                
+         Copying out of the site failed (exit code 1):                          
+         blog-php-1 Copying blog-php-1:/tmp/quire-deploy-backup.tar to          
+         /srv/quire/backups/blog/deploy-20261029-144627.tar                     
+         write /srv/quire/backups/blog/deploy-20261029-144627.tar: no space left
+         on device                                                              
+                                                                                
+         Its log: quire-server operations c226f674-a864-47aa-9823-95bf833faea0  
+
+[exit 1]

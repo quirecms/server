@@ -117,6 +117,11 @@ case "${1:-help}" in
 		case "$command" in
 			*[!a-z:-]*) echo "Unknown command: $command" >&2; exit 1 ;;
 		esac
+		# Without the agent, nothing can be done: said, rather than Compose's 'service "agent" is not running'
+		if [ -z "$(compose ps --status running --quiet agent 2>/dev/null)" ]; then
+			echo 'The agent isn'\''t running, so nothing can be done: "quire-server up" starts it again; "quire-server logs agent" says why it stopped. The sites run without it.' >&2
+			exit 1
+		fi
 		# A terminal when there is one (questions, colours).
 		tty=-T
 		if [ -t 0 ] && [ -t 1 ]; then tty=; fi
