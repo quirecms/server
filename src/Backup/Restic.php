@@ -187,6 +187,14 @@ final readonly class Restic
     }
 
     /**
+     * Removes the locks no restic holds any more (after a recovery brought old ones back).
+     */
+    public function unlock(): void
+    {
+        $this->orFail($this->restic(['unlock'], 600), 'Removing stale locks');
+    }
+
+    /**
      * Checks the repository's structure, and reads back a part of its data ($percent) to check it too.
      */
     public function check(int $percent): ProcessResult

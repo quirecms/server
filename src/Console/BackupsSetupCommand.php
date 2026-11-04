@@ -6,9 +6,12 @@ namespace Quire\Server\Console;
 
 use Quire\Server\Backup\BackupFailed;
 use Quire\Server\Backup\BackupLedger;
+use Quire\Server\Backup\BackupProtection;
 use Quire\Server\Backup\BackupSettings;
 use Quire\Server\Backup\BackupSigning;
 use Quire\Server\Backup\Restic;
+use Quire\Server\Backup\S3;
+use Quire\Server\Notify\Checks;
 use Quire\Server\Process\ProcessRunner;
 use Quire\Server\ServerUpdate\ServerFolder;
 use Quire\Server\ServerUpdate\ServerStack;
@@ -16,6 +19,7 @@ use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Attribute\Option;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Style\SymfonyStyle;
+use Symfony\Contracts\HttpClient\HttpClientInterface;
 
 #[AsCommand(
     name: 'server:backups:setup',
@@ -46,6 +50,8 @@ final readonly class BackupsSetupCommand
         private BackupSettings $current,
         private BackupSigning $signing,
         private BackupLedger $ledger,
+        private Checks $checks,
+        private HttpClientInterface $client,
         private string $cache,
         private bool $inUpdater,
     ) {
@@ -120,6 +126,9 @@ final readonly class BackupsSetupCommand
             }
 
             $this->signing->ensure();
+            $io->writeln('  Checking that the bucket keeps what\'s deleted…');
+            $protection = new BackupProtection(S3::of($settings, $this->client))->probe();
+            $this->checks->record(BackupProtection::CHECK, !$protection['protected'], $protection['summary'], $protection['advice']);
         } catch (\InvalidArgumentException|BackupFailed $e) {
             $io->error(['Nothing was saved.', $e->getMessage()]);
 
@@ -159,6 +168,13 @@ final readonly class BackupsSetupCommand
                 'The backups\' password (shown only now): '.$password,
                 'Keep it, with the bucket\'s keys, somewhere other than this server (a password manager). Without it, the backups can\'t be read: if this server is lost, it\'s the only way back.',
             ]);
+        }
+
+        if ($protection['protected']) {
+            $io->writeln('  '.$protection['summary']);
+        } else {
+            // A backup that can be deleted beats none: said, not refused
+            $io->warning([$protection['summary'], $protection['advice']]);
         }
 
         $io->note([

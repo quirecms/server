@@ -169,7 +169,7 @@ final class WatchTest extends RegistryTestCase
     private function problems(bool $backups = false): array
     {
         $settings = $backups ? new BackupSettings('s3:https://s3.example/bucket', 'key', 'secret', str_repeat('p', 20)) : new BackupSettings('', '', '', '');
-        $watch = new Watch($this->connection, $settings, new Certificates($this->certificates), new ServerPaths('/srv/quire'), $this->schema, fn (): \DateTimeImmutable => $this->now, fn (): array => $this->disk);
+        $watch = new Watch($this->connection, $settings, new Certificates($this->certificates), new ServerPaths('/srv/quire'), new \Quire\Server\Notify\Checks($this->connection, $this->schema), $this->schema, fn (): \DateTimeImmutable => $this->now, fn (): array => $this->disk);
         $problems = [];
 
         foreach ($watch->problems() as $problem) {

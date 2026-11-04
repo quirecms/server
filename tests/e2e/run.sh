@@ -384,6 +384,34 @@ check 'every site of the old server is restored, with its name and domains' "gre
 check 'with its application'\''s own tables' "[ \"\$(orders jane)\" = 2 ]"
 check 'with its update policy' "inside 'quire-server site:updates jane' | grep -q 'fix a known vulnerability'"
 check 'a server with no backups is refused' "inside 'quire-server backups:restore-server --from-server=no-such-server --yes 2>&1' | grep -q 'no backup of the server'"
+
+echo '== Backups that survive a stolen server.env (D-37): a bucket that keeps what is deleted, proved'
+# S3 with versions and Object Lock (versitygw), and the AWS CLI to make its buckets as an owner would
+inside 'docker run -d --name locked-s3 --network quire-data --tmpfs /data --tmpfs /versions -e ROOT_ACCESS_KEY=e2e-key -e ROOT_SECRET_KEY=e2e-locked-secret versity/versitygw:v1.10.0@sha256:89cad13cc981986ee284cbafea4613f9533ce6fd5f37a2c96c4c4fb8adb3a316 posix --versioning-dir /versions /data >/dev/null'
+s3() { inside "docker run --rm --network quire-data -e AWS_ACCESS_KEY_ID=e2e-key -e AWS_SECRET_ACCESS_KEY=e2e-locked-secret -e AWS_DEFAULT_REGION=us-east-1 amazon/aws-cli:2.31.1@sha256:5006ff9131b0559e277a81ffdce20f90edd7fb2ecc82a3d8e3132939cda28288 --endpoint-url http://locked-s3:7070 $1"; }
+until s3 's3api list-buckets' >/dev/null 2>&1; do sleep 1; done
+s3 's3api create-bucket --bucket open' >/dev/null
+s3 's3api create-bucket --bucket locked --object-lock-enabled-for-bucket' >/dev/null
+s3 's3api put-object-lock-configuration --bucket locked --object-lock-configuration ObjectLockEnabled=Enabled,Rule={DefaultRetention={Mode=COMPLIANCE,Days=30}}'
+locked_setup() { inside "QUIRE_SERVER_BACKUP_SETUP_SECRET_KEY=e2e-locked-secret quire-server backups:setup --repository=s3:http://locked-s3:7070/$1 --access-key=e2e-key --region=us-east-1 --yes 2>&1" | tr -s ' \n' ' '; }
+check 'a bucket that keeps nothing deleted is said to be unprotected, at setup' "locked_setup open/server | grep -q 'aren.t protected: the bucket doesn.t keep versions'"
+check 'one with Object Lock is proved protected' "locked_setup locked/server | grep -Eq 'are protected: what.s deleted stays recoverable for (29|30) days'"
+inside 'quire-server backups:now >/dev/null 2>&1'
+check 'every night says so, and that every backup it made is there' "inside 'quire-server status' | grep -q 'stays recoverable' && inside 'quire-server status' | grep -q 'Every backup this server made and keeps is there'"
+# Someone with server.env deletes them all, with its own keys
+sleep 2
+before=$(inside 'date -u +%Y-%m-%dT%H:%M:%SZ')
+sleep 2
+s3 's3 rm --recursive --quiet s3://locked/server'
+inside 'quire-server backups:now >/dev/null 2>&1' || true
+# What "status" says once the agent's next round (a minute at most) has made it a problem
+status_says() { for _ in $(seq 24); do if inside 'quire-server status' | tr -s ' \n' ' ' | grep -q "$1"; then return 0; fi; sleep 5; done; return 1; }
+check 'that they are gone is a problem, the same night' "status_says 'The backup repository is gone from the bucket, with the [0-9]* backups this server made.*backups:recover'"
+inside "quire-server backups:recover --before=$before --yes 2>&1" | tee "$logs"/recover.log | sed 's/^/    /'
+check 'they come back as they were, with the server'\''s own keys' "grep -q 'Brought back [1-9][0-9]* file' $logs/recover.log && inside 'quire-server backups jane' | grep -qE '^ +[0-9a-f]{8} ' && inside 'quire-server backups:check 2>&1' | grep -q 'The backups check out'"
+inside 'quire-server backups:now >/dev/null 2>&1' || true
+check 'and the next night finds them all there' "inside 'quire-server status' | grep -q 'Every backup this server made and keeps is there'"
+inside 'docker rm -f locked-s3 >/dev/null'
 fi
 
 if upgrading; then
