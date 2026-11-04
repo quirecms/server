@@ -20,7 +20,7 @@ services:
             - '../src/Notify/{Problem,EmailChannel,WebhookChannel}.php'
             - '../src/Operation/{Operation,SiteRequest,AddedSite}.php'
             - '../src/Process/{ProcessResult,ProcessFailed}.php'
-            - '../src/Update/{Lock,UpdatePlan,SkeletonFiles,UpdateFailed}.php'
+            - '../src/Update/{Lock,UpdatePlan,SkeletonFiles,UpdateFailed,CodeNotReleased}.php'
             - '../src/Git/Repository.php'
             - '../src/Network/{Ipv4Cidr,SiteSubnets}.php'
             - '../src/Release/{Release,Version,ReleaseVerificationFailed,Feed}.php'

@@ -245,6 +245,42 @@ final class SiteManagerTest extends RegistryTestCase
         self::assertSame(Site::RUNNING, $this->manager()->add($this->request(), 'cli', 'darko', static fn (): null => null)->site->status);
     }
 
+    public function testCodeQuireDidntReleaseIsNeverBuilt(): void
+    {
+        // Packagist serves quire/core 0.1.3 from another commit than the one Quire released (a moved tag)
+        $this->script['composer create-project'] = static function (array $command): ProcessResult {
+            mkdir(self::argument($command, 3), 0o755, true);
+            file_put_contents(self::argument($command, 3).'/compose.yaml', "services: {}\n");
+            $commit = str_repeat('e', 40);
+            file_put_contents(self::argument($command, 3).'/composer.lock', (string) json_encode(['packages' => [['name' => 'quire/core', 'version' => 'v0.1.3', 'dist' => ['type' => 'zip', 'url' => 'https://api.github.com/repos/quirecms/core/zipball/'.$commit, 'reference' => $commit]]]]));
+
+            return self::ok($command, "Installing quire/skeleton (v0.1.3)\n");
+        };
+        $this->script['curl -fsSL'] = static function (array $command): ProcessResult {
+            if (\in_array('%{url_effective}', $command, true)) {
+                return self::ok($command, 'https://github.com/quirecms/framework/releases/tag/v0.1.3');
+            }
+
+            $at = array_search('-o', $command, true);
+            $last = self::argument($command, \count($command) - 1);
+            $release = ['version' => '0.1.3', 'date' => '2026-11-04', 'security' => [], 'notes' => 'N.', 'upgrade' => null, 'requires' => ['php' => '>=8.5.11', 'postgresql' => 18, 'server_contract' => 1], 'packages' => ['quire/core' => str_repeat('d', 40)]];
+            file_put_contents(self::argument($command, \is_int($at) ? $at + 1 : 0), str_ends_with($last, '.json') && !str_ends_with($last, 'sigstore.json') ? (string) json_encode(['schema' => 1, 'releases' => [$release]]) : '{}');
+
+            return self::ok($command, '');
+        };
+        $this->script['cosign verify-blob'] = static fn (array $command): ProcessResult => self::ok($command, '');
+
+        try {
+            $this->manager(checksCode: true)->add($this->request(), 'cli', 'darko', static fn (): null => null);
+            self::fail('It was built.');
+        } catch (\RuntimeException $e) {
+            self::assertStringContainsString('quire/core 0.1.3 isn\'t the code Quire released', $e->getMessage());
+        }
+
+        self::assertNotContains('build', array_map(static fn (array $command): string => $command[8] ?? '', $this->commands), 'Nothing was built.');
+        $this->assertNothingLeft();
+    }
+
     public function testRestoringABackupAsANewSite(): void
     {
         [$code, $backup] = $this->backedUpSite();
@@ -728,7 +764,7 @@ final class SiteManagerTest extends RegistryTestCase
         self::assertFileDoesNotExist($this->paths->site($this->name));
     }
 
-    private function manager(): SiteManager
+    private function manager(bool $checksCode = false): SiteManager
     {
         $runner = new readonly class($this) implements ProcessRunner {
             public function __construct(private SiteManagerTest $test)
@@ -755,7 +791,7 @@ final class SiteManagerTest extends RegistryTestCase
             new SkeletonInstaller($runner),
             $this->databases,
             new \Quire\Server\Site\SiteFiles(),
-            $compose = new Compose($runner, new ComposePolicy(), new ComposeFiles(), new RuntimeImages($runner, new RuntimeFloors($this->connection, $this->schema)), new RuntimeBuilds($this->connection, $this->schema), GateFixture::gate($runner, $this->root, $this->name->value, 'kim', 'old-site'), GateFixture::builders($runner, $this->root)),
+            $compose = new Compose($runner, new ComposePolicy(), new ComposeFiles(), new RuntimeImages($runner, new RuntimeFloors($this->connection, $this->schema)), new RuntimeBuilds($this->connection, $this->schema), GateFixture::gate($runner, $this->root, $this->name->value, 'kim', 'old-site'), GateFixture::builders($runner, $this->root), $checksCode ? new \Quire\Server\Update\CodeCheck(new \Quire\Server\Release\QuireFeed(new \Quire\Server\Release\GitHubReleases($runner))) : null),
             $this->frontDoor,
             $this->paths,
             new Git($runner, $keys = new DeployKeys($runner, $this->paths)),

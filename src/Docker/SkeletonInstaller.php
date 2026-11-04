@@ -23,8 +23,10 @@ final readonly class SkeletonInstaller
 
     /**
      * @param (\Closure(string): void)|null $output
+     *
+     * @return string|null The version Composer installed ("0.1.2"), when it said
      */
-    public function create(string $directory, string $version, ?\Closure $output = null): void
+    public function create(string $directory, string $version, ?\Closure $output = null): ?string
     {
         if (1 !== preg_match(self::VERSION, $version)) {
             throw new \InvalidArgumentException(\sprintf('"%s" isn\'t a Quire version, e.g. "^0.1" or "0.2.0".', $version));
@@ -35,18 +37,29 @@ final readonly class SkeletonInstaller
         }
 
         $home = sys_get_temp_dir().'/composer-'.bin2hex(random_bytes(6));
+        $said = '';
 
         try {
-            $this->runner->run(
+            $result = $this->runner->run(
                 ['composer', 'create-project', 'quire/skeleton', $directory, $version, '--no-install', '--no-scripts', '--no-plugins', '--no-interaction', '--no-progress', '--no-ansi'],
                 ['COMPOSER_HOME' => $home, 'COMPOSER_CACHE_DIR' => $home.'/cache', 'COMPOSER_NO_AUDIT' => '1'],
                 timeout: 600,
-                output: $output,
+                output: static function (string $line) use ($output, &$said): void {
+                    $said .= $line;
+
+                    if ($output instanceof \Closure) {
+                        $output($line);
+                    }
+                },
             )->orFail('Getting the site\'s files (composer create-project quire/skeleton)');
+            $said .= $result->output.$result->errorOutput;
         } finally {
             new \Symfony\Component\Filesystem\Filesystem()->remove($home);
         }
 
         chmod($directory, 0o750);
+
+        // "Installing quire/skeleton (v0.1.2)"
+        return 1 === preg_match('#Installing quire/skeleton \(v?([0-9][0-9A-Za-z.-]*)\)#', $said, $match) ? $match[1] : null;
     }
 }
