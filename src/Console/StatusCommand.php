@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Quire\Server\Console;
 
 use Quire\Server\Backup\BackupSettings;
+use Quire\Server\Backup\BackupSigning;
 use Quire\Server\Backup\OffsiteBackups;
 use Quire\Server\Notify\Certificates;
 use Quire\Server\Notify\Notifier;
@@ -43,6 +44,7 @@ final readonly class StatusCommand
         private BackupSettings $backups,
         private AutomaticUpdates $updates,
         private Certificates $certificates,
+        private BackupSigning $signing,
     ) {
     }
 
@@ -134,6 +136,10 @@ final readonly class StatusCommand
         $io->writeln(null === $last
             ? \sprintf('Backups off the server: from %02d:00 UTC, none made yet', (int) $this->backups->hour)
             : \sprintf('Backups off the server: last %s, %s (%s)', $this->when(new \DateTimeImmutable($last['started_at'])), $last['status'], $last['id']));
+
+        if ($this->signing->exists()) {
+            $io->writeln('Their public key (keep it with their password: restoring on another machine checks it): '.$this->signing->publicKey());
+        }
     }
 
     private function sites(SymfonyStyle $io): void

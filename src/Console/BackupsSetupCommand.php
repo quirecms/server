@@ -5,7 +5,9 @@ declare(strict_types=1);
 namespace Quire\Server\Console;
 
 use Quire\Server\Backup\BackupFailed;
+use Quire\Server\Backup\BackupLedger;
 use Quire\Server\Backup\BackupSettings;
+use Quire\Server\Backup\BackupSigning;
 use Quire\Server\Backup\Restic;
 use Quire\Server\Process\ProcessRunner;
 use Quire\Server\ServerUpdate\ServerFolder;
@@ -42,6 +44,8 @@ final readonly class BackupsSetupCommand
         private ServerFolder $folder,
         private ServerStack $stack,
         private BackupSettings $current,
+        private BackupSigning $signing,
+        private BackupLedger $ledger,
         private string $cache,
         private bool $inUpdater,
     ) {
@@ -61,6 +65,8 @@ final readonly class BackupsSetupCommand
         string $host = 'quire-server',
         #[Option(description: 'Don\'t ask (the secret key and password from the environment)')]
         bool $yes = false,
+        #[Option(description: 'With --existing: the backups under --host are this server\'s own (made before it recorded them)')]
+        bool $sameServer = false,
     ): int {
         if (!$this->inUpdater) {
             $io->error('Backups are set up from the updater (it saves server.env): run "quire-server backups:setup" on the machine.');
@@ -109,7 +115,11 @@ final readonly class BackupsSetupCommand
             if (!$existing) {
                 $io->writeln('  Creating the backup repository (encrypted with the new password)…');
                 $restic->init();
+            } elseif (!$sameServer) {
+                $this->hostIsFree($restic, $settings->repository, $settings->host);
             }
+
+            $this->signing->ensure();
         } catch (\InvalidArgumentException|BackupFailed $e) {
             $io->error(['Nothing was saved.', $e->getMessage()]);
 
@@ -151,9 +161,28 @@ final readonly class BackupsSetupCommand
             ]);
         }
 
+        $io->note([
+            'This server signs its backups. Its public key (not a secret; "quire-server status" shows it again):',
+            $this->signing->publicKey(),
+            'Keep it with the backups\' password: restoring them on another machine checks it, so that a backup someone else put in the bucket isn\'t taken for this server\'s.',
+        ]);
+
         $io->success('Backups off the server are set up: every night from '.$this->current->hour.':00 UTC. "quire-server backups:now" makes the first one now.');
 
         return Command::SUCCESS;
+    }
+
+    /**
+     * Another server's backups under that name would be mixed with this one's (and its retention would
+     * forget theirs): refused, unless they're this server's own.
+     */
+    private function hostIsFree(Restic $restic, string $repository, string $host): void
+    {
+        if ([] === $restic->snapshots([], $host) || [] !== $this->ledger->kept($repository, $host)) {
+            return;
+        }
+
+        throw new BackupFailed(\sprintf('Backups of a server named "%s" are in that bucket, and this server didn\'t make them: give this one a name of its own (--host=<name>), and restore the other\'s with --from-server=%1$s. If they\'re this server\'s own, made before it recorded its backups: --same-server.', $host));
     }
 
     private function secret(string $name): ?string

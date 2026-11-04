@@ -27,6 +27,13 @@ use Symfony\Component\Filesystem\Filesystem;
  * manifest of its sites, the front door's domains, the deploy keys), then the retention (each site's on its own); on Sundays, the storage only
  * forgotten backups used is freed, and a part of the stored data is read back to check it. A site
  * that fails doesn't stop the others; the night's operation says which.
+ *
+ * Each snapshot made is recorded in the registry, and the list of those kept is backed up after them,
+ * signed with the server's own key (D-36). A restore takes only a snapshot this server made, or one
+ * the list of a server it trusts vouches for: anyone with the repository's password can write
+ * snapshots, but not sign them.
+ *
+ * @phpstan-type Snapshot array{id: string, time: string, tags: list<string>, paths: list<string>}
  */
 final readonly class OffsiteBackups
 {
@@ -59,6 +66,8 @@ final readonly class OffsiteBackups
         private ProcessRunner $runner,
         private string $dockerHost,
         private string $postgresAdminUrl,
+        private BackupLedger $ledger,
+        private BackupSigning $signing,
         private ?\Closure $now = null,
         private Filesystem $filesystem = new Filesystem(),
     ) {
@@ -109,6 +118,11 @@ final readonly class OffsiteBackups
     {
         $this->settings->validate();
         $operation = $this->operations->start(self::NIGHTLY, null, [], $channel, $requestedBy);
+
+        if ($this->signing->ensure()) {
+            $operation->line('The server\'s key for its backups was made: "quire-server status" shows its public key, to keep with the backups\' password.');
+        }
+
         $this->secrets($operation);
         $log = static function (string $line) use ($operation, $say): void {
             $operation->line($line);
@@ -150,8 +164,16 @@ final readonly class OffsiteBackups
             }
 
             $sunday = '7' === $this->now()->setTimezone(new \DateTimeZone('UTC'))->format('N');
-            $this->restic->forget(prune: $sunday);
+            $this->ledger->forgotten($this->restic->forget(prune: $sunday));
             $log($sunday ? 'Old backups forgotten, and their storage freed' : 'Old backups forgotten');
+
+            try {
+                $this->vouch();
+                $log('The list of the backups this server made: signed, and backed up');
+            } catch (\Throwable $e) {
+                $log('The list of the backups this server made: FAILED: '.$e->getMessage());
+                $outcome['failed'][] = 'its list of them';
+            }
 
             if ($sunday) {
                 $check = $this->restic->check(self::CHECK_PERCENT);
@@ -188,9 +210,11 @@ final readonly class OffsiteBackups
         $this->secrets($operation);
 
         try {
+            $this->signing->ensure();
             $say('Backing it up, and sending it off the server (encrypted)');
             $snapshot = $this->lock->run($name, fn (): string => $this->backUpSite($site));
             $operation->line('Snapshot '.$snapshot);
+            $this->vouch();
         } catch (\Throwable $e) {
             $operation->fail($e->getMessage());
 
@@ -223,7 +247,7 @@ final readonly class OffsiteBackups
      *
      * @return array{id: string, time: string} The snapshot restored
      */
-    public function restore(SiteName $name, string $snapshot, string $channel, string $requestedBy, \Closure $say): array
+    public function restore(SiteName $name, string $snapshot, string $channel, string $requestedBy, \Closure $say, bool $unsigned = false): array
     {
         $this->settings->validate();
 
@@ -231,15 +255,15 @@ final readonly class OffsiteBackups
             throw new \InvalidArgumentException(\sprintf('"%s" isn\'t a backup: "latest", or an ID from "quire-server backups %s".', SiteName::printable($snapshot), $name));
         }
 
-        $snapshots = $this->list($name);
-        $chosen = array_find($snapshots, static fn ($candidate): bool => 'latest' === $snapshot || str_starts_with($candidate['id'], $snapshot));
-
         // Only one of the site's own: an ID of another site's backup isn't found among these.
+        $chosen = $this->choose($this->list($name), $snapshot, $name, BackupLedger::SITE, null, null, $unsigned, $say);
         $file = null === $chosen ? null : $this->backupFile($chosen['paths']);
 
         if (null === $chosen || null === $file) {
             throw new \DomainException(\sprintf('The site "%s" has no such backup off the server ("quire-server backups %1$s" lists them).', $name));
         }
+
+        $this->roomFor($chosen, [$file, ...$this->dumpOf($chosen['paths'], $file)]);
 
         $into = $this->paths->backups($name).'/from-off-server-'.substr($chosen['id'], 0, 8);
         $this->filesystem->remove($into);
@@ -267,14 +291,15 @@ final readonly class OffsiteBackups
      *
      * @return array{id: string, time: string} The snapshot restored
      */
-    public function restoreAsNew(SiteName $source, string $snapshot, SiteName $name, array $domains, ?string $server, string $channel, string $requestedBy, \Closure $say): array
+    public function restoreAsNew(SiteName $source, string $snapshot, SiteName $name, array $domains, ?string $server, string $channel, string $requestedBy, \Closure $say, ?string $signedBy = null, bool $unsigned = false): array
     {
         $this->settings->validate();
 
         if (1 !== preg_match(Restic::SNAPSHOT, $snapshot)) {
             throw new \InvalidArgumentException(\sprintf('"%s" isn\'t a backup: "latest", or an ID from "quire-server backups %s".', SiteName::printable($snapshot), $source));
         }
-        $chosen = array_find($this->list($source, $server), static fn ($candidate): bool => 'latest' === $snapshot || str_starts_with($candidate['id'], $snapshot));
+
+        $chosen = $this->choose($this->list($source, $server), $snapshot, $source, BackupLedger::SITE, $server, $signedBy, $unsigned, $say);
 
         if (null === $chosen) {
             throw new \DomainException(\sprintf('There\'s no such backup of "%s" off the server%s.', $source, null === $server ? '' : ' (from '.$server.')'));
@@ -299,9 +324,9 @@ final readonly class OffsiteBackups
      *
      * @return list<array{site: string, outcome: string, detail: string}>
      */
-    public function restoreServer(string $server, string $channel, string $requestedBy, \Closure $say): array
+    public function restoreServer(string $server, string $channel, string $requestedBy, \Closure $say, ?string $signedBy = null, bool $unsigned = false): array
     {
-        $manifest = $this->manifest($server);
+        $manifest = $this->manifest($server, $signedBy, $unsigned, $say);
         $outcomes = [];
 
         try {
@@ -321,7 +346,7 @@ final readonly class OffsiteBackups
                         continue;
                     }
 
-                    $chosen = $this->list($name, $server)[0] ?? throw new \DomainException('it has no backup');
+                    $chosen = $this->choose($this->list($name, $server), 'latest', $name, BackupLedger::SITE, $server, $signedBy, $unsigned, static fn (string $line) => $say('  '.$line)) ?? throw new \DomainException('it has no backup');
                     $repository = null;
 
                     if (null !== $entry['git']) {
@@ -353,10 +378,10 @@ final readonly class OffsiteBackups
      *
      * @return array{sites: list<array{name: string, domains: list<string>, git: array{url: string, branch: string, poll: bool}|null, updates: string}>, keys: string, into: string, time: string}
      */
-    public function manifest(string $server): array
+    public function manifest(string $server, ?string $signedBy = null, bool $unsigned = false, ?\Closure $say = null): array
     {
         $this->settings->validate();
-        $chosen = $this->list(null, $server)[0] ?? throw new \DomainException(\sprintf('There\'s no backup of the server "%s" off the server.', $server));
+        $chosen = $this->choose($this->list(null, $server), 'latest', null, BackupLedger::SERVER, $server, $signedBy, $unsigned, $say ?? static function (): void {}) ?? throw new \DomainException(\sprintf('There\'s no backup of the server "%s" off the server.', $server));
         $file = null;
         $keys = null;
 
@@ -401,6 +426,158 @@ final readonly class OffsiteBackups
     }
 
     /**
+     * The snapshot asked for ("latest": the newest one vouched for), if it's vouched for: made by this
+     * server (its registry says so), or by the server named, as the newest list it signed says, with a
+     * key this server trusts for it (or the one given, then trusted). Anything else is anyone's with
+     * the repository's password: refused unless the owner says otherwise, knowing where it comes from.
+     *
+     * @param list<Snapshot>         $snapshots Newest first
+     * @param \Closure(string): void $say
+     *
+     * @return Snapshot|null Null: none such
+     */
+    private function choose(array $snapshots, string $asked, ?SiteName $site, string $kind, ?string $server, ?string $signedBy, bool $unsigned, \Closure $say): ?array
+    {
+        $host = $server ?? $this->settings->host;
+        $vouched = $this->vouched($host, $signedBy);
+        $ours = static function (array $snapshot) use ($vouched, $kind, $site): bool {
+            /** @var Snapshot $snapshot */
+            $record = $vouched[$snapshot['id']] ?? null;
+
+            return null !== $record && $kind === $record['kind'] && $site?->value === $record['site'];
+        };
+        $matching = 'latest' === $asked ? $snapshots : array_values(array_filter($snapshots, static fn (array $snapshot): bool => str_starts_with($snapshot['id'], $asked)));
+        $chosen = array_find($matching, $ours);
+
+        if (null !== $chosen) {
+            return $chosen;
+        }
+
+        $chosen = $matching[0] ?? null;
+
+        if (null === $chosen) {
+            return null;
+        }
+
+        $what = $site instanceof SiteName ? \sprintf('"%s"', $site) : \sprintf('the server "%s"', $host);
+
+        if (!$unsigned) {
+            throw new BackupFailed(\sprintf('The backup %s of %s isn\'t one %s: anyone with the backups\' password can make one, with anyone\'s data. %s If you know where it comes from: --unsigned.', substr($chosen['id'], 0, 8), $what, $host === $this->settings->host ? 'this server made (or it was made before servers kept a record of their backups)' : \sprintf('"%s" signed%s', $host, null === $signedBy ? ' with a key this server trusts' : ' with that key'), $host === $this->settings->host ? '' : \sprintf('Give "%s"\'s public key ("quire-server status" on it showed it): --signed-by=ed25519:….', $host)));
+        }
+
+        $say(\sprintf('Not verified (--unsigned): the backup %s of %s, as you asked', substr($chosen['id'], 0, 8), $what));
+
+        return $chosen;
+    }
+
+    /**
+     * The snapshots of a server vouched for, by ID: this server's own from its registry; another's (or
+     * this one's, after a whole server was restored) from the newest list signed by a key trusted for it.
+     *
+     * @return array<string, array{kind: string, site: ?string}>
+     */
+    private function vouched(string $host, ?string $signedBy): array
+    {
+        $vouched = [];
+
+        if ($host === $this->settings->host) {
+            foreach ($this->ledger->kept($this->settings->repository, $host) as $id => $record) {
+                $vouched[$id] = ['kind' => $record['kind'], 'site' => $record['site']];
+            }
+        }
+
+        if (null !== $signedBy && !BackupSigning::valid($signedBy)) {
+            throw new \InvalidArgumentException(\sprintf('"%s" isn\'t a public key as servers show them ("ed25519:…").', $signedBy));
+        }
+
+        $keys = null === $signedBy ? $this->ledger->trusted($host) : [$signedBy];
+
+        if ([] === $keys) {
+            return $vouched;
+        }
+
+        $lists = array_reverse($this->restic->snapshots([Provenance::TAG], $host));
+        $failure = null;
+
+        // The newest list that checks out (a planted one doesn't hide the real one)
+        foreach (\array_slice($lists, 0, 5) as $list) {
+            $into = $this->paths->root.'/backups/.provenance-'.bin2hex(random_bytes(4));
+            $this->filesystem->mkdir($into, 0o700);
+
+            try {
+                $path = array_find($list['paths'], static fn (string $path): bool => str_ends_with($path, '/'.Provenance::FILE));
+
+                if (null === $path) {
+                    continue;
+                }
+
+                $file = $this->restic->restoreFile($list['id'], $path, $into);
+
+                foreach (Provenance::verify((string) file_get_contents($file, length: 64 << 20), $host, $keys) as $id => $record) {
+                    $vouched[$id] ??= ['kind' => $record['kind'], 'site' => $record['site']];
+                }
+
+                if (null !== $signedBy) {
+                    $this->ledger->trust($signedBy, $host);
+                }
+
+                return $vouched;
+            } catch (BackupFailed $e) {
+                $failure = $e;
+            } finally {
+                $this->filesystem->remove($into);
+            }
+        }
+
+        if (null !== $signedBy && $failure instanceof BackupFailed) {
+            throw $failure;
+        }
+
+        return $vouched;
+    }
+
+    /**
+     * The list of the snapshots this server made and keeps, signed, backed up in a snapshot of its own.
+     */
+    private function vouch(): void
+    {
+        $directory = $this->paths->root.'/backups/server';
+        $this->filesystem->mkdir($directory, 0o700);
+        $file = $directory.'/'.Provenance::FILE;
+        file_put_contents($file, Provenance::document($this->settings->host, $this->ledger->kept($this->settings->repository, $this->settings->host), $this->signing, $this->now()));
+
+        try {
+            $this->restic->backup([$file], [Provenance::TAG]);
+        } finally {
+            $this->filesystem->remove($file);
+        }
+    }
+
+    /**
+     * Refuses a restore that would fill the disk: what it gets must leave a tenth of it free.
+     *
+     * @param Snapshot     $snapshot
+     * @param list<string> $paths
+     */
+    private function roomFor(array $snapshot, array $paths): void
+    {
+        $size = $this->restic->size($snapshot['id'], $paths);
+        // Where it goes, or the nearest folder there is (the disk it's on)
+        $where = $this->paths->root.'/backups';
+
+        while (!is_dir($where) && '/' !== $where) {
+            $where = \dirname($where);
+        }
+
+        $free = (float) @disk_free_space($where);
+        $total = (float) @disk_total_space($where);
+
+        if ($total > 0 && $size > $free - $total / 10) {
+            throw new BackupFailed(\sprintf('That backup takes %d MB once got, and the disk has %d MB free (a tenth of it is kept free): make room first.', intdiv($size, 1024 ** 2), (int) ($free / 1024 ** 2)));
+        }
+    }
+
+    /**
      * Restores a site's backup as a new site.
      *
      * @param array{id: string, time: string, tags: list<string>, paths: list<string>} $chosen
@@ -422,6 +599,8 @@ final readonly class OffsiteBackups
             throw new \DomainException('That backup was made before sites\' folders were backed up: it can only be restored to its site ("backups:restore" without --as).');
         }
 
+        $restored = [$file, ...$this->dumpOf($chosen['paths'], $file), ...($repository instanceof Repository ? [] : [$folder])];
+        $this->roomFor($chosen, array_values(array_filter($restored, is_string(...))));
         $into = $this->paths->root.'/backups/.restoring-'.$name->value.'-'.bin2hex(random_bytes(4));
         $this->filesystem->mkdir($into, 0o700);
 
@@ -489,11 +668,14 @@ final readonly class OffsiteBackups
         $git = null !== $this->repositories->of($site->name);
 
         try {
-            return $this->restic->backup(
+            $snapshot = $this->restic->backup(
                 $git ? [$file, $dump] : [$file, $dump, $folder],
                 [self::SITE_TAG, 'site:'.$site->name->value, ...($git ? [self::GIT_TAG] : [])],
                 array_map(static fn (string $built): string => $folder.'/'.$built, self::BUILT),
             );
+            $this->ledger->record($this->settings->repository, $snapshot, $this->settings->host, BackupLedger::SITE, $site->name->value, $this->now());
+
+            return $snapshot;
         } finally {
             $this->filesystem->remove([$file, $dump]);
         }
@@ -551,7 +733,10 @@ final readonly class OffsiteBackups
         chmod($manifest, 0o600);
 
         try {
-            return $this->restic->backup(array_values(array_filter([$dump, $manifest, $this->paths->domains(), $this->paths->root.'/server/keys'], file_exists(...))), [self::SERVER_TAG]);
+            $snapshot = $this->restic->backup(array_values(array_filter([$dump, $manifest, $this->paths->domains(), $this->paths->root.'/server/keys'], file_exists(...))), [self::SERVER_TAG]);
+            $this->ledger->record($this->settings->repository, $snapshot, $this->settings->host, BackupLedger::SERVER, null, $this->now());
+
+            return $snapshot;
         } finally {
             $this->filesystem->remove([$dump, $manifest]);
         }

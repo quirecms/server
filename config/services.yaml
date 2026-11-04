@@ -167,6 +167,10 @@ services:
         arguments:
             $cache: '%quire_server.root%/backups/.restic-cache'
 
+    # The server's own key for its backups (D-36): not in server.env, not in anything it backs up
+    Quire\Server\Backup\BackupSigning:
+        arguments: ['%quire_server.root%/server/signing/backups.key']
+
     Quire\Server\Backup\OffsiteBackups:
         arguments:
             $dockerHost: '%env(DOCKER_HOST)%'
