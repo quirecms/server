@@ -32,7 +32,9 @@ if (false === $report) {
 
 $counts = [];
 
-foreach ($report->xpath('//file') ?: [] as $file) {
+$files = $report->xpath('//file');
+
+foreach (is_array($files) ? $files : [] as $file) {
     $path = (string) preg_replace('#^.*/src/#', '', (string) $file['name']);
     $metrics = $file->metrics;
 
