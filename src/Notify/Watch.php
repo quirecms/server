@@ -15,7 +15,7 @@ use Quire\Server\Site\ServerPaths;
  * by each job: every job records its operation, so a failure the owner didn't see (the agent's own,
  * at night) is the latest operation of its kind having failed; a later one that succeeds, whoever ran
  * it, ends it. Also: nightly backups that stopped running, certificates that don't come or aren't
- * renewed, and a disk filling up.
+ * renewed, a disk filling up, and what the nightly checks of the backups found (Checks).
  */
 final readonly class Watch
 {
@@ -55,6 +55,7 @@ final readonly class Watch
         private BackupSettings $backups,
         private Certificates $certificates,
         private ServerPaths $paths,
+        private Checks $checks,
         private string $schema = Schema::NAME,
         private ?\Closure $now = null,
         private ?\Closure $disk = null,
@@ -66,7 +67,7 @@ final readonly class Watch
      */
     public function problems(): array
     {
-        return [...$this->failures(), ...$this->lateBackups(), ...$this->certificatesProblems(), ...$this->diskProblems()];
+        return [...$this->failures(), ...$this->lateBackups(), ...$this->certificatesProblems(), ...$this->diskProblems(), ...($this->backups->configured() ? $this->checks->problems() : [])];
     }
 
     /**

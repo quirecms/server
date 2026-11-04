@@ -68,6 +68,7 @@ final readonly class OffsiteBackups
         private string $postgresAdminUrl,
         private BackupLedger $ledger,
         private BackupSigning $signing,
+        private BackupWatch $watch,
         private ?\Closure $now = null,
         private Filesystem $filesystem = new Filesystem(),
     ) {
@@ -136,6 +137,9 @@ final readonly class OffsiteBackups
             }
 
             if (!$this->restic->opens()) {
+                // Gone, with backups this server made: someone else's doing, told as such
+                $log($this->watch->repository());
+
                 throw new BackupFailed('The backup repository doesn\'t exist: "quire-server backups:setup" creates it.');
             }
 
@@ -174,6 +178,8 @@ final readonly class OffsiteBackups
                 $log('The list of the backups this server made: FAILED: '.$e->getMessage());
                 $outcome['failed'][] = 'its list of them';
             }
+
+            $this->watch->nightly($log);
 
             if ($sunday) {
                 $check = $this->restic->check(self::CHECK_PERCENT);

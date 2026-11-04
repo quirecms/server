@@ -324,7 +324,7 @@ final class OffsiteBackupsTest extends RegistryTestCase
         $updater = new SiteUpdater($this->registry, new SiteUpdates($this->connection, $this->schema), $repositories, $operations, new SiteLock($this->connection, $this->schema), $sites, $compose, new Images($this->runner, GateFixture::gate($this->runner, $this->root, 'jane', 'jane-copy', 'old-site')), $git, $this->paths);
         $settings = new BackupSettings('s3:https://host/bucket', 'the-key', 'the-secret', 'a-long-random-password-0123456789');
 
-        return new OffsiteBackups($settings, new Restic($this->runner, $settings, $this->root.'/backups/.restic-cache'), $this->registry, $sites, new SiteLock($this->connection, $this->schema), $updater, $repositories, new UpdatePolicies($this->connection, $this->schema), $operations, $this->paths, $this->runner, GateFixture::TRUSTED, 'postgresql://postgres:x@quire-database:5432/postgres', $this->ledger, new BackupSigning($this->root.'/server/signing/backups.key'));
+        return new OffsiteBackups($settings, new Restic($this->runner, $settings, $this->root.'/backups/.restic-cache'), $this->registry, $sites, new SiteLock($this->connection, $this->schema), $updater, $repositories, new UpdatePolicies($this->connection, $this->schema), $operations, $this->paths, $this->runner, GateFixture::TRUSTED, 'postgresql://postgres:x@quire-database:5432/postgres', $this->ledger, new BackupSigning($this->root.'/server/signing/backups.key'), new \Quire\Server\Backup\BackupWatch($settings, new Restic($this->runner, $settings, $this->root.'/backups/.restic-cache'), $this->ledger, new \Quire\Server\Notify\Checks($this->connection, $this->schema), new FakeBucket()->client()));
     }
 
     /**

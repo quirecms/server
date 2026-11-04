@@ -286,4 +286,27 @@ final class Schema
                 SQL,
         ];
     }
+
+    /**
+     * What the nightly checks found (D-37): whether the bucket keeps what's deleted, whether the
+     * backups this server made are all still there. The watch tells the owner of those that fail.
+     *
+     * @return list<string>
+     */
+    public static function version11(string $schema = self::NAME): array
+    {
+        $s = '"'.str_replace('"', '""', $schema).'"';
+
+        return [
+            <<<SQL
+                CREATE TABLE {$s}.check_result (
+                    name text PRIMARY KEY,
+                    failing boolean NOT NULL,
+                    summary text NOT NULL,
+                    advice text NOT NULL,
+                    checked_at timestamptz NOT NULL DEFAULT now()
+                )
+                SQL,
+        ];
+    }
 }

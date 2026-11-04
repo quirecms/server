@@ -4,10 +4,13 @@ declare(strict_types=1);
 
 namespace Quire\Server\Console;
 
+use Quire\Server\Backup\BackupProtection;
 use Quire\Server\Backup\BackupSettings;
 use Quire\Server\Backup\BackupSigning;
+use Quire\Server\Backup\BackupWatch;
 use Quire\Server\Backup\OffsiteBackups;
 use Quire\Server\Notify\Certificates;
+use Quire\Server\Notify\Checks;
 use Quire\Server\Notify\Notifier;
 use Quire\Server\Notify\Problems;
 use Quire\Server\Operation\OperationLog;
@@ -45,6 +48,7 @@ final readonly class StatusCommand
         private AutomaticUpdates $updates,
         private Certificates $certificates,
         private BackupSigning $signing,
+        private Checks $checks,
     ) {
     }
 
@@ -136,6 +140,14 @@ final readonly class StatusCommand
         $io->writeln(null === $last
             ? \sprintf('Backups off the server: from %02d:00 UTC, none made yet', (int) $this->backups->hour)
             : \sprintf('Backups off the server: last %s, %s (%s)', $this->when(new \DateTimeImmutable($last['started_at'])), $last['status'], $last['id']));
+
+        foreach ([BackupProtection::CHECK, BackupWatch::REPOSITORY] as $name) {
+            $check = $this->checks->get($name);
+
+            if (null !== $check) {
+                $io->writeln(($check['failing'] ? '<comment>'.$check['summary'].'</comment>' : $check['summary']).' (checked '.$this->when($check['checked_at']).')');
+            }
+        }
 
         if ($this->signing->exists()) {
             $io->writeln('Their public key (keep it with their password: restoring on another machine checks it): '.$this->signing->publicKey());

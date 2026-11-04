@@ -8,9 +8,11 @@ use Quire\Server\Backup\BackupLedger;
 use Quire\Server\Backup\BackupSettings;
 use Quire\Server\Backup\BackupSigning;
 use Quire\Server\Console\BackupsSetupCommand;
+use Quire\Server\Notify\Checks;
 use Quire\Server\Process\ProcessResult;
 use Quire\Server\ServerUpdate\ServerFolder;
 use Quire\Server\ServerUpdate\ServerStack;
+use Quire\Server\Tests\Backup\FakeBucket;
 use Quire\Server\Tests\Registry\RegistryTestCase;
 use Quire\Server\Tests\ScriptedRunner;
 use Symfony\Component\Console\Application;
@@ -32,10 +34,13 @@ final class BackupsSetupCommandTest extends RegistryTestCase
     /** Whether the bucket has a repository, with a snapshot of a server named quire-server */
     private bool $exists = false;
 
+    private FakeBucket $bucket;
+
     #[\Override]
     protected function setUp(): void
     {
         parent::setUp();
+        $this->bucket = new FakeBucket(FakeBucket::UNLOCKED);
         $this->root = sys_get_temp_dir().'/quire-backups-setup-'.bin2hex(random_bytes(6));
         new Filesystem()->dumpFile($this->root.'/server/server.env', self::BEFORE);
         $this->runner = new ScriptedRunner([
@@ -71,6 +76,20 @@ final class BackupsSetupCommandTest extends RegistryTestCase
         self::assertSame(0o700, fileperms(\dirname($key)) & 0o777);
         self::assertStringContainsString(new BackupSigning($key)->publicKey(), str_replace(["\n", ' '], '', $tester->getDisplay()));
         self::assertStringNotContainsString(base64_encode((string) base64_decode(trim((string) file_get_contents($key)), true)), $tester->getDisplay(), 'Never the key itself.');
+    }
+
+    public function testWhetherTheBucketProtectsTheBackupsIsSaid(): void
+    {
+        $tester = $this->tester();
+        $tester->execute(['--repository' => 's3:https://new.example.com/backups', '--access-key' => 'new', '--region' => 'fra1', '--yes' => true], ['interactive' => false]);
+        self::assertStringContainsString('aren\'t protected: these keys (server.env) can delete', (string) preg_replace('/\s+/', ' ', $tester->getDisplay()), 'Said, not refused: a backup that can be deleted beats none.');
+        self::assertTrue(new Checks($this->connection, $this->schema)->get('backups.protection')['failing'] ?? false);
+
+        $this->bucket = new FakeBucket(FakeBucket::COMPLIANCE, 30);
+        $tester = $this->tester();
+        $tester->execute(['--repository' => 's3:https://new.example.com/backups', '--access-key' => 'new', '--region' => 'fra1', '--yes' => true], ['interactive' => false]);
+        self::assertMatchesRegularExpression('/stays recoverable for (29|30) days/', $tester->getDisplay(), 'The fake bucket\'s clock is its own.');
+        self::assertFalse(new Checks($this->connection, $this->schema)->get('backups.protection')['failing'] ?? true);
     }
 
     public function testAnotherServersNameInTheBucketIsntTaken(): void
@@ -131,6 +150,8 @@ final class BackupsSetupCommandTest extends RegistryTestCase
             new BackupSettings('s3:https://old.example.com/backups', 'old', 'old secret key', 'the old password'),
             new BackupSigning($this->root.'/server/signing/backups.key'),
             new BackupLedger($this->connection, $this->schema),
+            new Checks($this->connection, $this->schema),
+            $this->bucket->client(),
             $this->root.'/cache',
             true,
         ));
