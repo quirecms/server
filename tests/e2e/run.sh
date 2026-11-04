@@ -701,13 +701,24 @@ until inside 'quire-server operations --site=jane' | grep site.recover | grep -q
 check 'the agent puts the site back as it was before, by itself' "inside 'quire-server operations --site=jane' | grep -q 'site.recover.*succeeded' && [ \"\$(inside \"docker inspect jane-php-1 --format '{{.Image}}'\")\" = \"$before\" ] && ! inside 'test -e /srv/quire/backups/jane/release.json' && [ \"\$(inside \"curl -sk $resolve -o /dev/null -w '%{http_code}' https://jane.test/\")\" = 200 ]"
 
 echo '== Removing the site'
-inside 'quire-server site:remove jane --yes 2>&1' | sed 's/^/    /'
+inside 'quire-server site:remove jane --yes 2>&1' | tee "$logs"/remove.log | sed 's/^/    /'
+check 'it says how to bring it back' "grep -q 'site:restore-removed jane' $logs/remove.log"
 check 'its final backup is kept' "inside 'ls /srv/quire/backups/jane/final-*.tar'"
 check 'its folder is archived, not deleted' "inside 'ls -d /srv/quire/sites/.removed/jane-*'"
 # (Caddy keeps a certificate it already has in its cache: the handshake may still succeed, but nothing is served.)
 check 'it is no longer served (421)' "[ \"\$(inside \"curl -sk $resolve -o /dev/null -w '%{http_code}' https://jane.test/\")\" = 421 ]"
 check 'its containers are gone' "! inside 'docker ps -a --format \"{{.Names}}\"' | grep -q '^jane-'"
 check 'its database is gone' "pg \"SELECT count(*) FROM pg_database WHERE datname = 'site_jane'\" | grep -qx 0"
+
+echo '== A way back (M-19): a removed site brought back, a restore undone'
+inside 'quire-server site:restore-removed jane --yes 2>&1' | tee "$logs"/restore-removed.log | sed 's/^/    /'
+check 'a removed site comes back, with its data and its domains' "grep -q 'runs again' $logs/restore-removed.log && inside 'quire-server site:list' | grep -q 'jane .*running' && inside 'quire-server site:list' | grep -q www.jane.test && inside \"curl -sk $resolve https://jane.test/\" | grep -q Jane"
+final=$(inside 'ls /srv/quire/backups/jane/' | grep -m1 '^final-.*\.tar$')
+check 'its backups on the server are listed' "inside 'quire-server backups jane --local' | grep -q '$final'"
+inside "quire-server backups:restore jane --file=$final --yes 2>&1" | tee "$logs"/restore-file.log | sed 's/^/    /'
+check 'one of them restores it, and says how to undo that' "grep -q 'is as $final has it' $logs/restore-file.log && grep -q 'backups:restore jane --file=before-restore-' $logs/restore-file.log && inside \"curl -sk $resolve https://jane.test/\" | grep -q Jane"
+check 'another site'\''s, or a path elsewhere, is refused' "inside 'quire-server backups:restore jane --file=../demo/x.tar --yes 2>&1' | grep -q 'isn.t one of'"
+inside 'quire-server site:remove jane --yes >/dev/null 2>&1'
 
 fi
 

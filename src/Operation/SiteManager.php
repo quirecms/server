@@ -572,6 +572,108 @@ final readonly class SiteManager
     }
 
     /**
+     * Brings back a removed site (M-19), as it was when it was removed: its folder from where removing
+     * it archived it (sites/.removed/<name>-<time>), its data from its final backup, its domains as it
+     * had them (or those given). It gets settings of its own (its database, password and secret):
+     * everyone signs in again. The archive stays where it is. A Git mode site comes from its
+     * repository instead: add it from there, then restore its final backup into it.
+     *
+     * @param list<Domain>           $domains None: those it had
+     * @param \Closure(string): void $say
+     *
+     * @return array{site: Site, folder: string, backup: string}
+     */
+    public function restoreRemoved(SiteName $name, array $domains, string $channel, string $requestedBy, \Closure $say): array
+    {
+        $site = $this->registry->get($name);
+
+        if (!$site instanceof Site || Site::REMOVED !== $site->status) {
+            throw new \DomainException($site instanceof Site ? \sprintf('"%s" isn\'t removed: it\'s %s.', $name, $site->status) : \sprintf('There\'s no removed site named "%s" ("quire-server site:list --removed").', $name));
+        }
+
+        // Its newest archive: "<name>-<time>" exactly (another site's name may start with its)
+        $found = glob($this->paths->sites().'/.removed/'.$name->value.'-*', \GLOB_ONLYDIR);
+        $archives = array_values(array_filter(false === $found ? [] : $found, static fn (string $path): bool => 1 === preg_match('/^'.preg_quote($name->value, '/').'-\d{8}-\d{6}\z/', basename($path)) && !is_link($path)));
+        rsort($archives, \SORT_STRING);
+        $folder = $archives[0] ?? throw new \DomainException(\sprintf('"%s"\'s folder isn\'t in %s/.removed any more: it can\'t be brought back.', $name, $this->paths->sites()));
+        $found = glob($this->paths->backups($name).'/final-*.tar');
+        $finals = array_values(array_filter(false === $found ? [] : $found, static fn (string $path): bool => is_file($path) && !is_link($path)));
+        rsort($finals, \SORT_STRING);
+        $backup = $finals[0] ?? throw new \DomainException(\sprintf('"%s" was removed without a final backup: its data is gone. Its code and files are in %s.', $name, $folder));
+
+        if (is_dir($folder.'/.git')) {
+            throw new \DomainException(\sprintf('"%s" followed a Git repository: add it from there ("quire-server site:add %1$s --git=…"), then "quire-server backups:restore %1$s --file=%s" puts its data back.', $name, basename($backup)));
+        }
+
+        $domains = [] !== $domains ? $domains : $this->domainsInFolder($folder);
+
+        if ([] === $domains) {
+            throw new \DomainException('Its domains aren\'t known from its folder: give them, --domain=… (repeatable).');
+        }
+
+        $restored = $this->restoreAsNew($name, $domains, $folder, $backup, ['from' => 'removed', 'archive' => basename($folder), 'backup' => basename($backup)], $channel, $requestedBy, $say);
+
+        return ['site' => $restored, 'folder' => $folder, 'backup' => $backup];
+    }
+
+    /**
+     * The domains a site had, from the override the server wrote in its folder (each one's name on
+     * its link, "<domain>.quire.internal"), main one first.
+     *
+     * @return list<Domain>
+     */
+    private function domainsInFolder(string $folder): array
+    {
+        $file = $folder.'/'.SiteFiles::OVERRIDE;
+
+        try {
+            $override = is_file($file) && !is_link($file) ? \Symfony\Component\Yaml\Yaml::parseFile($file, \Symfony\Component\Yaml\Yaml::PARSE_CUSTOM_TAGS) : null;
+        } catch (\Symfony\Component\Yaml\Exception\ParseException) {
+            return [];
+        }
+
+        $hosts = [];
+        $walk = static function (mixed $value) use (&$walk, &$hosts): void {
+            // The override's "!reset" and "!override" tags
+            if ($value instanceof \Symfony\Component\Yaml\Tag\TaggedValue) {
+                $value = $value->getValue();
+            }
+
+            if (!\is_array($value)) {
+                return;
+            }
+
+            foreach ($value as $key => $child) {
+                if ($child instanceof \Symfony\Component\Yaml\Tag\TaggedValue) {
+                    $child = $child->getValue();
+                }
+
+                if ('aliases' === $key && \is_array($child)) {
+                    foreach ($child as $alias) {
+                        if (\is_string($alias) && str_ends_with($alias, SiteFiles::EDGE_SUFFIX)) {
+                            $hosts[substr($alias, 0, -\strlen(SiteFiles::EDGE_SUFFIX))] = true;
+                        }
+                    }
+                } else {
+                    $walk($child);
+                }
+            }
+        };
+        $walk($override);
+        $domains = [];
+
+        foreach (array_keys($hosts) as $host) {
+            try {
+                $domains[] = new Domain($host);
+            } catch (\InvalidArgumentException) {
+                // Not one: left out
+            }
+        }
+
+        return $domains;
+    }
+
+    /**
      * At the agent's start: sites an add or a restore as a new site left being created (the agent
      * stopped while it ran) are removed. They never ran; their names and domains are free again.
      *

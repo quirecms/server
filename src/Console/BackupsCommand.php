@@ -25,6 +25,7 @@ final readonly class BackupsCommand
 {
     public function __construct(
         private OffsiteBackups $backups,
+        private \Quire\Server\Backup\LocalBackups $local,
     ) {
     }
 
@@ -34,7 +35,32 @@ final readonly class BackupsCommand
         string $name,
         #[Option(description: 'Another server\'s backups in the same bucket (its QUIRE_SERVER_BACKUP_HOST)')]
         ?string $fromServer = null,
+        #[Option(description: 'Its backups on the server instead (before an update, a restore, an undo; its final one)')]
+        bool $local = false,
     ): int {
+        if ($local) {
+            try {
+                $site = new SiteName($name);
+            } catch (\InvalidArgumentException $e) {
+                $io->error($e->getMessage());
+
+                return Command::INVALID;
+            }
+
+            $backups = $this->local->of($site);
+
+            if ([] === $backups) {
+                $io->writeln(\sprintf('No backup of "%s" on the server.', $site));
+
+                return Command::SUCCESS;
+            }
+
+            $io->table(['File', 'Before', 'Made (UTC)', 'Size'], array_map(static fn (array $backup): array => [$backup['file'], $backup['kind'], $backup['made']->format('Y-m-d H:i:s'), \sprintf('%.1f MB', $backup['size'] / 1024 ** 2)], $backups));
+            $io->writeln(\sprintf('"quire-server backups:restore %s --file=<file>" puts it back as one has it.', $site));
+
+            return Command::SUCCESS;
+        }
+
         if (!$this->backups->configured()) {
             $io->error('There are no backups off the server yet: "quire-server backups:setup" sets them up.');
 

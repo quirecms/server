@@ -251,7 +251,7 @@ final readonly class OffsiteBackups
      *
      * @param \Closure(string): void $say
      *
-     * @return array{id: string, time: string} The snapshot restored
+     * @return array{id: string, time: string, before: string} The snapshot restored, and the backup of the site from before
      */
     public function restore(SiteName $name, string $snapshot, string $channel, string $requestedBy, \Closure $say, bool $unsigned = false): array
     {
@@ -280,12 +280,12 @@ final readonly class OffsiteBackups
             // With the rest of its database, when the backup has it (made by Quire Server 0.3.1 and later)
             $this->restic->restorePaths($chosen['id'], [$file, ...$this->dumpOf($chosen['paths'], $file)], $into);
             $file = is_file($into.$file) ? $into.$file : throw new BackupFailed('The snapshot doesn\'t have its backup file.');
-            $this->updater->restoreBackup($name, $file, ['snapshot' => $chosen['id'], 'from' => 'off the server'], $channel, $requestedBy, $say);
+            $before = $this->updater->restoreBackup($name, $file, ['snapshot' => $chosen['id'], 'from' => 'off the server'], $channel, $requestedBy, $say);
         } finally {
             $this->filesystem->remove($into);
         }
 
-        return ['id' => $chosen['id'], 'time' => $chosen['time']];
+        return ['id' => $chosen['id'], 'time' => $chosen['time'], 'before' => $before];
     }
 
     /**

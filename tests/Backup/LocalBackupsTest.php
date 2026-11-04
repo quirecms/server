@@ -59,6 +59,29 @@ final class LocalBackupsTest extends RegistryTestCase
         self::assertFalse($this->subject()->due(), 'Once a day.');
     }
 
+    public function testASitesBackupsNewestFirstAndOnlyItsOwnFound(): void
+    {
+        foreach (['jane/final-20261030-120000.tar', 'jane/before-restore-20261031-090000.tar', 'jane/before-restore-20261031-090000.database.dump', 'jane/update-20261029-120000/files/composer.lock', 'jane/notes.txt', 'kim/final-20261031-120000.tar'] as $file) {
+            new Filesystem()->dumpFile($this->root.'/'.$file, 'x');
+        }
+
+        symlink($this->root.'/kim/final-20261031-120000.tar', $this->root.'/jane/final-20261031-130000.tar');
+        $jane = new \Quire\Server\Site\SiteName('jane');
+
+        self::assertSame(['before-restore-20261031-090000.tar', 'final-20261030-120000.tar'], array_column($this->subject()->of($jane), 'file'), 'Archives only, newest first; not a link.');
+        self::assertSame('before-restore', $this->subject()->of($jane)[0]['kind']);
+        self::assertSame($this->root.'/jane/final-20261030-120000.tar', $this->subject()->find($jane, 'final-20261030-120000.tar'));
+        self::assertSame($this->root.'/jane/final-20261030-120000.tar', $this->subject()->find($jane, $this->root.'/jane/final-20261030-120000.tar'), 'Its own path too.');
+
+        foreach (['../kim/final-20261031-120000.tar', $this->root.'/kim/final-20261031-120000.tar', 'final-20261031-130000.tar', 'notes.txt', 'final-20261001-000000.tar'] as $other) {
+            try {
+                $this->subject()->find($jane, $other);
+                self::fail(\sprintf('"%s" was taken.', $other));
+            } catch (\DomainException) {
+            }
+        }
+    }
+
     private function subject(): LocalBackups
     {
         return new LocalBackups(new OperationLog($this->connection, $this->schema), $this->root, now: static fn (): \DateTimeImmutable => new \DateTimeImmutable('2026-10-30 21:00'));

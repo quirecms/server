@@ -465,6 +465,70 @@ final class SiteManagerTest extends RegistryTestCase
         self::assertFileDoesNotExist($this->root.'/gate/scopes/'.$this->name->value.'.json', 'Its socket on the gate goes too.');
     }
 
+    public function testARemovedSiteComesBackWithItsDataAndDomains(): void
+    {
+        $this->skeletonWithItsFiles();
+        $manager = $this->manager();
+        $manager->add($this->request(), 'cli', 'darko', static fn (): null => null);
+
+        try {
+            $manager->restoreRemoved($this->name, [], 'cli', 'darko', static fn (): null => null);
+            self::fail('A running site was brought back.');
+        } catch (\DomainException $e) {
+            self::assertStringContainsString('isn\'t removed: it\'s running', $e->getMessage());
+        }
+
+        $final = $manager->remove($this->name, true, 'cli', 'darko', static fn (): null => null);
+        $this->commands = [];
+
+        $restored = $manager->restoreRemoved($this->name, [], 'cli', 'darko', static fn (): null => null);
+
+        self::assertSame(Site::RUNNING, $restored['site']->status);
+        self::assertSame(['jane.example', 'www.jane.example'], array_map(static fn (Domain $domain): string => $domain->value, $restored['site']->domains), 'As it had them, the main one first.');
+        self::assertSame($final, $restored['backup']);
+        self::assertDirectoryExists($restored['folder'], 'Its archive stays: it can be brought back again.');
+        self::assertFileExists($this->paths->site($this->name).'/composer.json', 'Its code, from its folder.');
+        self::assertContains('quire:restore', $this->consoles(), 'Its data, from its final backup.');
+        self::assertSame(['site.restore_as_new', 'succeeded'], [$this->operations->latest()[0]['action'], $this->operations->latest()[0]['status']]);
+    }
+
+    public function testARemovedSiteWithoutItsFinalBackupOrFromGitIsntBroughtBack(): void
+    {
+        $this->skeletonWithItsFiles();
+        $manager = $this->manager();
+        $manager->add($this->request(), 'cli', 'darko', static fn (): null => null);
+        $manager->remove($this->name, false, 'cli', 'darko', static fn (): null => null);
+
+        try {
+            $manager->restoreRemoved($this->name, [], 'cli', 'darko', static fn (): null => null);
+            self::fail('It was brought back without its data.');
+        } catch (\DomainException $e) {
+            self::assertStringContainsString('was removed without a final backup: its data is gone', $e->getMessage());
+        }
+
+        // A Git mode site's folder has its repository: it comes from there
+        $archives = glob($this->paths->sites().'/.removed/'.$this->name->value.'-*');
+        $archive = false === $archives ? '' : ($archives[0] ?? '');
+        mkdir($archive.'/.git');
+        new Filesystem()->dumpFile($this->paths->backups($this->name).'/final-20261104-120000.tar', 'backup');
+
+        $this->expectExceptionMessageIsOrContains('followed a Git repository: add it from there');
+        $manager->restoreRemoved($this->name, [], 'cli', 'darko', static fn (): null => null);
+    }
+
+    public function testOnlyThatSitesArchiveIsTaken(): void
+    {
+        // jane-blog's archive is no archive of jane's
+        $other = new SiteName($this->name->value.'-blog');
+        $this->registry->add($this->name, [new Domain('jane.example')], Site::SHARED_DATABASE, $this->name->value);
+        $this->registry->setStatus($this->name, Site::REMOVED);
+        new Filesystem()->mkdir($this->paths->sites().'/.removed/'.$other->value.'-20261104-120000');
+        new Filesystem()->dumpFile($this->paths->backups($this->name).'/final-20261104-120000.tar', 'backup');
+
+        $this->expectExceptionMessageIsOrContains('folder isn\'t in');
+        $this->manager()->restoreRemoved($this->name, [], 'cli', 'darko', static fn (): null => null);
+    }
+
     public function testRemovingASiteBacksItUpFirstAndKeepsItsFolder(): void
     {
         $manager = $this->manager();
@@ -865,6 +929,31 @@ final class SiteManagerTest extends RegistryTestCase
         $filesystem->dumpFile($backup, 'backup');
 
         return [$code, $backup];
+    }
+
+    /**
+     * @return list<string> The site's console commands run so far, e.g. "quire:restore"
+     */
+    private function consoles(): array
+    {
+        /** @var list<list<string>> $commands Run since the last reset (a property: written by respond()) */
+        $commands = $this->commands;
+
+        return array_values(array_map(static fn (array $command): string => $command[12] ?? '', array_filter($commands, static fn (array $command): bool => 'exec' === ($command[8] ?? null))));
+    }
+
+    /** A skeleton with the files a Quire site's folder has (a restore checks for them) */
+    private function skeletonWithItsFiles(): void
+    {
+        $this->script['composer create-project'] = static function (array $command): ProcessResult {
+            mkdir(self::argument($command, 3), 0o755, true);
+
+            foreach (['compose.yaml' => "services: {}\n", 'compose.prod.yaml' => "services: {}\n", 'composer.json' => '{}'] as $file => $content) {
+                file_put_contents(self::argument($command, 3).'/'.$file, $content);
+            }
+
+            return self::ok($command, "Installing quire/skeleton (v0.1.1)\n");
+        };
     }
 
     private function request(): SiteRequest
