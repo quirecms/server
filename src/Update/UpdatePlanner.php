@@ -22,6 +22,7 @@ final readonly class UpdatePlanner
         private SkeletonInstaller $skeletons,
         private ServerPaths $paths,
         private Filesystem $filesystem = new Filesystem(),
+        private ?CodeCheck $code = null,
     ) {
     }
 
@@ -70,6 +71,8 @@ final readonly class UpdatePlanner
             if (null !== $toQuire && $fromQuire !== $toQuire) {
                 $skeletonTarget = $workspace.'/skeleton-new';
                 $this->skeletons->create($skeletonTarget, $toQuire, $output);
+                // The files it brings to the site, as Quire released them (D-38)
+                $this->code?->skeleton($skeletonTarget, $toQuire);
                 $base = null;
 
                 if (null !== $fromQuire) {

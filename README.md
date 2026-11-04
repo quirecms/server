@@ -196,7 +196,9 @@ Every night (from 03:00 UTC; `QUIRE_SERVER_UPDATE_HOUR` in `server.env` sets the
 
 Each Quire release publishes a feed, signed by Quire's release workflow (Sigstore): every release, its security fixes, what to do when updating, and what it requires. Before an update changes a site's Quire, the server checks the feed's signature and reads it: the plan shows the security fixes and upgrade notes, and a release this server can't run is refused (one that keeps a newer server contract: update the server first; one that needs a newer PostgreSQL than the server's, for sites on the server's PostgreSQL).
 
-A site's versions are recorded in its folder's `composer.lock` (taken from its image when it's added or adopted). Its builds install exactly those versions; only updates change them.
+**The feed vouches for the code, not just the version.** From the first release after Quire 0.1.2, it names each `quire/*` package's commit in the repository Composer installs it from, and it lists the skeleton's files with their hashes. Every build checks the site's `composer.lock` first: each `quire/*` package must be the commit the feed names for its version, downloaded from GitHub's repository of that package. A tag moved there, or other code served for it, stops the build (an update is rolled back), since Composer itself doesn't check a download against the commit its lock names. A new site's skeleton, and the one an update brings, must have exactly the feed's files. What the feed doesn't vouch for (a branch, a fork, a release before feeds named commits) is built, and said in the operation's log; so is a feed that can't be got, while one that doesn't check out stops the build.
+
+A site's versions are recorded in its folder's `composer.lock`. A new site's first one is worked out in Composer's sandbox before it's built, so it's checked like the rest. Its builds install exactly those versions; only updates change them.
 
 ## Updating the server
 

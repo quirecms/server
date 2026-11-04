@@ -6,12 +6,14 @@ namespace Quire\Server\Release;
 
 /**
  * Quire's release feed (schema 1), as the framework's release workflow publishes and signs it: every
- * release, with its security fixes, upgrade notes and requirements. Read only once its signature
- * checked out; whatever doesn't have the expected shape is refused as a whole.
+ * release, with its security fixes, upgrade notes and requirements; the skeleton's files (path =>
+ * SHA-256) and each quire/* package's commit, where the feed has them (D-38: from the first release after Quire 0.1.2).
+ * Read only once its signature checked out; whatever doesn't have the expected shape is refused as a
+ * whole.
  *
  * @phpstan-type Advisory array{id: string, severity: string, package: string, summary: string}
  * @phpstan-type Requirements array{php: string, postgresql: ?int, server_contract: ?int}
- * @phpstan-type FeedRelease array{version: Version, date: string, security: list<Advisory>, upgrade: ?string, requires: Requirements}
+ * @phpstan-type FeedRelease array{version: Version, date: string, security: list<Advisory>, upgrade: ?string, requires: Requirements, skeleton: ?array<string, string>, packages: ?array<string, string>}
  */
 final readonly class Feed
 {
@@ -107,6 +109,35 @@ final readonly class Feed
         }
 
         $upgrade = $release['upgrade'] ?? null;
+        $skeleton = null;
+
+        $files = \is_array($release['skeleton'] ?? null) ? ($release['skeleton']['files'] ?? null) : null;
+
+        if (\is_array($files)) {
+            $skeleton = [];
+
+            foreach ($files as $path => $hash) {
+                if (!\is_string($path) || !\is_string($hash) || 1 !== preg_match('/^[0-9a-f]{64}\z/', $hash) || '' === $path || str_starts_with($path, '/') || \in_array('..', explode('/', $path), true)) {
+                    throw new ReleaseVerificationFailed(\sprintf('The skeleton of Quire %s in its release feed isn\'t one this server reads.', $version));
+                }
+
+                $skeleton[$path] = $hash;
+            }
+        }
+
+        $packages = null;
+
+        if (\is_array($release['packages'] ?? null)) {
+            $packages = [];
+
+            foreach ($release['packages'] as $name => $commit) {
+                if (!\is_string($name) || 1 !== preg_match('#^quire/[a-z0-9-]+\z#', $name) || !\is_string($commit) || 1 !== preg_match('/^[0-9a-f]{40}\z/', $commit)) {
+                    throw new ReleaseVerificationFailed(\sprintf('The packages of Quire %s in its release feed aren\'t ones this server reads.', $version));
+                }
+
+                $packages[$name] = $commit;
+            }
+        }
 
         return [
             'version' => $version,
@@ -114,6 +145,8 @@ final readonly class Feed
             'security' => $security,
             'upgrade' => \is_string($upgrade) ? $upgrade : null,
             'requires' => ['php' => $requires['php'], 'postgresql' => $requires['postgresql'] ?? null, 'server_contract' => $requires['server_contract'] ?? null],
+            'skeleton' => $skeleton,
+            'packages' => $packages,
         ];
     }
 

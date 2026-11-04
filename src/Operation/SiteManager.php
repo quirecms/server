@@ -54,7 +54,35 @@ final readonly class SiteManager
         private SiteNetworks $networks,
         private string $mailerDsn = '',
         private Filesystem $filesystem = new Filesystem(),
+        private ?\Quire\Server\Update\CodeCheck $code = null,
+        private ?\Quire\Server\Update\Composer $composer = null,
     ) {
+    }
+
+    /**
+     * A new site's skeleton as Quire released it, and its first lock, worked out in Composer's
+     * sandbox rather than in its image's build, so that it's checked before anything is built (D-38).
+     */
+    private function vouch(string $directory, string $version, Operation $operation): void
+    {
+        if (!$this->code instanceof \Quire\Server\Update\CodeCheck || !$this->composer instanceof \Quire\Server\Update\Composer) {
+            return;
+        }
+
+        foreach ($this->code->skeleton($directory, $version) as $note) {
+            $operation->line('Note: '.$note);
+        }
+
+        $workspace = sys_get_temp_dir().'/quire-lock-'.bin2hex(random_bytes(6));
+        $this->filesystem->mkdir($workspace, 0o700);
+
+        try {
+            $this->filesystem->copy($directory.'/composer.json', $workspace.'/composer.json');
+            $this->composer->update($workspace, [], $operation->output(...));
+            $this->filesystem->copy($workspace.'/composer.lock', $directory.'/composer.lock', true);
+        } finally {
+            $this->filesystem->remove($workspace);
+        }
     }
 
     /**
@@ -109,7 +137,8 @@ final readonly class SiteManager
                 } else {
                     $step(\sprintf('Getting Quire %s', $request->quireVersion));
                     $undo[] = fn () => $this->archive($request->name, $directory);
-                    $this->skeleton->create($directory, $request->quireVersion, $operation->output(...));
+                    $installed = $this->skeleton->create($directory, $request->quireVersion, $operation->output(...));
+                    $this->vouch($directory, $installed ?? $request->quireVersion, $operation);
                 }
 
                 $step('Creating its database');

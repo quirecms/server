@@ -26,6 +26,8 @@ final readonly class Compose
         private RuntimeBuilds $builds,
         private Gate $gate,
         private Builders $builders,
+        /** The code it builds against Quire's signed feed (D-38) */
+        private ?\Quire\Server\Update\CodeCheck $code = null,
     ) {
     }
 
@@ -72,6 +74,15 @@ final readonly class Compose
     {
         $this->check($project);
         $say = $output ?? static function (string $line): void {};
+
+        // Quire's packages as Quire released them, or nothing is built (CodeNotReleased)
+        if ($this->code instanceof \Quire\Server\Update\CodeCheck) {
+            $lock = $project->directory.'/composer.lock';
+
+            foreach (is_file($lock) ? $this->code->lock($lock) : ['No composer.lock: the quire/* packages its build resolves aren\'t checked against Quire\'s release feed.'] as $note) {
+                $say('Note: '.$note."\n");
+            }
+        }
         // On Quire's runtime images by the digests checked (the command line's arguments win over the site's)
         $arguments = [];
         $pinned = $this->runtime->pinned($project->directory, static fn (string $line) => $say($line."\n"));
