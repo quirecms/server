@@ -61,6 +61,7 @@ final class ReleasesTest extends TestCase
             },
             'cosign verify-blob' => fn (array $command): ProcessResult => $this->signed ? ScriptedRunner::ok($command) : ScriptedRunner::failed($command, 'Error: none of the expected identities matched'),
             'tar -tzf' => static fn (array $command): ProcessResult => $real->run($command),
+            'tar -tvzf' => static fn (array $command): ProcessResult => $real->run($command),
             'tar -xzf' => static fn (array $command): ProcessResult => $real->run($command),
         ]);
     }

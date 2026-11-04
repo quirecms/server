@@ -16,8 +16,15 @@ use Symfony\Component\Filesystem\Filesystem;
  */
 final readonly class ServerFolder
 {
-    /** The machine's own: never replaced by a release, nor taken from one */
-    public const array KEPT = ['server.env', 'domains', 'keys'];
+    /**
+     * The machine's own: never replaced by a release, nor taken from one. The updater's seal key too
+     * (Seal): removed with a release's files, every update would leave the updater trusting what it
+     * didn't seal.
+     */
+    public const array KEPT = ['server.env', 'domains', 'keys', '.updater-key'];
+
+    /** Each of the release's files and its SHA-256, as sha256sum writes them: what install.sh checks when run again */
+    public const string MANIFEST = '.installed-files';
 
     public string $path;
 
@@ -68,6 +75,37 @@ final readonly class ServerFolder
         }
 
         $this->settle();
+        $this->writeManifest();
+    }
+
+    /**
+     * The release's files and their checksums (SUPPLY-08), as install.sh writes them: running it
+     * again checks them before it runs any.
+     */
+    private function writeManifest(): void
+    {
+        $lines = [];
+
+        foreach ($this->releaseEntries() as $entry) {
+            if (self::MANIFEST === $entry || '.installed' === $entry) {
+                continue;
+            }
+
+            $path = $this->path.'/'.$entry;
+            $files = is_dir($path) && !is_link($path)
+                ? iterator_to_array(new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator($path, \FilesystemIterator::SKIP_DOTS)), false)
+                : [new \SplFileInfo($path)];
+
+            foreach ($files as $file) {
+                if ($file instanceof \SplFileInfo && $file->isFile() && !$file->isLink()) {
+                    $lines[] = hash_file('sha256', $file->getPathname()).'  ./'.substr($file->getPathname(), \strlen($this->path) + 1);
+                }
+            }
+        }
+
+        sort($lines);
+        file_put_contents($this->path.'/'.self::MANIFEST, implode("\n", $lines)."\n");
+        chmod($this->path.'/'.self::MANIFEST, 0o600);
     }
 
     /**

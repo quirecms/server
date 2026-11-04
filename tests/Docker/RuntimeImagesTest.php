@@ -172,6 +172,33 @@ final class RuntimeImagesTest extends RegistryTestCase
         self::assertSame([], $this->runner->runs);
     }
 
+    public function testQuiresRuntimeBuiltOnUncheckedIsRefused(): void
+    {
+        // MAINT-07, SUPPLY-09: a FROM of its own, and an argument it can't read, used to be built on as they were
+        foreach (["FROM ghcr.io/quirecms/runtime:8.5 AS base\n", "FROM --platform=linux/amd64 ghcr.io/quirecms/runtime:8.5\n", "ARG RUNTIME=\\\n  ghcr.io/quirecms/runtime:8.5\nFROM \${RUNTIME}\n"] as $dockerfile) {
+            $this->dockerfile($dockerfile);
+
+            try {
+                $this->pinned();
+                self::fail('Built on unchecked: '.$dockerfile);
+            } catch (RuntimeImageNotTrusted $e) {
+                self::assertStringContainsString('in a way that can\'t be checked', $e->getMessage());
+            }
+        }
+
+        // Named in a comment only (the skeleton's header does): nothing to check
+        $this->dockerfile("# Built on ghcr.io/quirecms/runtime, see below\nFROM alpine:3.22\n");
+        self::assertSame([], $this->pinned());
+    }
+
+    public function testTheDockerfileTheBuildUses(): void
+    {
+        new Filesystem()->dumpFile($this->site.'/docker/Dockerfile.prod', "FROM ghcr.io/quirecms/runtime:8.5\n");
+
+        $this->expectException(RuntimeImageNotTrusted::class);
+        $this->subject()->pinned($this->site, static function (): void {}, ['docker/Dockerfile.prod']);
+    }
+
     public function testNoDockerfileNothingToCheck(): void
     {
         new Filesystem()->remove($this->site.'/Dockerfile');

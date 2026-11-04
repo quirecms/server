@@ -170,15 +170,32 @@ if want adopt && ! from_release; then
 echo '== Problems reach the owner (D-35): once when they start, once when they are over'
 # The owner's mailbox: Mailpit, where the agent reaches it (the server's network)
 inside 'docker run -d --name mailpit --network quire-data --network-alias mailpit -p 127.0.0.1:8025:8025 axllent/mailpit:v1.33.0@sha256:9b3a463be15354c0f0eba91697d80e3e0d8a5623ef0e627cacc836bc17fd5231 >/dev/null'
+# And the owner's webhook: HTTPS, with a certificate from an authority of this run's own, which only
+# this run's agent is made to trust (below); it checks each request's signature as a receiver would
+whsecret=$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')
+inside 'mkdir -p /root/hook && cd /root/hook && openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -keyout ca.key -out ca.pem -days 2 -subj "/CN=Quire e2e webhook authority" >/dev/null 2>&1 && openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -keyout key.pem -out req.csr -subj "/CN=webhook.e2e.test" >/dev/null 2>&1 && printf "subjectAltName=DNS:webhook.e2e.test\n" > ext && openssl x509 -req -in req.csr -CA ca.pem -CAkey ca.key -CAcreateserial -out cert.pem -days 2 -extfile ext >/dev/null 2>&1 && chmod 644 key.pem'
+docker cp "$here/tests/e2e/webhook-receiver.py" "$dind:/root/hook/receiver.py"
+inside "docker run -d --name webhook --network quire-data --network-alias webhook.e2e.test -e WEBHOOK_SECRET=$whsecret -v /root/hook:/hook:ro python:3.14.10-alpine@sha256:eb2c62658b8d51bff0acc408504b76521d02030de56a8a3c1e830083e89b89d2 python3 /hook/receiver.py /hook/cert.pem /hook/key.pem >/dev/null"
+# What the webhook got, one JSON line per request; waits (as mailed) for one with this in it, signed
+hooks() { inside 'docker exec webhook cat /tmp/hooks.log 2>/dev/null'; }
+hooked() { for _ in $(seq 36); do if hooks | grep -F "$1" | grep -qF '"valid": true'; then return 0; fi; sleep 5; done; return 1; }
 inside 'cp -p /srv/quire/server/server.env /root/server.env.before-notify && sed -i -e "s#^QUIRE_SERVER_MAILER_DSN=.*#QUIRE_SERVER_MAILER_DSN=smtp://mailpit:1025#" -e "s#^QUIRE_SERVER_NOTIFY_EMAIL=.*#QUIRE_SERVER_NOTIFY_EMAIL=owner@example.com#" -e "s#^QUIRE_SERVER_NAME=.*#QUIRE_SERVER_NAME=e2e#" /srv/quire/server/server.env && grep -q "^QUIRE_SERVER_NOTIFY_EMAIL=owner@example.com" /srv/quire/server/server.env && quire-server up >/dev/null 2>&1'
+# The webhook too: its path is a secret of its own (as Slack's and Discord's are)
+inside "sed -i -e 's#^QUIRE_SERVER_NOTIFY_WEBHOOK=.*#QUIRE_SERVER_NOTIFY_WEBHOOK=https://webhook.e2e.test/hooks/path-secret-e2e#' -e 's#^QUIRE_SERVER_NOTIFY_SECRET=.*#QUIRE_SERVER_NOTIFY_SECRET=$whsecret#' /srv/quire/server/server.env && quire-server up >/dev/null 2>&1"
+# This agent, as it runs now, trusts the run's authority (recreated, it doesn't any more)
+inside 'docker exec -i quire-server-agent-1 sh -c "cat >> /etc/ssl/certs/ca-certificates.crt" < /root/hook/ca.pem'
 # Subjects of the mails Mailpit got, one per line
 mails() { inside "curl -s 'http://127.0.0.1:8025/api/v1/messages?limit=50'" | tr ',' '\n' | sed -n 's/^"Subject":"\(.*\)"$/\1/p'; }
 # Waits (up to 3 minutes: the agent's rounds are a minute apart) for a mail whose subject has this
 mailed() { for _ in $(seq 36); do if mails | grep -qF "$1"; then return 0; fi; sleep 5; done; return 1; }
-check 'a test notification arrives by email' "inside 'quire-server notify:test' | grep -q 'Sent: email to owner@example.com' && mailed 'Quire Server e2e: a test'"
+inside 'quire-server notify:test 2>&1' > "$logs"/notify-test.log || true
+sed 's/^/    /' "$logs"/notify-test.log
+check 'a test notification arrives by email' "grep -q 'Sent: email to owner@example.com' $logs/notify-test.log && mailed 'Quire Server e2e: a test'"
+check 'and by webhook, signed, as JSON, to its path' "grep -q 'Sent: webhook to webhook.e2e.test' $logs/notify-test.log && hooked 'Quire Server e2e: a test' && hooks | grep -F 'Quire Server e2e: a test' | grep -qF '\"path\": \"/hooks/path-secret-e2e\", \"type\": \"application/json\"'"
 # Last night, as the agent records it: demo's automatic update failed
 inside "docker exec -e PGPASSWORD=$postgres_password quire-server-database-1 psql -U postgres -d quire_server -qc \"INSERT INTO server.operation (id, action, site, channel, requested_by, status, error, finished_at) VALUES (gen_random_uuid(), 'site.update', 'demo', 'agent', 'automatic', 'failed', 'planted-error-text', now())\""
 check 'the agent tells of it, by itself' "mailed 'Quire Server e2e: The automatic update of demo failed'"
+check 'the webhook is told it started, with its key' "hooked '{\"event\": \"started\", \"key\": \"operation:site.update:demo\"}'"
 check 'the mail says what to do, and no tool output' "inside \"curl -s 'http://127.0.0.1:8025/api/v1/message/latest'\" > $logs/problem-mail.json && grep -q 'quire-server operations' $logs/problem-mail.json && ! grep -q planted-error-text $logs/problem-mail.json && ! grep -qF \"$postgres_password\" $logs/problem-mail.json"
 check 'quire-server status lists it, with its key' "inside 'quire-server status' | grep -q 'The automatic update of demo failed.*key operation:site.update:demo'"
 check 'every other command says a problem needs you' "inside 'quire-server site:list 2>&1 >/dev/null' | grep -q '1 problem needs you'"
@@ -187,7 +204,9 @@ check 'status reads the front door'\''s certificates' "inside 'quire-server stat
 inside "docker exec -e PGPASSWORD=$postgres_password quire-server-database-1 psql -U postgres -d quire_server -qc \"INSERT INTO server.operation (id, action, site, channel, requested_by, status, finished_at) VALUES (gen_random_uuid(), 'site.update', 'demo', 'cli', 'root', 'succeeded', now())\""
 check 'it is told once more when it is over, and only then' "mailed 'Quire Server e2e: Fixed: The automatic update of demo failed' && [ \"\$(mails | grep -cF 'The automatic update of demo failed')\" = 2 ]"
 check 'and then nothing needs you' "inside 'quire-server status' | grep -q '^No problems' && ! inside 'quire-server site:list 2>&1 >/dev/null' | grep -q 'needs you'"
-inside 'docker rm -f mailpit >/dev/null && cp -p /root/server.env.before-notify /srv/quire/server/server.env && quire-server up >/dev/null 2>&1'
+check 'the webhook is told it was fixed, once' "hooked '{\"event\": \"fixed\", \"key\": \"operation:site.update:demo\"}' && [ \"\$(hooks | grep -cF '\"event\": \"fixed\", \"key\": \"operation:site.update:demo\"')\" = 1 ]"
+check 'every request was signed, and the webhook'\''s path is in no log' "! hooks | grep -qF '\"valid\": false' && ! inside 'quire-server logs agent 2>&1' | grep -q path-secret-e2e && ! inside 'quire-server status 2>&1' | grep -q path-secret-e2e && ! inside 'quire-server operations 2>&1' | grep -q path-secret-e2e"
+inside 'docker rm -f mailpit webhook >/dev/null && cp -p /root/server.env.before-notify /srv/quire/server/server.env && quire-server up >/dev/null 2>&1'
 fi
 
 if linking; then
@@ -216,6 +235,7 @@ check 'it trusts only the front door'\''s address as its proxy' "[ \"\$(inside '
 echo '== A second site, added on a link of its own'
 inside 'quire-server site:add kim --domain=kim.test --admin-email=kim@example.com --title="Kim" 2>&1' > "$logs"/add-kim.log || true
 check 'kim runs, on its own link and addresses' "inside 'quire-server site:list' | grep kim | grep -q running && attached kim-php-1 | grep -Eq 'quire-link-kim=10\.72\.0\.(8[0-9]|9[0-5]) ' && attached quire-server-front-1 | grep -q 'quire-link-kim=10.72.0.66 '"
+inside 'test -d /srv/quire/sites/kim' || sed 's/^/    /' "$logs"/add-kim.log
 docker cp "$here/tests/e2e/try-links.php" "$dind:/root/try-links.php"
 inside 'docker cp /root/try-links.php jane-php-1:/app/var/try-links.php'
 from_jane() { inside "docker exec jane-php-1 php /app/var/try-links.php $1"; }
@@ -323,7 +343,7 @@ inside 'quire-server backups:now 2>&1' | tee "$logs"/now.log | sed 's/^/    /'
 check 'every site and the server are backed up off the server' "grep -q 'Backed up off the server: jane, server' $logs/now.log"
 check 'each site'\''s backups are listed on their own' "[ \"\$(inside 'quire-server backups jane' | grep -cE '^ +[0-9a-f]{8} ')\" = 1 ] && [ \"\$(inside 'quire-server backups server' | grep -cE '^ +[0-9a-f]{8} ')\" = 1 ]"
 check 'what is stored is encrypted (no site data in it as text)' "! inside 'docker exec s3 sh -c \"grep -rl -e site_jane -e \\\"Jane before\\\" /data\"' >/dev/null 2>&1"
-check 'its secrets aren'\''t in its log' "! inside \"quire-server operations \$(inside 'quire-server operations' | grep backups.nightly | head -1 | awk '{print \$1}')\" | grep -q -e e2e-secret -e '$password'"
+check 'its secrets aren'\''t in its log' "! inside \"quire-server operations \$(inside 'quire-server operations' | grep backups.all | head -1 | awk '{print \$1}')\" | grep -q -e e2e-secret -e '$password'"
 
 inside "docker exec jane-php-1 bin/console quire:settings:set site.title 'Jane after'" >/dev/null
 inside "docker exec jane-php-1 bin/console dbal:run-sql -q 'INSERT INTO public.app_order VALUES (3)'" >/dev/null
@@ -475,6 +495,10 @@ check "the server starts on $major again" "pg 'SHOW server_version' | grep -q '^
 # As if the machine had stopped right after the switch: its record says "switched", the agent didn't
 # start, the site ran (it starts by itself) and wrote to the new major
 inside "sed -i 's/\"state\": \"done\"/\"state\": \"switched\"/' /srv/quire/backups/database/*/upgrade.json && docker stop quire-server-agent-1 >/dev/null"
+# Changed by hand, the record isn't the updater's own any more (HOST-13): nothing is taken from it
+check 'a record the updater didn'\''t seal isn'\''t taken' "inside 'quire-server database:upgrade --recover 2>&1' | grep -q 'No upgrade was cut short'"
+# Sealed as the updater seals it: what a real cut-short upgrade leaves
+inside 'for record in /srv/quire/backups/database/*/upgrade.json; do printf "upgrade.json %s\n" "$(sha256sum "$record" | cut -d " " -f 1)" | openssl dgst -sha256 -hmac "$(cat /srv/quire/server/.updater-key)" -r | cut -d " " -f 1 > "${record%/upgrade.json}/.seal"; done && ls /srv/quire/backups/database/*/.seal >/dev/null'
 inside "docker exec jane-php-1 bin/console quire:settings:set site.title 'Jane meanwhile'" >/dev/null
 inside 'quire-server database:upgrade --recover 2>&1' > "$logs"/recover.log || true
 sed 's/^/    /' "$logs"/recover.log
@@ -511,6 +535,7 @@ check 'a password was shown once (no email server)' "grep -q 'signs in with the 
 check 'HTTPS through the front door' "[ \"\$(inside \"curl -sk $resolve -o /dev/null -w '%{http_code}' https://jane.test/\")\" = 200 ]"
 check 'its second domain too' "[ \"\$(inside \"curl -sk $resolve -o /dev/null -w '%{http_code}' https://www.jane.test/_quire/health\")\" = 200 ]"
 check 'HTTP redirects to HTTPS' "inside \"curl -s -o /dev/null -w '%{http_code} %{redirect_url}' -H 'Host: jane.test' http://127.0.0.1/\" | grep -q '308 https://jane.test/'"
+check 'a domain with no site says so over HTTP, rather than redirecting' "[ \"\$(inside \"curl -s -w ' %{http_code}' -H 'Host: shop.test' http://127.0.0.1/\")\" = 'No site here 404' ]"
 check 'a forged Host header gets 421, not another container' "[ \"\$(inside \"curl -sk $resolve -o /dev/null -w '%{http_code}' -H 'Host: quire-database' https://jane.test/\")\" = 421 ]"
 check 'a Host other than the TLS name gets 421' "[ \"\$(inside \"curl -sk --resolve www.jane.test:443:127.0.0.1 -o /dev/null -w '%{http_code}' -H 'Host: jane.test' https://www.jane.test/\")\" = 421 ]"
 check 'an unknown domain gets no certificate' "! inside \"curl -sk $resolve -o /dev/null https://evil.test/\""
@@ -610,7 +635,7 @@ fi
 if want git; then
 echo '== A site in Git mode (a repository on an SSH Git server, deployed from it)'
 # A Git server only the agent's network reaches, accepting nothing but the keys added to it.
-inside 'docker run -d --name git-server --network quire-data alpine:3.22 sh -c "apk add -q --no-cache openssh git && ssh-keygen -A && adduser -D -s /usr/bin/git-shell git && sed -i \"s/^git:!:/git:*:/\" /etc/shadow && mkdir -p /home/git/.ssh && touch /home/git/.ssh/authorized_keys && chown -R git:git /home/git && chmod 700 /home/git/.ssh && exec /usr/sbin/sshd -D -e" >/dev/null'
+inside 'docker run -d --name git-server --network quire-data --network-alias git.e2e.test alpine:3.22 sh -c "apk add -q --no-cache openssh git && ssh-keygen -A && adduser -D -s /usr/bin/git-shell git && sed -i \"s/^git:!:/git:*:/\" /etc/shadow && mkdir -p /home/git/.ssh && touch /home/git/.ssh/authorized_keys && chown -R git:git /home/git && chmod 700 /home/git/.ssh && exec /usr/sbin/sshd -D -e" >/dev/null'
 inside 'docker run --rm -v /root/blog:/root/blog composer:2.10.3 create-project quire/skeleton /root/blog/w "^0.1" --no-install --no-scripts --no-plugins --no-interaction --no-progress -q'
 until inside 'docker exec git-server sh -c "id git && pgrep sshd"' >/dev/null 2>&1; do sleep 2; done
 commit() { inside "docker exec git-server sh -c 'cd /tmp/w && $1 && git add -A && git -c user.email=dev@example.com -c user.name=Dev commit -qm \"$2\" && git push -q /home/git/blog.git main && chown -R git:git /home/git/blog.git'"; }
@@ -619,7 +644,12 @@ commit 'true' 'The site'
 key=$(inside 'quire-server site:key blog' | grep '^ssh-ed25519 ')
 inside "docker exec git-server sh -c 'echo \"$key\" >> /home/git/.ssh/authorized_keys'"
 check 'its deploy key is root'\''s only, outside its folder' "[ \"\$(inside 'stat -c %a /srv/quire/server/keys/blog /srv/quire/server/keys/blog/id_ed25519' | tr '\n' ' ')\" = '700 600 ' ]"
-inside 'quire-server site:add blog --git=ssh://git@git-server/home/git/blog.git --branch=main --domain=blog.test --admin-email=dev@example.com 2>&1' | tee "$logs"/git-add.log | sed 's/^/    /'
+check 'a repository on one of this machine'\''s own names is refused' "inside 'quire-server site:add blog --git=ssh://git@git-server/home/git/blog.git --branch=main --domain=blog.test --admin-email=dev@example.com 2>&1' | tr -s ' \n' ' ' | grep -q 'on a host on the internet'"
+# git.e2e.test is on one of the machine's own networks, as a public name could be made to point
+check 'a name on a private address is refused, saying how to allow one' "inside 'quire-server site:add blog --git=ssh://git@git.e2e.test/home/git/blog.git --branch=main --domain=blog.test --admin-email=dev@example.com 2>&1' | tr -s ' \n' ' ' | grep -q 'QUIRE_SERVER_GIT_PRIVATE_HOSTS' && ! inside 'test -e /srv/quire/sites/blog'"
+# The owner's own Git server, allowed by name
+inside "printf 'QUIRE_SERVER_GIT_PRIVATE_HOSTS=git.e2e.test\\n' >> /srv/quire/server/server.env && quire-server up >/dev/null 2>&1"
+inside 'quire-server site:add blog --git=ssh://git@git.e2e.test/home/git/blog.git --branch=main --domain=blog.test --admin-email=dev@example.com 2>&1' | tee "$logs"/git-add.log | sed 's/^/    /'
 gresolve='--resolve blog.test:443:127.0.0.1'
 check 'it runs its repository'\''s branch' "[ \"\$(inside \"curl -sk $gresolve -o /dev/null -w '%{http_code}' https://blog.test/\")\" = 200 ]"
 check 'its checkout is clean (the server'\''s files excluded)' "[ -z \"\$(inside 'git -C /srv/quire/sites/blog status --porcelain')\" ] && inside 'test -f /srv/quire/sites/blog/prod.env'"

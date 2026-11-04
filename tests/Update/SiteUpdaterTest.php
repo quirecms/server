@@ -200,9 +200,10 @@ final class SiteUpdaterTest extends RegistryTestCase
             },
             'git clean' => static fn (array $command): ProcessResult => ScriptedRunner::ok($command),
             'git ls-tree' => static fn (array $command): ProcessResult => ScriptedRunner::ok($command),
+            'git status' => static fn (array $command): ProcessResult => ScriptedRunner::ok($command),
         ]);
         $this->keys = new DeployKeys($this->runner, $this->paths);
-        $this->git = new Git($this->runner, $this->keys);
+        $this->git = new Git($this->runner, $this->keys, new \Quire\Server\Git\GitHosts(resolve: static fn (): array => ['140.82.121.4']));
         $this->repositories = new SiteGit($this->connection, $this->schema);
     }
 
@@ -560,7 +561,15 @@ final class SiteUpdaterTest extends RegistryTestCase
                 self::assertContains('core.hooksPath=/dev/null', $run['command']);
                 self::assertContains('core.symlinks=false', $run['command']);
             }
+
+            // Where it connects: the address checked, its key still checked by the host's name (ISO-12)
+            if ('git' === $run['command'][0] && \in_array('fetch', $run['command'], true)) {
+                self::assertContains('git@140.82.121.4:me/jane.git', $run['command']);
+                self::assertNotContains('git@git.example:me/jane.git', $run['command']);
+                self::assertStringContainsString("HostKeyAlias='git.example'", (string) ($run['env']['GIT_SSH_COMMAND'] ?? ''));
+            }
         }
+        self::assertContains('git fetch', $keys);
     }
 
     public function testACommitThatDoesntWorkIsRolledBackAndNotTriedAgainByItself(): void

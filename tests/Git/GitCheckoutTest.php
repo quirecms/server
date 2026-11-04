@@ -54,11 +54,12 @@ final class GitCheckoutTest extends TestCase
         $this->git('update-ref', 'refs/remotes/origin/main', $second);
         $this->git('checkout', '--quiet', '--detach', $first);
 
-        // The server's files, and a file someone left that the repository doesn't have.
-        file_put_contents($this->site.'/.git/info/exclude', "/prod.env\n/compose.server.yaml\n", \FILE_APPEND);
+        // The server's files, excluded as a clone excludes them, and what's ignored (var/)
+        file_put_contents($this->site.'/.git/info/exclude', "/prod.env\n/compose.server.yaml\n/var/\n", \FILE_APPEND);
         file_put_contents($this->site.'/prod.env', "APP_SECRET='keep me'\n");
         file_put_contents($this->site.'/compose.server.yaml', 'services: {}');
-        file_put_contents($this->site.'/stray.php', '<?php // not in any commit');
+        mkdir($this->site.'/var');
+        file_put_contents($this->site.'/var/cache.php', '<?php // ignored');
 
         $git = $this->subject();
         $git->moveTo($this->repository(), new SiteName('blog'), $this->site, $second);
@@ -66,11 +67,63 @@ final class GitCheckoutTest extends TestCase
         self::assertSame($second, $git->head($this->repository(), new SiteName('blog'), $this->site));
         self::assertSame('FROM two', file_get_contents($this->site.'/Dockerfile'));
         self::assertFileDoesNotExist($this->site.'/old.txt');
-        self::assertFileDoesNotExist($this->site.'/stray.php', 'Exactly the commit: nothing else is built.');
         self::assertFalse(is_link($this->site.'/leak'), 'A symbolic link is checked out as a plain file.');
         self::assertSame('/srv/quire/server/keys/other/id_ed25519', file_get_contents($this->site.'/leak'));
         self::assertSame("APP_SECRET='keep me'\n", file_get_contents($this->site.'/prod.env'), 'The server\'s files kept.');
         self::assertFileExists($this->site.'/compose.server.yaml');
+    }
+
+    public function testChangesMadeInTheFolderArentLost(): void
+    {
+        file_put_contents($this->site.'/Dockerfile', 'FROM one');
+        file_put_contents($this->site.'/README.md', 'as committed');
+        $first = $this->commit('one');
+        file_put_contents($this->site.'/Dockerfile', 'FROM two');
+        $second = $this->commit('two');
+        $this->git('update-ref', 'refs/remotes/origin/main', $second);
+        $this->git('checkout', '--quiet', '--detach', $first);
+        // Edited and added by hand (the audit's OWNER-13): a deploy used to delete both
+        file_put_contents($this->site.'/README.md', 'edited on the server');
+        file_put_contents($this->site.'/NOTES.txt', 'written on the server');
+
+        try {
+            $this->subject()->moveTo($this->repository(), new SiteName('blog'), $this->site, $second);
+            self::fail('They were deleted.');
+        } catch (\DomainException $e) {
+            self::assertStringContainsString('has changes its repository doesn\'t (', $e->getMessage());
+            self::assertStringContainsString('NOTES.txt', $e->getMessage());
+            self::assertStringContainsString('README.md', $e->getMessage());
+        }
+
+        self::assertSame('written on the server', file_get_contents($this->site.'/NOTES.txt'));
+        self::assertSame($first, $this->subject()->head($this->repository(), new SiteName('blog'), $this->site), 'Nothing checked out.');
+    }
+
+    public function testACommitTooBigForASiteIsntCheckedOut(): void
+    {
+        file_put_contents($this->site.'/Dockerfile', 'FROM one');
+        $first = $this->commit('one');
+        // A "tree bomb" (ISO-16): one small file, in more entries than a site's folder takes
+        $blob = trim($this->git('hash-object', '-w', $this->site.'/Dockerfile'));
+        $entries = '';
+
+        for ($i = 0; $i <= Git::MAX_FILES; ++$i) {
+            $entries .= "100644 blob {$blob}\tf{$i}\n";
+        }
+
+        $mktree = new Process(['git', '-C', $this->site, 'mktree'], input: $entries);
+        $mktree->mustRun();
+        $second = trim($this->git('commit-tree', trim($mktree->getOutput()), '-p', $first, '-m', 'bomb'));
+        $this->git('update-ref', 'refs/remotes/origin/main', $second);
+
+        try {
+            $this->subject()->moveTo($this->repository(), new SiteName('blog'), $this->site, $second);
+            self::fail('It was checked out.');
+        } catch (\DomainException $e) {
+            self::assertStringContainsString(\sprintf('has %d files', Git::MAX_FILES + 1), $e->getMessage());
+        }
+
+        self::assertFileDoesNotExist($this->site.'/f1');
     }
 
     public function testOnlyCommitsOfTheBranch(): void
@@ -114,7 +167,7 @@ final class GitCheckoutTest extends TestCase
     {
         $runner = new SymfonyProcessRunner();
 
-        return new Git($runner, new DeployKeys($runner, new ServerPaths($this->root)));
+        return new Git($runner, new DeployKeys($runner, new ServerPaths($this->root)), new \Quire\Server\Git\GitHosts(resolve: static fn (): array => ['140.82.121.4']));
     }
 
     private function repository(): Repository

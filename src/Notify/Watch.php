@@ -124,7 +124,8 @@ final readonly class Watch
             return [];
         }
 
-        $last = $this->connection->fetchOne(\sprintf('SELECT max(started_at) FROM %s.operation WHERE action = ?', $this->schema()), [OffsiteBackups::NIGHTLY]);
+        // The night's, or the same asked for by hand
+        $last = $this->connection->fetchOne(\sprintf('SELECT max(started_at) FROM %s.operation WHERE action IN (?, ?)', $this->schema()), [OffsiteBackups::NIGHTLY, OffsiteBackups::ALL]);
 
         if (!\is_string($last) || $this->now()->getTimestamp() - new \DateTimeImmutable($last)->getTimestamp() < self::BACKUPS_LATE) {
             return [];

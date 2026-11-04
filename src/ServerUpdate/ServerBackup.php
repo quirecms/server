@@ -47,6 +47,16 @@ final readonly class ServerBackup
             'created_at' => $this->createdAt->format(\DATE_ATOM),
             'undone_at' => $this->undoneAt?->format(\DATE_ATOM),
         ], \JSON_PRETTY_PRINT | \JSON_UNESCAPED_SLASHES | \JSON_THROW_ON_ERROR)."\n");
+        self::seal($this->directory)->seal($this->directory, self::FILES);
+    }
+
+    /** What a backup is: sealed together (HOST-13) */
+    private const array FILES = ['backup.json', 'files.tar', 'database.dump'];
+
+    /** The updater's seal: its key is in the server's folder, three levels up (/srv/quire/backups/server/<time>) */
+    private static function seal(string $directory): Seal
+    {
+        return Seal::of(\dirname($directory, 3));
     }
 
     public function undone(\DateTimeImmutable $at): self
@@ -83,6 +93,11 @@ final readonly class ServerBackup
         $content = @file_get_contents($directory.'/backup.json');
 
         if (false === $content || !is_file($directory.'/files.tar') || !is_file($directory.'/database.dump')) {
+            return null;
+        }
+
+        // One the updater didn't make (the agent can write here) is no backup of its
+        if (!self::seal($directory)->holds($directory, self::FILES)) {
             return null;
         }
 

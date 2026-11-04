@@ -41,7 +41,7 @@ final readonly class BackupsNowCommand
                 return Command::SUCCESS;
             }
 
-            $outcome = $this->backups->nightly(Requester::CHANNEL, Requester::name(), static fn (string $line) => $io->writeln('  '.$line));
+            $outcome = $this->backups->nightly(Requester::CHANNEL, Requester::name(), static fn (string $line) => $io->writeln('  '.$line), OffsiteBackups::ALL);
         } catch (\Throwable $e) {
             $io->error($e->getMessage());
 

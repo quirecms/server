@@ -9,10 +9,7 @@ use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Style\SymfonyStyle;
 
-#[AsCommand(
-    name: 'server:database-logins',
-    description: 'Let the server\'s roles log in to its PostgreSQL from the server\'s network, as Docker has it now (the agent\'s start, before it logs in)',
-)]
+#[AsCommand(name: 'server:database-logins', description: 'Let the server\'s roles log in to its PostgreSQL from the server\'s network, as Docker has it now (the agent\'s start, before it logs in)', hidden: true)]
 final readonly class DatabaseLoginsCommand
 {
     public function __construct(

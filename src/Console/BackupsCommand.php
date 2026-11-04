@@ -81,7 +81,7 @@ final readonly class BackupsCommand
             return Command::SUCCESS;
         }
 
-        $io->table(['ID', 'Made'], array_map(static fn (array $snapshot): array => [substr($snapshot['id'], 0, 8), $snapshot['time']], $snapshots));
+        $io->table(['ID', 'Made'], array_map(static fn (array $snapshot): array => [substr($snapshot['id'], 0, 8), Time::utc($snapshot['time'])], $snapshots));
 
         return Command::SUCCESS;
     }

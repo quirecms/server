@@ -17,12 +17,20 @@ use Quire\Server\Site\SiteName;
  */
 final readonly class Git
 {
+    /** The most a site's checkout may be: files, and bytes in all (ISO-16) */
+    public const int MAX_FILES = 100_000;
+    public const int MAX_BYTES = 2 << 30;
+
+    /** What the server writes in a Git mode site's folder: not changes of the site's */
+    private const array SERVER_WRITES = [SiteFiles::ENV_FILE, SiteFiles::OVERRIDE, SiteFiles::ENV_FILE.'.before-server', 'composer.lock'];
+
     /** The server's files in a site's folder, which the repository never has (or overwrites) */
     private const array SERVER_FILES = ['/'.SiteFiles::ENV_FILE, '/'.SiteFiles::ENV_FILE.'.*', '/'.SiteFiles::OVERRIDE];
 
     public function __construct(
         private ProcessRunner $runner,
         private DeployKeys $keys,
+        private GitHosts $hosts = new GitHosts(),
     ) {
     }
 
@@ -43,7 +51,7 @@ final readonly class Git
             '--config', 'core.fsmonitor=false',
             '--config', 'submodule.recurse=false',
             '--', $repository->url, $directory,
-        ], $output)->orFail('Getting the site\'s repository (git clone)');
+        ], $output, connects: true)->orFail('Getting the site\'s repository (git clone)');
 
         chmod($directory, 0o750);
 
@@ -64,7 +72,7 @@ final readonly class Git
      */
     public function remoteHead(Repository $repository, SiteName $site): string
     {
-        $result = $this->git($repository, $site, null, ['ls-remote', '--heads', '--', $repository->url, 'refs/heads/'.$repository->branch])
+        $result = $this->git($repository, $site, null, ['ls-remote', '--heads', '--', $repository->url, 'refs/heads/'.$repository->branch], connects: true)
             ->orFail('Asking the repository for its branch (git ls-remote)');
         $commit = strtok(trim($result->output), "\t");
 
@@ -88,7 +96,7 @@ final readonly class Git
             throw new \InvalidArgumentException(\sprintf('"%s" isn\'t a commit ID (all of its 40 characters).', mb_substr($commit, 0, 80)));
         }
 
-        $this->git($repository, $site, $directory, ['fetch', '--no-tags', '--no-recurse-submodules', '--', $repository->url, '+refs/heads/'.$repository->branch.':refs/remotes/origin/'.$repository->branch], $output)
+        $this->git($repository, $site, $directory, ['fetch', '--no-tags', '--no-recurse-submodules', '--', $repository->url, '+refs/heads/'.$repository->branch.':refs/remotes/origin/'.$repository->branch], $output, connects: true)
             ->orFail('Getting the repository\'s new commits (git fetch)');
         $target = $commit ?? $this->revision($repository, $site, $directory, 'refs/remotes/origin/'.$repository->branch);
 
@@ -112,6 +120,8 @@ final readonly class Git
         $this->git($repository, $site, $directory, ['merge-base', '--is-ancestor', $commit, 'refs/remotes/origin/'.$repository->branch])
             ->orFail(\sprintf('Finding commit %s on the branch "%s"', substr($commit, 0, 12), $repository->branch));
         $this->checkServerFiles($repository, $site, $directory, $commit);
+        $this->checkSize($repository, $site, $directory, $commit);
+        $this->checkUnchanged($repository, $site, $directory);
         $this->git($repository, $site, $directory, ['reset', '--hard', '--quiet', $commit], $output)->orFail('Checking out the commit');
         $this->git($repository, $site, $directory, ['clean', '-ffdq'], $output)->orFail('Removing files the commit doesn\'t have');
     }
@@ -127,6 +137,52 @@ final readonly class Git
 
         if ([] !== $tracked) {
             throw new \DomainException(\sprintf('%s has %s, the server\'s own files in a site\'s folder: remove %s from the repository.', Repository::isCommit($commit) ? 'Commit '.substr($commit, 0, 12) : 'The branch\'s newest commit', implode(', ', $tracked), 1 === \count($tracked) ? 'it' : 'them'));
+        }
+    }
+
+    /**
+     * A commit no bigger than a site's folder should be (ISO-16): a small repository can check out to
+     * millions of files (a "tree bomb"), and fill the server's disk and inodes before any build.
+     */
+    private function checkSize(Repository $repository, SiteName $site, string $directory, string $commit): void
+    {
+        $tree = $this->git($repository, $site, $directory, ['ls-tree', '-r', '-l', '--full-tree', $commit])->orFail('Reading the commit\'s files')->output;
+        $files = 0;
+        $bytes = 0;
+
+        foreach (explode("\n", $tree) as $line) {
+            // "<mode> blob <id> <size>\t<path>"
+            if (1 === preg_match('/^\d+ blob [0-9a-f]+ +(\d+)\t/', $line, $match)) {
+                ++$files;
+                $bytes += (int) $match[1];
+            }
+        }
+
+        if ($files > self::MAX_FILES || $bytes > self::MAX_BYTES) {
+            throw new \DomainException(\sprintf('Commit %s has %d files, %d MB: more than a site\'s folder takes (%d files, %d MB). Nothing was checked out.', substr($commit, 0, 12), $files, intdiv($bytes, 1 << 20), self::MAX_FILES, self::MAX_BYTES >> 20));
+        }
+    }
+
+    /**
+     * The folder as its last commit has it (OWNER-13): checking out another one removes what the
+     * repository doesn't have, so a file edited or added in the folder by hand would be lost with no
+     * backup. Refused, with which files; the server's own files there aren't the site's to commit.
+     */
+    private function checkUnchanged(Repository $repository, SiteName $site, string $directory): void
+    {
+        $status = $this->git($repository, $site, $directory, ['status', '--porcelain', '--untracked-files=all', '--no-renames'])->orFail('Reading the folder\'s changes (git status)')->output;
+        $changed = [];
+
+        foreach (explode("\n", $status) as $line) {
+            $path = substr($line, 3);
+
+            if ('' !== trim($line) && !\in_array($path, self::SERVER_WRITES, true)) {
+                $changed[] = $path;
+            }
+        }
+
+        if ([] !== $changed) {
+            throw new \DomainException(\sprintf('The site\'s folder has changes its repository doesn\'t (%s): checking out another commit would delete them. Commit them to the repository, or remove them from the folder, then try again.', implode(', ', \array_slice($changed, 0, 10)).(\count($changed) > 10 ? ' and '.(\count($changed) - 10).' more' : '')));
         }
     }
 
@@ -146,8 +202,25 @@ final readonly class Git
      * @param list<string>                  $arguments
      * @param (\Closure(string): void)|null $output
      */
-    private function git(Repository $repository, SiteName $site, ?string $directory, array $arguments, ?\Closure $output = null): ProcessResult
+    private function git(Repository $repository, SiteName $site, ?string $directory, array $arguments, ?\Closure $output = null, bool $connects = false): ProcessResult
     {
+        $ssh = $repository->overSsh() ? $this->keys->sshCommand($site) : false;
+        $pin = [];
+
+        // To the address checked now, whatever the name says a moment later (ISO-12)
+        if ($connects) {
+            $address = $this->hosts->address($repository->host);
+
+            if ($repository->overSsh()) {
+                $arguments = array_map(static fn (string $argument): string => $argument === $repository->url ? $repository->at($address) : $argument, $arguments);
+                $ssh .= ' -o HostKeyAlias='.escapeshellarg(null === $repository->port || 22 === $repository->port ? $repository->host : '['.$repository->host.']:'.$repository->port);
+            } else {
+                $literal = str_contains($address, ':') ? '['.$address.']' : $address;
+                // And not on to another host by a redirect, unchecked
+                $pin = ['-c', 'http.curloptResolve='.$repository->host.':'.($repository->port ?? 443).':'.$literal, '-c', 'http.followRedirects=false'];
+            }
+        }
+
         $env = [
             'GIT_ALLOW_PROTOCOL' => 'ssh:https',
             'GIT_TERMINAL_PROMPT' => '0',
@@ -155,7 +228,7 @@ final readonly class Git
             'SSH_ASKPASS' => '/bin/false',
             'GIT_CONFIG_NOSYSTEM' => '1',
             'GIT_CONFIG_GLOBAL' => '/dev/null',
-            'GIT_SSH_COMMAND' => $repository->overSsh() ? $this->keys->sshCommand($site) : false,
+            'GIT_SSH_COMMAND' => $ssh,
             // Nothing inherited redirects Git elsewhere.
             'GIT_DIR' => false,
             'GIT_WORK_TREE' => false,
@@ -166,7 +239,7 @@ final readonly class Git
         ];
 
         return $this->runner->run(
-            ['git', ...(null === $directory ? [] : ['-C', $directory]), '-c', 'core.hooksPath=/dev/null', '-c', 'core.symlinks=false', '-c', 'protocol.file.allow=never', ...$arguments],
+            ['git', ...(null === $directory ? [] : ['-C', $directory]), '-c', 'core.hooksPath=/dev/null', '-c', 'core.symlinks=false', '-c', 'protocol.file.allow=never', ...$pin, ...$arguments],
             $env,
             timeout: 900,
             output: $output,

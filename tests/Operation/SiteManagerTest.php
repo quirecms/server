@@ -858,7 +858,7 @@ final class SiteManagerTest extends RegistryTestCase
             $compose = new Compose($runner, new ComposePolicy(), new ComposeFiles(), new RuntimeImages($runner, new RuntimeFloors($this->connection, $this->schema)), new RuntimeBuilds($this->connection, $this->schema), GateFixture::gate($runner, $this->root, $this->name->value, 'kim', 'old-site'), GateFixture::builders($runner, $this->root), $checksCode ? new \Quire\Server\Update\CodeCheck(new \Quire\Server\Release\QuireFeed(new \Quire\Server\Release\GitHubReleases($runner))) : null),
             $this->frontDoor,
             $this->paths,
-            new Git($runner, $keys = new DeployKeys($runner, $this->paths)),
+            new Git($runner, $keys = new DeployKeys($runner, $this->paths), new \Quire\Server\Git\GitHosts(resolve: static fn (): array => ['140.82.121.4'])),
             new SiteGit($this->connection, $this->schema),
             $keys,
             new SiteDatabaseDumps($runner, $compose, GateFixture::TRUSTED),

@@ -116,7 +116,7 @@ final readonly class BackupsRestoreCommand
             return Command::FAILURE;
         }
 
-        $io->success(\sprintf('"%s" is as it was on %s (backup %s).', $site, $restored['time'], substr($restored['id'], 0, 8)));
+        $io->success(\sprintf('"%s" is as it was on %s (backup %s).', $site, Time::utc($restored['time']), substr($restored['id'], 0, 8)));
         $this->wayBack($io, $site, $restored['before']);
 
         return Command::SUCCESS;
@@ -190,7 +190,7 @@ final readonly class BackupsRestoreCommand
             return Command::FAILURE;
         }
 
-        $io->success(\sprintf('"%s" runs, as "%s" was on %s (backup %s).', $target, $source, $restored['time'], substr($restored['id'], 0, 8)));
+        $io->success(\sprintf('"%s" runs, as "%s" was on %s (backup %s).', $target, $source, Time::utc($restored['time']), substr($restored['id'], 0, 8)));
         $io->writeln(\sprintf('Point the DNS of %s at this server: its certificate comes at the first visit. Everyone signs in again (it has a secret of its own).', implode(', ', array_map(static fn (Domain $domain): string => $domain->unicode(), $domains))));
 
         return Command::SUCCESS;

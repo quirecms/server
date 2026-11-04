@@ -98,6 +98,26 @@ final class SiteDatabasesTest extends KernelTestCase
         }
     }
 
+    public function testASiteDoesntReadWhatOtherSitesDo(): void
+    {
+        $password = $this->databases->create($this->jane);
+        $this->databases->create($this->kim);
+        $this->databases->harden((string) $this->admin->getDatabase());
+        $jane = $this->connect($this->jane, $password, $this->jane->databaseIdentifier());
+
+        // ISO-13: every database's traffic, every session's, from any database
+        foreach (['SELECT count(*) FROM pg_stat_database', 'SELECT count(*) FROM pg_stat_activity', 'SELECT pg_stat_get_db_xact_commit(1)', 'SELECT count(*) FROM pg_stat_get_activity(NULL)'] as $query) {
+            try {
+                $jane->fetchOne($query);
+                self::fail('Read: '.$query);
+            } catch (DbalException $e) {
+                self::assertStringContainsString('permission denied', $e->getMessage(), $query);
+            }
+        }
+
+        $jane->close();
+    }
+
     public function testDroppingEndsConnectionsAndRemovesEverything(): void
     {
         $password = $this->databases->create($this->jane);

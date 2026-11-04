@@ -23,7 +23,7 @@ A site is an ordinary Quire project in `/srv/quire/sites/<site>` (from `quire/sk
 
 ## Installing it
 
-On Ubuntu 26.04 LTS or a later LTS release (see [Supported systems](#supported-systems)), as root:
+On Ubuntu 26.04 LTS or a later LTS release (see [Supported systems](#supported-systems)), as root (Ubuntu has curl; `wget -O install.sh <address>` works as well):
 
 ```bash
 curl -fsSL https://github.com/quirecms/server/releases/latest/download/install.sh -o install.sh
@@ -57,6 +57,10 @@ The installer:
 7. **Turns on automatic security updates** for the operating system (`--no-os-updates` leaves them as they are).
 
 `--site-networks=<range>` chooses the range sites' addresses come from.
+
+**Trying it without a real domain:** `--test-certificates` makes the front door its own certificate authority (no public name needed, e.g. `jane.test`), and `--staging-certificates` takes certificates from Let's Encrypt's staging authority, for a public name such as `jane.203.0.113.7.sslip.io` that points at the machine, without using up Let's Encrypt's limits. Either way, browsers warn that the certificate isn't trusted: that's expected. Without either, certificates come from Let's Encrypt itself.
+
+The server is put in place whole: built beside it, then moved in, so a dropped connection leaves either a complete install or none (the next run finishes it, taking over the cut-short run's lock).
 
 Running it again is safe: it keeps the secrets it made and finishes what's left, e.g. after you've freed ports 80 and 443. `--yes` answers yes to its questions; `--help` lists its options.
 
@@ -118,7 +122,7 @@ quire-server update [--to=0.2.0] [--check] [--undo]   # the server itself, see "
 quire-server database:upgrade [--check] [--to=19] [--undo] [--clean]   # its PostgreSQL, see "Upgrading PostgreSQL"
 quire-server site:update jane [--to=0.2.0] [--dry-run]   # see "Updating a site"
 quire-server site:update --all [--automatic]             # every site; --automatic: what the night does, now
-quire-server site:updates jane [security|all|off]        # which updates it gets by itself, every night
+quire-server site:auto-updates jane [security|all|off]   # which updates it gets by itself, every night (or site:updates)
 quire-server site:undo jane             # its last update or deploy, within a week
 quire-server site:audit jane            # known vulnerabilities in its packages
 quire-server site:key blog              # Git mode: a site's deploy key (see "Sites from a Git repository")
@@ -135,6 +139,7 @@ quire-server backups:restore jane --file=before-restore-<time>.tar   # or as one
 quire-server backups:restore jane --as=copy --domain=…   # a new site from it (--from-server: another server's)
 quire-server backups:restore-server --from-server=old   # every site of another server, from its backups
 quire-server backups:check [--read=5]   # check the stored backups
+quire-server help                       # every command, by what it's for
 quire-server status [--dismiss=<key>]  # what needs you, the nightly work, sites' certificates (see "Problems")
 quire-server notify:test                # a test notification, by email and to the webhook
 quire-server operations [--site=jane]  # what was done, by whom, and how it ended
@@ -299,6 +304,7 @@ quire-server site:poll blog on           # or let the agent deploy new commits b
 ```
 
 - **A deploy works like an update:** the commit is built while the site keeps running, the site is backed up, the new version started and checked, and rolled back by itself if it fails. `quire-server site:undo blog` goes back to the commit before, within a week.
+- **Where the repository is:** its host must be on the internet. A name that points at this machine or a private network is refused (checked each time Git connects, and Git is held to the address checked; HTTPS redirects aren't followed). A Git server on your own network, e.g. a Gitea in the same VPC, is allowed by name: `QUIRE_SERVER_GIT_PRIVATE_HOSTS=git.internal.example` in `server.env`, then `quire-server up`.
 - **With polling on,** the agent asks the repository for new commits every 5 minutes (`QUIRE_SERVER_GIT_POLL_SECONDS` in `server.env`, at least 60). A commit that fails isn't tried again by itself, nor is one you undid: the next commit is.
 - **Public repositories** can be followed over HTTPS without a key (`--git=https://github.com/me/blog.git`).
 - **Updates are made in the repository:** run `composer update` there and commit `composer.lock`. `quire-server site:update blog --dry-run` shows what's available. Commit a `composer.lock`, or every build resolves the versions anew.
@@ -373,7 +379,7 @@ E2E_ONLY=release tests/e2e/run.sh                        # this install.sh insta
 E2E_ONLY=update tests/e2e/run.sh quire-server-agent:test # this checkout updates itself to a release
 ```
 
-CI runs the six parts (`adopt`, `sites`, `git`, `release`, `update`, `backups`) in parallel, on clean machines. How to contribute: [CONTRIBUTING.md](CONTRIBUTING.md).
+CI runs the eight parts (`adopt`, `sites`, `git`, `release`, `update`, `backups`, `database`, `links`) in parallel, on clean machines, and every night (what isn't pinned changes: Quire's releases, its runtime images, Sigstore). How to contribute: [CONTRIBUTING.md](CONTRIBUTING.md).
 
 Sites are found and managed through the contract every Quire site keeps (`Quire\Runtime\ServerContract`, [docs](https://github.com/quirecms/framework/blob/main/docs/docker.md#tools-that-manage-sites)): Quire Server uses no Quire code of its own.
 

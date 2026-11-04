@@ -35,8 +35,11 @@ jobs:
         run: docker compose -f compose.dev.yaml build php
       - name: Install dependencies
         run: docker compose -f compose.dev.yaml run --rm php composer install --no-interaction --no-progress
-      - name: Code style, Rector, PHPStan, tests
-        run: docker compose -f compose.dev.yaml run --rm php composer qa
+      - name: Code style, Rector, PHPStan
+        run: docker compose -f compose.dev.yaml run --rm php sh -c 'composer cs && composer rector && composer phpstan'
+      - name: Tests, and the coverage they may not fall below
+        # In all, and in each part that keeps sites apart (STATIC-10): tests/ci/coverage-floor.php
+        run: docker compose -f compose.dev.yaml run --rm php composer coverage
       - name: Audit dependencies
         run: docker compose -f compose.dev.yaml run --rm php composer audit
 
@@ -52,6 +55,9 @@ jobs:
       - name: ShellCheck
         # Every shell script (*.sh, and the quire-server command), as POSIX sh
         run: docker run --rm -v "$PWD:/m:ro" koalaman/shellcheck-alpine:v0.11.0 sh -c 'shellcheck -s sh -e SC2016 /m/bin/quire-server $(find /m -name "*.sh" -not -path "/m/vendor/*")'
+      - name: Hadolint
+        # The agent's Dockerfile (STATIC-10): what it runs as, what it installs and how
+        run: docker run --rm -i hadolint/hadolint:v2.12.0@sha256:30a8fd2e785ab6176eed53f74769e04f125afb2f74a6c52aef7d463583b6d45e < Dockerfile
 
   image:
     name: The agent's image, scanned

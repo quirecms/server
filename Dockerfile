@@ -20,7 +20,10 @@ FROM php:8.5-cli-alpine@sha256:e899a75c775804e5466dbd9c96b31f8b6c6ae2ddb053a8466
 SHELL ["/bin/ash", "-euo", "pipefail", "-c"]
 
 COPY --from=php_extension_installer /usr/bin/install-php-extensions /usr/local/bin/
-# The base image's packages with their fixes (it's rebuilt less often than Alpine fixes them)
+# The base image's packages with their fixes (it's rebuilt less often than Alpine fixes them). Their
+# versions aren't pinned: the base is (by digest), and the image is rebuilt and scanned in CI and at
+# each release; a pinned version would stop every build as soon as Alpine replaces it.
+# hadolint ignore=DL3018
 RUN apk upgrade --no-cache \
     && install-php-extensions intl pcntl pdo_pgsql opcache \
     && apk add --no-cache ca-certificates curl git openssh-client openssh-keygen tar tini \
@@ -75,6 +78,9 @@ CMD ["bin/console", "server:agent"]
 FROM agent AS dev
 ENV APP_ENV=test APP_DEBUG=1
 COPY --from=yorvogate /usr/local/bin/yorvogate /usr/local/bin/yorvogate
+# Coverage, for the tests' floor and mutation testing (STATIC-10): in development only
+COPY --from=php_extension_installer /usr/bin/install-php-extensions /usr/local/bin/
+RUN install-php-extensions pcov && rm /usr/local/bin/install-php-extensions
 WORKDIR /app
 ENTRYPOINT []
 CMD ["composer", "qa"]

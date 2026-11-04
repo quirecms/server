@@ -71,7 +71,7 @@ final readonly class RemoveSiteCommand
         try {
             $backup = $this->sites->remove($site, !$skipBackup, Requester::CHANNEL, Requester::name(), static fn (string $step) => $io->writeln('  '.$step.'…'));
         } catch (\Throwable $e) {
-            $io->error(['Removing the site failed:', $e->getMessage(), ...($skipBackup ? [] : ['If it can\'t be backed up because it doesn\'t start, --skip-backup removes it without one.'])]);
+            $io->error(['Removing the site failed:', $e->getMessage(), ...($skipBackup || !str_contains($e->getMessage(), 'Backing up') ? [] : ['If it can\'t be backed up because it doesn\'t start, --skip-backup removes it without one.'])]);
 
             return Command::FAILURE;
         }

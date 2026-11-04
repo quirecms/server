@@ -261,6 +261,30 @@ final class ComposePolicyTest extends TestCase
         self::assertStringContainsString('Network "quire-edge-copy": its name "quire-edge"', $text, 'A network of its own can\'t take a shared one\'s name.');
     }
 
+    public function testTheServersAndDockersLabelsArentASitesToSet(): void
+    {
+        $config = array_replace_recursive($this->site(), ['services' => ['php' => ['labels' => ['com.quirecms.server.site' => 'kim', 'com.quirecms.server.database-upgrade' => '19', 'com.quirecms.contract' => '1']], 'worker' => ['labels' => ['com.docker.compose.project=kim'], 'build' => ['labels' => ['com.quirecms.server.builder' => 'x']]]], 'volumes' => ['storage_data' => ['labels' => ['com.quirecms.server.link' => 'yes']]]]);
+        $text = implode("\n", $this->violations($config));
+
+        self::assertStringContainsString('services.php: the label "com.quirecms.server.site"', $text, 'Another site\'s name.');
+        self::assertStringContainsString('the label "com.quirecms.server.database-upgrade"', $text);
+        self::assertStringNotContainsString('com.quirecms.contract', $text, 'The framework\'s own label of a site: the site\'s.');
+        self::assertStringContainsString('services.worker: the label "com.docker.compose.project"', $text, 'As "name=value" too.');
+        self::assertStringContainsString('services.worker.build: the label "com.quirecms.server.builder"', $text);
+        self::assertStringContainsString('volumes.storage_data: the label "com.quirecms.server.link"', $text);
+    }
+
+    public function testATmpfsWithDevicesOrSetUserIdProgramsAndAnnotationsAreRefused(): void
+    {
+        $config = array_replace_recursive($this->site(), ['services' => ['php' => ['tmpfs' => ['/t:exec,suid,dev,size=100g', '/ok:size=64m'], 'annotations' => ['io.kubernetes.cri-o.Devices' => '/dev/fuse']]]]);
+        $text = implode("\n", $this->violations($config));
+
+        self::assertStringContainsString('"tmpfs: /t:exec,suid,dev,size=100g": the "suid" option', $text);
+        self::assertStringContainsString('the "dev" option', $text);
+        self::assertStringNotContainsString('/ok:size=64m', $text);
+        self::assertStringContainsString('"annotations" are passed to the container\'s runtime', $text);
+    }
+
     public function testHarmlessValuesOfForbiddenSettingsPass(): void
     {
         $config = array_replace_recursive($this->site(), ['services' => ['php' => ['privileged' => false, 'gpus' => 'false', 'blkio_config' => ['weight' => 300], 'post_start' => [['command' => ['id'], 'privileged' => false]], 'isolation' => 'default', 'oom_kill_disable' => 'false', 'deploy' => ['resources' => ['limits' => ['cpus' => '1.5', 'memory' => '1073741824', 'pids' => 512]], 'restart_policy' => ['condition' => 'on-failure']], 'cap_add' => ['NET_BIND_SERVICE', 'cap_net_bind_service', 'CHOWN', 'SETUID'], 'scale' => 1, 'devices' => [], 'security_opt' => ['no-new-privileges:true'], 'cap_drop' => ['ALL'], 'oom_score_adj' => 0, 'logging' => ['driver' => 'json-file'], 'x-custom' => 'anything', 'build' => ['tags' => ['quire-sites/jane/php-prod:before-update']]], 'worker' => ['network_mode' => 'service:php']]]);
@@ -308,7 +332,7 @@ final class ComposePolicyTest extends TestCase
         return new ComposePolicy()->violations($config, new PolicyContext('jane', $this->site, [
             'quire-edge' => ['php' => ['jane.example', 'www.jane.example']],
             'quire-data' => ['php' => [], 'worker' => []],
-        ]));
+        ], site: 'jane'));
     }
 
     /**

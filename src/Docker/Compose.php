@@ -58,13 +58,59 @@ final readonly class Compose
      */
     public function check(SiteProject $project): void
     {
+        $this->checked($project);
+    }
+
+    /**
+     * @return array<mixed> The configuration that passed
+     */
+    private function checked(SiteProject $project): array
+    {
         // Before Compose reads anything: it would read the files they name.
         $violations = $this->files->violations($project);
-        $violations = [] !== $violations ? $violations : $this->policy->violations($this->config($project), $project->policy);
 
         if ([] !== $violations) {
             throw new PolicyViolation($project->name(), $violations);
         }
+
+        $config = $this->config($project);
+        $violations = $this->policy->violations($config, $project->policy);
+
+        if ([] !== $violations) {
+            throw new PolicyViolation($project->name(), $violations);
+        }
+
+        return $config;
+    }
+
+    /**
+     * The Dockerfiles the site's builds use, as paths in its folder (its merged configuration's).
+     *
+     * @param array<mixed> $config
+     *
+     * @return list<string>
+     */
+    private function dockerfiles(array $config, string $directory): array
+    {
+        $files = [];
+
+        foreach (\is_array($config['services'] ?? null) ? $config['services'] : [] as $service) {
+            $build = \is_array($service) && \is_array($service['build'] ?? null) ? $service['build'] : null;
+
+            if (null === $build) {
+                continue;
+            }
+
+            $context = \is_string($build['context'] ?? null) ? rtrim($build['context'], '/') : $directory;
+            $relative = $context === $directory ? '' : (str_starts_with($context, $directory.'/') ? substr($context, \strlen($directory) + 1).'/' : null);
+            $file = \is_string($build['dockerfile'] ?? null) ? $build['dockerfile'] : 'Dockerfile';
+
+            if (null !== $relative) {
+                $files[] = str_starts_with($file, '/') ? ltrim(substr($file, \strlen($directory)), '/') : $relative.$file;
+            }
+        }
+
+        return [] === $files ? ['Dockerfile'] : array_values(array_unique($files));
     }
 
     /**
@@ -72,7 +118,7 @@ final readonly class Compose
      */
     public function build(SiteProject $project, ?\Closure $output = null): void
     {
-        $this->check($project);
+        $config = $this->checked($project);
         $say = $output ?? static function (string $line): void {};
 
         // Quire's packages as Quire released them, or nothing is built (CodeNotReleased)
@@ -85,7 +131,7 @@ final readonly class Compose
         }
         // On Quire's runtime images by the digests checked (the command line's arguments win over the site's)
         $arguments = [];
-        $pinned = $this->runtime->pinned($project->directory, static fn (string $line) => $say($line."\n"));
+        $pinned = $this->runtime->pinned($project->directory, static fn (string $line) => $say($line."\n"), $this->dockerfiles($config, rtrim($project->directory, '/')));
 
         foreach ($pinned as $name => $image) {
             $arguments[] = '--build-arg';

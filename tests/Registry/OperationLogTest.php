@@ -70,4 +70,62 @@ final class OperationLogTest extends RegistryTestCase
         self::assertSame(1, $log->abandonRunning());
         self::assertSame(['failed', OperationLog::INTERRUPTED], [$log->latest()[0]['status'], $log->latest()[0]['error']]);
     }
+
+    public function testASecretIsScrubbedAsProgramsPrintItEncoded(): void
+    {
+        $log = new OperationLog($this->connection, $this->schema);
+        $operation = $log->start('site.update', null, [], 'cli', 'darko');
+        $operation->secret('p@ss/w0rd+"x');
+        $operation->secret('sixsix');
+        $operation->secret('five5');
+
+        $operation->line('URL-encoded: '.rawurlencode('p@ss/w0rd+"x').' and form-encoded: '.urlencode('p@ss/w0rd+"x'));
+        $operation->line('In JSON: '.json_encode(['password' => 'p@ss/w0rd+"x']));
+        $operation->line('An address: smtp://mailer:an-unregistered-pass@mail.example:587 and postgresql://u:pw@db/x');
+        $operation->line('Six: sixsix; five: five5');
+        // In a longer encoding, at whatever alignment: an Authorization header, a JSON blob
+        $operation->line('Authorization: Basic '.base64_encode('mailer:p@ss/w0rd+"x'));
+        $operation->line('blob: '.base64_encode('{"key":"p@ss/w0rd+\"x","more":1}'));
+        $operation->succeed();
+
+        $lines = $log->lines($operation->id);
+        self::assertStringNotContainsString('w0rd', implode("\n", $lines));
+        self::assertSame('An address: smtp://mailer:[secret]@mail.example:587 and postgresql://u:[secret]@db/x', $lines[2], 'Whoever\'s password it is.');
+        self::assertSame('Six: [secret]; five: five5', $lines[3], '6 characters are a secret; 5 aren\'t (they\'d blank common words).');
+        foreach ([4, 5] as $line) {
+            $left = (string) preg_replace('/^.*?: (?:Basic )?/', '', $lines[$line]);
+            self::assertStringContainsString('[secret]', $left);
+            self::assertStringNotContainsString('w0rd', (string) base64_decode(str_replace('[secret]', '', $left), true), 'Nothing of it decodes any more.');
+        }
+    }
+
+    public function testAnOperationOnASiteIsScrubbedOfItsSettingsSecretsAndTheAgents(): void
+    {
+        $root = sys_get_temp_dir().'/quire-oplog-'.bin2hex(random_bytes(6));
+        new \Symfony\Component\Filesystem\Filesystem()->dumpFile($root.'/sites/jane/prod.env', "APP_SECRET='the-sites-app-secret'\nQUIRE_DATABASE_PASSWORD='the-sites-db-password'\nMAILER_DSN='smtp://jane:the-mail-password@mail.example'\nSERVER_NAME='jane.example'\n");
+        putenv('QUIRE_SERVER_TEST_TOKEN=the-agents-own-token');
+
+        try {
+            $log = new OperationLog($this->connection, $this->schema, new \Quire\Server\Site\ServerPaths($root));
+            $operation = $log->start('site.rebuild', new SiteName('jane'), [], 'agent', 'automatic');
+            $operation->line('APP_SECRET=the-sites-app-secret QUIRE_DATABASE_PASSWORD=the-sites-db-password the-mail-password the-agents-own-token jane.example');
+            $operation->succeed();
+
+            self::assertSame('APP_SECRET=[secret] QUIRE_DATABASE_PASSWORD=[secret] [secret] [secret] jane.example', $log->lines($operation->id)[0], 'Without the caller registering any (MAINT-09): not its domain.');
+        } finally {
+            putenv('QUIRE_SERVER_TEST_TOKEN');
+            new \Symfony\Component\Filesystem\Filesystem()->remove($root);
+        }
+    }
+
+    public function testASitesOperationsAreOnlyItsOwn(): void
+    {
+        $log = new OperationLog($this->connection, $this->schema);
+        $log->start('site.add', new SiteName('jane'), [], 'cli', 'darko')->succeed();
+        $log->start('site.add', new SiteName('kim'), [], 'cli', 'darko')->succeed();
+        $log->start('backups.nightly', null, [], 'agent', 'automatic')->succeed();
+
+        self::assertSame(['jane'], array_column($log->latest(new SiteName('jane')), 'site'), 'Not another site\'s, nor the server\'s (STATIC-07).');
+        self::assertCount(3, $log->latest());
+    }
 }

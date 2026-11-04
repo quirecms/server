@@ -8,6 +8,7 @@ use Quire\Server\Git\DeployKeys;
 use Quire\Server\Site\SiteName;
 use Symfony\Component\Console\Attribute\Argument;
 use Symfony\Component\Console\Attribute\AsCommand;
+use Symfony\Component\Console\Attribute\Option;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Style\SymfonyStyle;
 
@@ -22,6 +23,9 @@ use Symfony\Component\Console\Style\SymfonyStyle;
 
           <info>quire-server site:key blog</info>
           <info>quire-server site:add blog --git=git@github.com:me/blog.git --domain=blog.example --admin-email=me@example.com</info>
+
+        --rotate makes a new key in its place (e.g. once a year, or after the server was copied): add
+        the new one to the repository, and remove the old one there.
 
         The private key stays on this server, readable by root only, outside the site's folder. It's
         deleted when the site is removed.
@@ -38,18 +42,25 @@ final readonly class KeyCommand
         SymfonyStyle $io,
         #[Argument(description: 'The site\'s short name, e.g. "blog" (it may not exist yet)')]
         string $name,
+        #[Option(description: 'Make a new key in place of the one it has')]
+        bool $rotate = false,
     ): int {
         try {
             $site = new SiteName($name);
-            $new = !$this->keys->exists($site);
-            $public = $this->keys->publicKey($site, \sprintf('quire-server:%s@%s', $site, false === gethostname() ? 'server' : gethostname()));
+            $new = $rotate || !$this->keys->exists($site);
+            $comment = \sprintf('quire-server:%s@%s', $site, false === gethostname() ? 'server' : gethostname());
+            $public = $rotate ? $this->keys->rotate($site, $comment) : $this->keys->publicKey($site, $comment);
         } catch (\Throwable $e) {
             $io->error($e->getMessage());
 
             return Command::FAILURE;
         }
 
-        $io->writeln($new ? \sprintf('A deploy key for "%s". Add it to the repository as a read-only deploy key:', $site) : \sprintf('The deploy key of "%s":', $site));
+        $io->writeln(match (true) {
+            $rotate => \sprintf('A new deploy key for "%s". Add it to the repository as a read-only deploy key, and remove the old one there (until then, deploys are refused):', $site),
+            $new => \sprintf('A deploy key for "%s". Add it to the repository as a read-only deploy key:', $site),
+            default => \sprintf('The deploy key of "%s":', $site),
+        });
         $io->newLine();
         $io->writeln($public, SymfonyStyle::OUTPUT_RAW);
         $io->newLine();

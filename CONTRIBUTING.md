@@ -35,7 +35,7 @@ Pull requests are reviewed for the above, and for messages: what an owner reads 
 
 ## Commands
 
-A command is a class in `src/Console/` named `server:<name>`, run as `quire-server <name>` (`bin/quire-server` adds the prefix). A new one goes in the README's list of commands and in `bin/quire-server`'s header. `tests/Console/` shows how they're tested, against a real PostgreSQL schema where they read the registry (`tests/Registry/RegistryTestCase.php`).
+A command is a class in `src/Console/` named `server:<name>`, run as `quire-server <name>` (`bin/quire-server` adds the prefix). A new one goes in the README's list of commands and in `bin/quire-server`'s header. `tests/Console/` shows how they're tested; `BackupsSetupCommandTest` is one that reads and writes the registry, on a real PostgreSQL schema of its own (`tests/Registry/RegistryTestCase.php`), with the programs it runs scripted (`tests/ScriptedRunner.php`). Internal commands (the agent's own) are `hidden: true`: "quire-server help" lists the others, by what they're for.
 
 ## The Compose policy
 
