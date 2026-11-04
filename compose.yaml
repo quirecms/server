@@ -100,6 +100,8 @@ services:
       - ${QUIRE_SERVER_ROOT:-/srv/quire}/server/domains:${QUIRE_SERVER_ROOT:-/srv/quire}/server/domains
       # Git mode sites' deploy keys: only the agent sees them
       - ${QUIRE_SERVER_ROOT:-/srv/quire}/server/keys:${QUIRE_SERVER_ROOT:-/srv/quire}/server/keys
+      # The server's key that signs its backups off the server (D-36): only the agent, and never backed up
+      - ${QUIRE_SERVER_ROOT:-/srv/quire}/server/signing:${QUIRE_SERVER_ROOT:-/srv/quire}/server/signing
       # Copies of sites' files for programs run in containers of their own (Composer): the same path
       # on the host, which Docker mounts into them
       - ${QUIRE_SERVER_ROOT:-/srv/quire}/server/work:${QUIRE_SERVER_ROOT:-/srv/quire}/server/work

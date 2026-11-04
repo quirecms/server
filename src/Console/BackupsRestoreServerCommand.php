@@ -20,7 +20,11 @@ use Symfony\Component\Console\Style\SymfonyStyle;
         mode site comes from its repository, with its deploy key from the old server's backup. Sites
         whose name this server has already are left out; one that fails doesn't stop the others.
 
-          <info>quire-server backups:restore-server --from-server=old-server</info>
+          <info>quire-server backups:restore-server --from-server=old-server --signed-by=ed25519:…</info>
+
+        The old server's public key for its backups (shown by "quire-server status" on it, and when its
+        backups were set up) proves each backup is its own: anyone with the backups' password could
+        put others in the bucket. Backups made before servers signed theirs need --unsigned.
 
         Then point each domain's DNS at this server. The sites have settings of their own (their
         database, password and secret): everyone signs in again.
@@ -39,6 +43,10 @@ final readonly class BackupsRestoreServerCommand
         ?string $fromServer = null,
         #[Option(description: 'Don\'t ask')]
         bool $yes = false,
+        #[Option(description: 'The old server\'s public key for its backups ("quire-server status" showed it there)')]
+        ?string $signedBy = null,
+        #[Option(description: 'Restore backups this server can\'t verify (made before servers signed theirs): only ones you know the origin of')]
+        bool $unsigned = false,
     ): int {
         if (!$this->backups->configured()) {
             $io->error('Backups off the server aren\'t set up: "quire-server backups:setup --existing --host=<this server\'s name>" connects to the old server\'s.');
@@ -53,7 +61,7 @@ final readonly class BackupsRestoreServerCommand
         }
 
         try {
-            $manifest = $this->backups->manifest($fromServer);
+            $manifest = $this->backups->manifest($fromServer, $signedBy, $unsigned, static fn (string $line) => $io->writeln('  '.$line));
         } catch (\Throwable $e) {
             $io->error($e->getMessage());
 
@@ -77,7 +85,7 @@ final readonly class BackupsRestoreServerCommand
             return Command::SUCCESS;
         }
 
-        $outcomes = $this->backups->restoreServer($fromServer, Requester::CHANNEL, Requester::name(), static fn (string $line) => $io->writeln('  '.$line));
+        $outcomes = $this->backups->restoreServer($fromServer, Requester::CHANNEL, Requester::name(), static fn (string $line) => $io->writeln('  '.$line), $signedBy, $unsigned);
         $io->table(['Site', 'Outcome', ''], array_map(array_values(...), $outcomes));
 
         if (\in_array('failed', array_column($outcomes, 'outcome'), true)) {

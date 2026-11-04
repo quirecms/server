@@ -336,6 +336,22 @@ check 'its application'\''s own tables too' "[ \"\$(orders jane)\" = 2 ]"
 check 'the restore is recorded, and it was backed up first' "inside 'quire-server operations' | grep -q 'site.restore.*succeeded' && inside 'ls /srv/quire/backups/jane/before-restore-*.tar'"
 check 'nothing of the restore is left on the server' "[ -z \"\$(inside 'ls -d /srv/quire/backups/jane/from-off-server-* /srv/quire/backups/jane/off-server-*.tar 2>/dev/null')\" ]"
 
+echo '== Backups that prove where they come from (D-36)'
+# restic on the repository as anyone with its password would (in the agent's container, which has it)
+anyone() { inside "docker exec -e RESTIC_REPOSITORY=s3:http://s3:9000/quire-backups/server-1 -e RESTIC_PASSWORD='$password' -e AWS_ACCESS_KEY_ID=e2e-key -e AWS_SECRET_ACCESS_KEY=e2e-secret -e AWS_DEFAULT_REGION=us-east-1 -e RESTIC_CACHE_DIR=/tmp/anyone quire-server-agent-1 restic $1"; }
+public_key=$(inside 'quire-server status' | grep -o 'ed25519:[A-Za-z0-9+/=]*' | head -1)
+check 'the server signs its backups: its public key is shown, at setup too' "[ -n '$public_key' ] && tr -d '\n ' < $logs/setup.log | grep -qF '$public_key'"
+check 'the list of the backups it made is signed, and backed up' "anyone 'snapshots --json --tag quire-provenance' | grep -q '\"id\"'"
+check 'its key is in none of them' "! anyone 'snapshots --json' | grep -q /server/signing && [ \"\$(inside 'stat -c %a /srv/quire/server/signing/backups.key')\" = 600 ]"
+# The audit's ISO-08: a snapshot under jane's tags, made with the password, newer than jane's own
+inside "docker exec quire-server-agent-1 sh -c 'echo planted > /srv/quire/backups/jane/off-server-planted.tar'"
+planted=$(anyone 'backup --json --host quire-server --tag quire-site --tag site:jane /srv/quire/backups/jane/off-server-planted.tar' | sed -n 's/.*"snapshot_id":"\([0-9a-f]*\)".*/\1/p')
+inside 'rm -f /srv/quire/backups/jane/off-server-planted.tar'
+check 'a snapshot someone else made, under the site'\''s tags, is refused' "[ -n '$planted' ] && inside 'quire-server backups:restore jane --snapshot=$planted --yes 2>&1' | tr -s ' \n' ' ' | grep -q 'one this server made' && inside \"curl -sk $resolve https://jane.test/\" | grep -q 'Jane before'"
+inside 'quire-server backups:restore jane --yes 2>&1' > "$logs"/restore-latest.log || true
+check '"latest" is the newest this server made, not the one planted after it' "grep -q 'is as it was on' $logs/restore-latest.log && inside \"curl -sk $resolve https://jane.test/\" | grep -q 'Jane before'"
+anyone "forget $planted" >/dev/null
+
 inside 'quire-server backups:check 2>&1' > "$logs"/check.log || true
 check 'the stored data checks out' "grep -q 'The backups check out' $logs/check.log"
 
@@ -355,13 +371,15 @@ check 'a name taken isn'\''t restored over' "inside 'quire-server backups:restor
 # This machine as a second server, under another name in the same bucket: the first one's backups are another server's.
 inside "QUIRE_SERVER_BACKUP_SETUP_SECRET_KEY=e2e-secret QUIRE_SERVER_BACKUP_SETUP_PASSWORD='$password' quire-server backups:setup $repository --existing --host=server-2 --yes >/dev/null 2>&1"
 check 'another server'\''s backups are listed by its name' "! inside 'quire-server backups jane' | grep -qE '^ +[0-9a-f]{8} ' && inside 'quire-server backups jane --from-server=quire-server' | grep -qE '^ +[0-9a-f]{8} '"
-inside 'quire-server backups:restore jane --from-server=quire-server --as=moved --domain=moved.test --yes 2>&1' | tee "$logs"/moved.log | sed 's/^/    /'
+check 'another server'\''s backups need its public key' "inside 'quire-server backups:restore jane --from-server=quire-server --as=moved --domain=moved.test --yes 2>&1' | tr -s ' \n' ' ' | grep -q 'signed-by' && ! inside 'quire-server site:list' | grep -q moved"
+inside "quire-server backups:restore jane --from-server=quire-server --signed-by='$public_key' --as=moved --domain=moved.test --yes 2>&1" | tee "$logs"/moved.log | sed 's/^/    /'
 check 'a site moves from another server'\''s backups' "grep -q 'moved\" runs' $logs/moved.log && inside 'curl -sk --resolve moved.test:443:127.0.0.1 https://moved.test/' | grep -q 'Jane before'"
 
 echo '== A whole server from its backups (as a server that replaces it)'
 # The first server's sites, as its last backup lists them (only jane): gone from here first.
 inside 'quire-server site:remove jane --yes >/dev/null 2>&1'
 inside 'quire-server backups:restore-server --from-server=quire-server --yes 2>&1' | tee "$logs"/restore-server.log | sed 's/^/    /'
+# Its key, given once (for "moved"), is trusted for its backups since
 check 'every site of the old server is restored, with its name and domains' "grep -Eq 'jane +restored' $logs/restore-server.log && inside \"curl -sk $resolve https://jane.test/\" | grep -q 'Jane before'"
 check 'with its application'\''s own tables' "[ \"\$(orders jane)\" = 2 ]"
 check 'with its update policy' "inside 'quire-server site:updates jane' | grep -q 'fix a known vulnerability'"

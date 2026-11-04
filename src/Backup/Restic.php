@@ -130,11 +130,60 @@ final readonly class Restic
     /**
      * Forgets the snapshots the retention doesn't keep (each site's, and the server's, on their own),
      * and, with $prune, frees the storage only they used.
+     *
+     * @return list<string> The IDs of the snapshots it forgot
      */
-    public function forget(bool $prune): void
+    public function forget(bool $prune): array
     {
         $keep = $this->settings->retention();
-        $this->orFail($this->restic(['forget', '--host', $this->settings->host, '--group-by', 'host,tags', '--keep-daily', (string) $keep['daily'], '--keep-weekly', (string) $keep['weekly'], '--keep-monthly', (string) $keep['monthly'], ...($prune ? ['--prune'] : [])], 7200), 'Forgetting old backups');
+        $result = $this->orFail($this->restic(['forget', '--json', '--host', $this->settings->host, '--group-by', 'host,tags', '--keep-daily', (string) $keep['daily'], '--keep-weekly', (string) $keep['weekly'], '--keep-monthly', (string) $keep['monthly']], 7200), 'Forgetting old backups');
+        $forgotten = [];
+        $groups = json_decode(trim($result->output), true);
+
+        foreach (\is_array($groups) ? $groups : [] as $group) {
+            foreach (\is_array($group) && \is_array($group['remove'] ?? null) ? $group['remove'] : [] as $snapshot) {
+                if (\is_array($snapshot) && \is_string($snapshot['id'] ?? null)) {
+                    $forgotten[] = $snapshot['id'];
+                }
+            }
+        }
+
+        if ($prune) {
+            $this->orFail($this->restic(['prune'], 7200), 'Freeing the storage of old backups');
+        }
+
+        return $forgotten;
+    }
+
+    /**
+     * How much room restoring these paths of a snapshot takes, in bytes: its files' sizes.
+     *
+     * @param list<string> $paths
+     */
+    public function size(string $snapshot, array $paths): int
+    {
+        if (1 !== preg_match(self::SNAPSHOT, $snapshot) || [] === $paths) {
+            throw new \InvalidArgumentException('Not a snapshot, or not a path in it.');
+        }
+
+        foreach ($paths as $path) {
+            if (!str_starts_with($path, '/') || str_contains($path, '..')) {
+                throw new \InvalidArgumentException('Not a snapshot, or not a path in it.');
+            }
+        }
+
+        $result = $this->orFail($this->restic(['ls', '--json', '--recursive', $snapshot, '--', ...$paths], 600), 'Reading the backup\'s size');
+        $size = 0;
+
+        foreach (explode("\n", trim($result->output)) as $line) {
+            $node = json_decode($line, true);
+
+            if (\is_array($node) && 'file' === ($node['type'] ?? null) && \is_int($node['size'] ?? null)) {
+                $size += $node['size'];
+            }
+        }
+
+        return $size;
     }
 
     /**

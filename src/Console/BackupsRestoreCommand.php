@@ -35,6 +35,11 @@ use Symfony\Component\Console\Style\SymfonyStyle;
 
         A Git mode site's code is in its repository, not its backups: add it from there, then restore
         its data in place.
+
+        Only a backup this server made is restored, or one the other server signed: give its public
+        key (it's shown by "quire-server status" there) with --signed-by. Anyone with the backups'
+        password can put a snapshot in the bucket; --unsigned restores one anyway, for backups made
+        before servers recorded theirs.
         HELP,
 )]
 final readonly class BackupsRestoreCommand
@@ -61,6 +66,10 @@ final readonly class BackupsRestoreCommand
         array $domain = [],
         #[Option(description: 'Another server\'s backups in the same bucket (its QUIRE_SERVER_BACKUP_HOST), with --as')]
         ?string $fromServer = null,
+        #[Option(description: 'With --from-server: its public key for its backups, which "quire-server status" showed on it')]
+        ?string $signedBy = null,
+        #[Option(description: 'Restore a backup this server can\'t verify (made before servers recorded theirs, or by another): only one you know the origin of')]
+        bool $unsigned = false,
     ): int {
         if (!$this->backups->configured()) {
             $io->error('Backups off the server aren\'t set up: "quire-server backups:setup".');
@@ -69,7 +78,7 @@ final readonly class BackupsRestoreCommand
         }
 
         if (null !== $as || null !== $fromServer || [] !== $domain) {
-            return $this->asNew($io, $name, $snapshot, $as, $domain, $fromServer, $yes);
+            return $this->asNew($io, $name, $snapshot, $as, $domain, $fromServer, $yes, $signedBy, $unsigned);
         }
 
         try {
@@ -81,7 +90,7 @@ final readonly class BackupsRestoreCommand
                 return Command::SUCCESS;
             }
 
-            $restored = $this->backups->restore($site, $snapshot, Requester::CHANNEL, Requester::name(), static fn (string $step) => $io->writeln('  '.$step.'…'));
+            $restored = $this->backups->restore($site, $snapshot, Requester::CHANNEL, Requester::name(), static fn (string $step) => $io->writeln('  '.$step.'…'), $unsigned);
         } catch (UpdateFailed $e) {
             $io->error($e->restored
                 ? ['Restoring it failed, and the site is as it was before:', $e->getMessage(), 'Its log: quire-server operations '.$e->operationId]
@@ -102,7 +111,7 @@ final readonly class BackupsRestoreCommand
     /**
      * @param list<string> $domains
      */
-    private function asNew(SymfonyStyle $io, string $name, string $snapshot, ?string $as, array $domains, ?string $fromServer, bool $yes): int
+    private function asNew(SymfonyStyle $io, string $name, string $snapshot, ?string $as, array $domains, ?string $fromServer, bool $yes, ?string $signedBy, bool $unsigned): int
     {
         try {
             $source = new SiteName($name);
@@ -119,7 +128,7 @@ final readonly class BackupsRestoreCommand
                 return Command::SUCCESS;
             }
 
-            $restored = $this->backups->restoreAsNew($source, $snapshot, $target, $domains, $fromServer, Requester::CHANNEL, Requester::name(), static fn (string $step) => $io->writeln('  '.$step.'…'));
+            $restored = $this->backups->restoreAsNew($source, $snapshot, $target, $domains, $fromServer, Requester::CHANNEL, Requester::name(), static fn (string $step) => $io->writeln('  '.$step.'…'), $signedBy, $unsigned);
         } catch (\Throwable $e) {
             $io->error(['The site wasn\'t added (everything done was undone):', $e->getMessage()]);
 

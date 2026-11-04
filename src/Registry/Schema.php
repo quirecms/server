@@ -251,4 +251,39 @@ final class Schema
                 SQL,
         ];
     }
+
+    /**
+     * The backups off the server this server made (D-36), by restic's snapshot ID (a hash of all
+     * their content) and the repository they're in (backups moved to another bucket aren't missing): a restore takes only one of these, or one another server it trusts signed. And
+     * the public keys of other servers it trusts.
+     *
+     * @return list<string>
+     */
+    public static function version10(string $schema = self::NAME): array
+    {
+        $s = '"'.str_replace('"', '""', $schema).'"';
+
+        return [
+            <<<SQL
+                CREATE TABLE {$s}.backup_snapshot (
+                    id text PRIMARY KEY CHECK (id ~ '^[0-9a-f]{64}$'),
+                    repository text NOT NULL,
+                    host text NOT NULL,
+                    kind text NOT NULL CHECK (kind IN ('site', 'server')),
+                    site text,
+                    created_at timestamptz NOT NULL,
+                    forgotten_at timestamptz,
+                    CHECK ((kind = 'site') = (site IS NOT NULL))
+                )
+                SQL,
+            "CREATE INDEX backup_snapshot_host ON {$s}.backup_snapshot (repository, host, created_at DESC)",
+            <<<SQL
+                CREATE TABLE {$s}.backup_key (
+                    public_key text PRIMARY KEY,
+                    host text NOT NULL,
+                    trusted_at timestamptz NOT NULL DEFAULT now()
+                )
+                SQL,
+        ];
+    }
 }

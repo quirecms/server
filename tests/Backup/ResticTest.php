@@ -92,11 +92,29 @@ final class ResticTest extends TestCase
         self::assertSame(['restic', '--quiet', 'snapshots', '--json', '--host', 'quire-server', '--tag', 'quire-site,site:jane'], $this->runner->runs[0]['command']);
     }
 
-    public function testTheRetentionKeepsEachSitesOnItsOwn(): void
+    public function testTheRetentionKeepsEachSitesOnItsOwnAndSaysWhatItForgot(): void
     {
-        $this->restic()->forget(prune: true);
+        $this->answers['forget'] = [0, (string) json_encode([
+            ['tags' => ['quire-site', 'site:jane'], 'keep' => [['id' => str_repeat('a', 64)]], 'remove' => [['id' => str_repeat('b', 64)], ['id' => str_repeat('c', 64)]]],
+            ['tags' => ['quire-server'], 'keep' => [['id' => str_repeat('d', 64)]], 'remove' => null],
+        ]), ''];
 
-        self::assertSame(['restic', '--quiet', 'forget', '--host', 'quire-server', '--group-by', 'host,tags', '--keep-daily', '7', '--keep-weekly', '4', '--keep-monthly', '6', '--prune'], $this->runner->runs[0]['command']);
+        self::assertSame([str_repeat('b', 64), str_repeat('c', 64)], $this->restic()->forget(prune: true), 'What the registry stops expecting to find.');
+        self::assertSame(['restic', '--quiet', 'forget', '--json', '--host', 'quire-server', '--group-by', 'host,tags', '--keep-daily', '7', '--keep-weekly', '4', '--keep-monthly', '6'], $this->runner->runs[0]['command']);
+        self::assertSame(['restic', '--quiet', 'prune'], $this->runner->runs[1]['command'], 'On its own: its output isn\'t forget\'s list.');
+    }
+
+    public function testARestoresSizeIsItsFiles(): void
+    {
+        $this->answers['ls'] = [0, implode("\n", [
+            '{"time":"2026-11-01T02:00:00Z","struct_type":"snapshot","id":"'.str_repeat('a', 64).'"}',
+            '{"name":"jane","type":"dir","path":"/srv/quire/sites/jane","size":0}',
+            '{"name":"a.tar","type":"file","path":"/srv/quire/backups/jane/a.tar","size":1500}',
+            '{"name":"b","type":"file","path":"/srv/quire/sites/jane/b","size":500}',
+        ]), ''];
+
+        self::assertSame(2000, $this->restic()->size(str_repeat('a', 64), ['/srv/quire/backups/jane/a.tar', '/srv/quire/sites/jane']));
+        self::assertSame(['restic', '--quiet', 'ls', '--json', '--recursive', str_repeat('a', 64), '--', '/srv/quire/backups/jane/a.tar', '/srv/quire/sites/jane'], $this->runner->runs[0]['command']);
     }
 
     public function testOnlyASnapshotAndAPathInIt(): void
