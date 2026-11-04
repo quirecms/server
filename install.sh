@@ -11,6 +11,8 @@
 #      workflow for that very version), its archive's checksum and its image's signature; nothing is
 #      run that doesn't check out. Puts the server in /srv/quire/server, its settings and new secrets
 #      in server.env (root only), and the "quire-server" command in /usr/local/bin.
+#      Refuses a range for sites' addresses that the machine routes elsewhere (a VPC, a VPN), and
+#      names a free one.
 #   3. Starts the server without its front door (PostgreSQL, the Docker gate, agent), with the release's
 #      images, by digest (or the agent built from --source).
 #   4. Adopts the Quire sites already running from /srv/quire/sites (asks first): they're backed up
@@ -24,6 +26,8 @@
 #   --yes              Answer yes to every question (installing Docker, adopting sites)
 #   --source=DIR       Install from this folder (a checkout of quirecms/server) instead of a release
 #   --version=X.Y.Z    The release to install (this installer's own release, or the latest)
+#   --site-networks=CIDR  The private range sites' addresses come from (10.72.0.0/16 by default),
+#                      before any site has its addresses
 #   --no-os-updates    Leave the operating system's updates as they are
 #   --unsupported-os   Install on another system anyway, untested (see "Supported systems" in the README)
 #   --test-certificates  Certificates from the front door's own authority, not Let's Encrypt (tests)
@@ -268,6 +272,49 @@ install_files() {
 	note 'Command: quire-server'
 }
 
+# The range sites' addresses come from (QUIRE_SERVER_SITE_NETWORKS, D-34): none this machine routes
+# elsewhere. Docker doesn't check an explicit subnet against the host's routes, so sites with addresses
+# a VPN or a cloud network also has would lose their traffic to it. Refused before any site has its
+# addresses (sites keep the ones they have); reported after that, as "quire-server up" does.
+check_site_range() {
+	# A release from before sites' links has no range
+	[ -f "$root/server/bin/site-range.sh" ] || return 0
+	# shellcheck source=/dev/null
+	. "$root/server/bin/site-range.sh"
+	links=$(docker network ls --format '{{.Name}}' | grep '^quire-link-' || true)
+	if [ -n "$site_networks" ]; then
+		problem=$(site_range_problem "$site_networks")
+		[ -z "$problem" ] || die "--site-networks: $problem"
+	fi
+
+	if [ -n "$site_networks" ] && [ "$site_networks" != "$(site_range "$root/server")" ]; then
+		[ -z "$links" ] || die "Sites have their addresses in $(site_range "$root/server") already: they keep them, so --site-networks can't change it here. Set QUIRE_SERVER_SITE_NETWORKS in $root/server/server.env for sites added from then on (see \"Site networks\" in the README)."
+		umask 077
+		{ grep -v '^QUIRE_SERVER_SITE_NETWORKS=' "$root/server/server.env"; echo "QUIRE_SERVER_SITE_NETWORKS=$site_networks"; } >"$root/server/server.env.tmp"
+		chmod 600 "$root/server/server.env.tmp"
+		mv "$root/server/server.env.tmp" "$root/server/server.env"
+		umask 022
+	fi
+
+	range=$(site_range "$root/server")
+	problem=$(site_range_problem "$range")
+	[ -z "$problem" ] || die "QUIRE_SERVER_SITE_NETWORKS in $root/server/server.env: $problem"
+	overlaps=$(site_range_overlaps "$range")
+	if [ -z "$overlaps" ]; then
+		note "Sites' addresses: $range"
+
+		return
+	fi
+	if [ -n "$links" ]; then
+		site_range_warn "$root/server"
+
+		return
+	fi
+
+	free=$(site_range_free)
+	die "This machine routes part of the range sites' addresses come from ($range) elsewhere: $(printf '%s' "$overlaps" | tr '\n' ',' | sed 's/,/, /g'). Sites with addresses there would lose their traffic to it. Run the installer again with ${free:+--site-networks=$free, which nothing here routes, or }--site-networks=<another private range, /8 to /22>."
+}
+
 start_core() {
 	say 'Starting the server (its front door last)'
 	if grep -q '^QUIRE_SERVER_IMAGE=.' "$root/server/server.env"; then
@@ -380,6 +427,7 @@ main() {
 	source=''
 	version=$release
 	email=''
+	site_networks=''
 	os_updates=1
 	unsupported_os=0
 	test_certificates=0
@@ -390,6 +438,7 @@ main() {
 			--source=*) source=$(cd "${argument#--source=}" && pwd) || die "No folder \"${argument#--source=}\"." ;;
 			--version=*) version=${argument#--version=} ;;
 			--email=*) email=${argument#--email=} ;;
+			--site-networks=*) site_networks=${argument#--site-networks=} ;;
 			--no-os-updates) os_updates=0 ;;
 			--unsupported-os) unsupported_os=1 ;;
 			--test-certificates) test_certificates=1 ;;
@@ -407,6 +456,11 @@ main() {
 		printf '%s\n' "$email" | grep -Eq '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$' || die "\"$email\" isn't an email address."
 	fi
 
+	# Only its shape here (it's written into server.env); the rest once the files are in place
+	if [ -n "$site_networks" ] && ! printf '%s\n' "$site_networks" | grep -Eq '^[0-9]{1,3}(\.[0-9]{1,3}){3}/[0-9]{1,2}$'; then
+		die "\"$site_networks\" (--site-networks) isn't a range (10.72.0.0/16, say)."
+	fi
+
 	# One installer at a time
 	mkdir /run/quire-server-install.lock 2>/dev/null || die 'Another installation runs (or one was cut short: remove /run/quire-server-install.lock).'
 	trap 'rmdir /run/quire-server-install.lock' EXIT
@@ -414,6 +468,7 @@ main() {
 	check_machine
 	install_docker
 	install_files
+	check_site_range
 	start_core
 	adopt_sites
 	start_front

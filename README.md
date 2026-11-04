@@ -50,14 +50,29 @@ The installer:
 1. **Checks the machine,** and installs Docker from Docker's own repository if it's missing (it asks first, and checks Docker's signing key).
 2. **Gets the release and checks it before running anything:** its signature (Sigstore: made by this repository's release workflow, for that very version), its archive's checksum, and its image's signature. Anything that doesn't check out stops the installation.
 3. **Puts the server in `/srv/quire/server`,** its settings and newly generated secrets in `server.env` (readable by root only), and the `quire-server` command in `/usr/local/bin`.
+   It refuses a range for sites' addresses that the machine routes elsewhere, and names a free one (see [Site networks](#site-networks)).
 4. **Starts PostgreSQL, the Docker gate and the agent,** from images pinned by digest: the release's agent image (`ghcr.io/quirecms/server`), never built on the machine. Before the agent, `host-setup` prepares the machine for sites' builds: where AppArmor restricts user namespaces (Ubuntu 23.10 and later), it loads a profile that grants one only to sites' rootless BuildKit (`/etc/apparmor.d/yorvogate-buildkit-rootless`), rather than lifting the restriction for the whole machine. It runs at every start of the server and changes nothing else.
 5. **Adopts the Quire sites already running from `/srv/quire/sites`** (it asks first; see below).
 6. **Starts the front door,** once nothing else holds ports 80 and 443. If another web server holds them, it says which and stops there. It never stops anything it didn't start. When the machine's firewall is ufw and it's on, 80/tcp, 443/tcp and 443/udp are allowed in it.
 7. **Turns on automatic security updates** for the operating system (`--no-os-updates` leaves them as they are).
 
+`--site-networks=<range>` chooses the range sites' addresses come from.
+
 Running it again is safe: it keeps the secrets it made and finishes what's left, e.g. after you've freed ports 80 and 443. `--yes` answers yes to its questions; `--help` lists its options.
 
 **By hand,** for developers: copy this repository to `/srv/quire/server`, create `server.env` from `server.env.dist` (root only, with long random secrets, and `COMPOSE_FILE=compose.yaml:compose.build.yaml` to build the agent), install `bin/quire-server` in `/usr/local/bin`, and run `quire-server up`.
+
+### Site networks
+
+Each site gets networks of its own, with addresses the server plans: a /26 per site, from the private range `QUIRE_SERVER_SITE_NETWORKS` (`10.72.0.0/16` by default, room for 1,024 sites). One /27 is its link, an internal network it shares only with the front door and, when it uses the server's PostgreSQL, the database. Its own services are on the other /27. A site reaches no other site, and its PostgreSQL role logs in only from its link. Sites trust only the front door's address as their proxy.
+
+Docker doesn't check a network's addresses against the machine's routes. If a VPN or a cloud network (a VPC) also uses the range, sites with addresses there lose their traffic to it, silently. So the range is checked:
+
+- **by the installer,** which refuses a range the machine routes elsewhere, before the server starts. It names a free one (a /16 from `10.64.0.0` to `10.95.255.255`, a stretch clouds, VPNs and container tools leave alone) to pass with `--site-networks=`, or choose another private range from /8 to /22;
+- **at each site's allocation,** against Docker's other networks: a site never gets addresses another Docker network has;
+- **by `quire-server up` and `update`,** which name any route on the range that appeared since, such as a VPN added later.
+
+Once sites have their addresses, they keep them. Setting `QUIRE_SERVER_SITE_NETWORKS` in `server.env` later (then `quire-server up`) applies to sites added from then on; a wider range that holds the current one gives room for more. A route that overlaps sites' addresses has to move off them.
 
 ### Supported systems
 
@@ -289,7 +304,8 @@ The agent can act on Docker, and that's root on the machine, so the server is bu
   The agent's own operations (Composer's sandbox, sites' builders, the server's database dumps) go to a socket of their own. Only the agent mounts the gate's sockets, and only the gate holds Docker's socket (and the updater, while it runs).
 - **Sites are isolated from the server and from each other:**
   - no Docker access, and no route to the agent or the gate;
-  - a PostgreSQL role that opens only the site's own database, with a share of the server's PostgreSQL it can't exceed (32 connections, 5 GB of temporary files; queries and idle transactions end after 15 and 10 minutes unless the site asks otherwise), and connections kept for the server itself;
+  - no route to another site: each is on a link of its own, with only the front door and the server's PostgreSQL there, and trusts only the front door's address as its proxy (so a forged `X-Forwarded-For` header can't change the client's address, which sign-in throttling relies on). See [Site networks](#site-networks);
+  - a PostgreSQL role that opens only the site's own database, and logs in only from the site's link, with a share of the server's PostgreSQL it can't exceed (32 connections, 5 GB of temporary files; queries and idle transactions end after 15 and 10 minutes unless the site asks otherwise), and connections kept for the server itself;
   - every service of a site, whoever wrote it: no Linux capabilities but a few harmless ones added back, `no-new-privileges`, memory and process limits, one container each (a site's own extra service without them is refused).
 - **Each site builds on a BuildKit of its own,** so its build cache is its own: rootless (user 1000, not privileged, no capabilities, no host paths), from an image pinned by digest, on the sandbox network (the internet only). The site reaches it through its own socket, only to build, and the image it builds is checked by the gate before it's loaded.
 - **Composer runs in a container of its own** when the server audits or plans a site's update: the agent's image, as nobody, with no capabilities, on a network of its own that only reaches the internet, with only a copy of the site's composer.json and composer.lock. A composer.json that has it fetch other than over HTTPS (`secure-http: false`, `http://` repositories, request `options`) is refused.

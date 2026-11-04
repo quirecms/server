@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace Quire\Server\Tests\Host;
 
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
+use Quire\Server\Network\SiteNetworkRange;
 use Symfony\Component\Filesystem\Filesystem;
 use Symfony\Component\Process\Process;
 
@@ -68,19 +70,68 @@ final class SiteRangeTest extends TestCase
         new Filesystem()->appendToFile($this->root.'/bin/routes', "10.135.4.0/24 dev wg0 scope link\n");
 
         self::assertSame(
-            "This machine routes part of the sites' addresses (10.128.0.0/9, QUIRE_SERVER_SITE_NETWORKS) elsewhere:\n  10.135.0.0/16 (eth1)\n  10.135.4.0/24 (wg0)\nThat network and sites with addresses there get in each other's way. Move it (a VPN, a cloud network) off the range; changing the sites' range instead makes every site's networks again.\n",
+            "This machine routes part of the sites' addresses (10.128.0.0/9, QUIRE_SERVER_SITE_NETWORKS) elsewhere:\n  10.135.0.0/16 (eth1)\n  10.135.4.0/24 (wg0)\nThat network and sites with addresses there get in each other's way. Move it (a VPN, a cloud network) off the range: sites keep the addresses they have, so a new QUIRE_SERVER_SITE_NETWORKS would only help sites added after it.\n",
             $this->shell('site_range_warn "$ROOT/server" 2>&1'),
         );
     }
 
-    public function testARangeThatIsntOneIsLeftToTheAgent(): void
+    public function testTheFreeRangeNamedIsTheDefaultUnlessARouteHasIt(): void
     {
-        self::assertSame('', $this->shell('site_range_overlaps "10.72.0.0/16; reboot"'), 'The agent refuses it, with why.');
+        self::assertSame("10.72.0.0/16\n", $this->shell('site_range_free'), 'Sites\' own networks don\'t take it.');
+
+        new Filesystem()->appendToFile($this->root.'/bin/routes', "10.72.128.0/17 dev wg0 scope link\n");
+        self::assertSame("10.73.0.0/16\n", $this->shell('site_range_free'));
+
+        new Filesystem()->appendToFile($this->root.'/bin/routes', "10.64.0.0/10 dev tun0 scope link\n");
+        self::assertSame('', $this->shell('site_range_free'), 'None: the installer asks for another range.');
     }
 
-    private function shell(string $script): string
+    public function testARangeThatIsntOneOverlapsNothing(): void
     {
-        $process = new Process(['sh', '-c', '. "$SCRIPT"; '.$script], null, ['SCRIPT' => \dirname(__DIR__, 2).'/bin/site-range.sh', 'ROOT' => $this->root, 'PATH' => $this->root.'/bin:/usr/bin:/bin']);
+        self::assertSame('', $this->shell('site_range_overlaps "10.72.0.0/16; reboot"'), 'site_range_problem says why, and the agent refuses it.');
+    }
+
+    /**
+     * The installer refuses what the agent wouldn't start with, before anything runs: the same rules,
+     * and the reason with the range.
+     */
+    #[DataProvider('ranges')]
+    public function testARangeIsRefusedAsTheAgentRefusesIt(string $range): void
+    {
+        try {
+            new SiteNetworkRange($range);
+            $agent = true;
+        } catch (\InvalidArgumentException) {
+            $agent = false;
+        }
+
+        $problem = $this->shell('site_range_problem "$RANGE"', ['RANGE' => $range]);
+
+        self::assertSame($agent, '' === $problem, $range.': '.$problem);
+        self::assertSame($agent ? 0 : 1, substr_count($problem, "\n"), 'One line, when there is one.');
+    }
+
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function ranges(): iterable
+    {
+        foreach ([
+            '10.72.0.0/16', '10.0.0.0/8', '10.72.0.0/22', '172.16.0.0/12', '172.31.252.0/22', '192.168.0.0/16', '192.168.4.0/22',
+            '10.72.0.0/23', '10.0.0.0/7', '172.15.0.0/16', '172.32.0.0/16', '192.169.0.0/16', '192.168.0.0/15', '8.8.0.0/16', '0.0.0.0/8',
+            '10.72.1.0/16', '10.72.0.1/22', '10.256.0.0/16', '010.72.0.0/16', '10.72.00.0/16', '10.72.0.0/016', '10.72.0.0/33', '10.72.0.0',
+            '10.72.0.0/', '1.2.3/8', '10.72.0.0/16; reboot', ' 10.72.0.0/16', '10.72.0.0/16 ', '', '10.72.0.0/16/8', '1e1.0.0.0/8',
+        ] as $range) {
+            yield '"'.$range.'"' => [$range];
+        }
+    }
+
+    /**
+     * @param array<string, string> $environment
+     */
+    private function shell(string $script, array $environment = []): string
+    {
+        $process = new Process(['sh', '-c', '. "$SCRIPT"; '.$script], null, ['SCRIPT' => \dirname(__DIR__, 2).'/bin/site-range.sh', 'ROOT' => $this->root, 'PATH' => $this->root.'/bin:/usr/bin:/bin', ...$environment]);
         $process->mustRun();
 
         return $process->getOutput();
