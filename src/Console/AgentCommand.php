@@ -11,6 +11,9 @@ use Quire\Server\Docker\Gate;
 use Quire\Server\FrontDoor\DomainDirectory;
 use Quire\Server\Git\GitPoller;
 use Quire\Server\Network\SiteLinks;
+use Quire\Server\Notify\Notifier;
+use Quire\Server\Notify\Problems;
+use Quire\Server\Notify\Watch;
 use Quire\Server\Operation\OperationLog;
 use Quire\Server\Operation\SiteManager;
 use Quire\Server\Registry\SiteRegistry;
@@ -32,7 +35,8 @@ use Symfony\Component\Console\Style\SymfonyStyle;
         failed. Then, every minute, the front door and PostgreSQL are put back on sites' links they're
         missing from (after they were made again), the front door's list of domains is made to
         match the sites that run, new commits of Git mode sites that poll are deployed, the nightly
-        backups off the server are made when due, sites due for their nightly automatic updates get them, and a heartbeat file says the agent is alive (for
+        backups off the server are made when due, sites due for their nightly automatic updates get them, problems that need the owner are found and
+        told (D-35: "quire-server status"), and a heartbeat file says the agent is alive (for
         Docker's health check; also at each step of a long deploy or update).
         HELP,
 )]
@@ -56,6 +60,9 @@ final class AgentCommand
         private readonly Builders $builders,
         private readonly ServerPaths $paths,
         private readonly SiteLinks $links,
+        private readonly Watch $watch,
+        private readonly Problems $problems,
+        private readonly Notifier $notifier,
     ) {
     }
 
@@ -109,6 +116,7 @@ final class AgentCommand
             $this->backUp($io);
             $this->expire($io);
             $this->updates->run(false, 'agent', $this->alive(static fn (string $line) => $io->writeln('Updates: '.$line)));
+            $this->notify($io);
             touch(self::HEARTBEAT);
 
             for ($slept = 0; !$once && !$this->stopping && $slept < max(5, $interval); ++$slept) {
@@ -161,9 +169,6 @@ final class AgentCommand
     }
 
     /**
-     * The backups on the server older than LocalBackups::KEEP_DAYS, once a day.
-     */
-    /**
      * Sites' links as they should be: the front door and PostgreSQL back on them after they were made
      * again. A failure is said and tried again at the next round; the rest of the round goes on.
      */
@@ -178,6 +183,9 @@ final class AgentCommand
         }
     }
 
+    /**
+     * The backups on the server older than LocalBackups::KEEP_DAYS, once a day.
+     */
     private function expire(SymfonyStyle $io): void
     {
         try {
@@ -202,6 +210,22 @@ final class AgentCommand
             }
         } catch (\Throwable $e) {
             $io->writeln('Backups: '.$e->getMessage());
+        }
+    }
+
+    /**
+     * What needs the owner (D-35), found and told: what this round's jobs left included.
+     */
+    private function notify(SymfonyStyle $io): void
+    {
+        try {
+            $this->problems->sync($this->watch->problems());
+
+            foreach ($this->notifier->round() as $line) {
+                $io->writeln('Notifications: '.$line);
+            }
+        } catch (\Throwable $e) {
+            $io->writeln('Notifications: '.$e->getMessage());
         }
     }
 

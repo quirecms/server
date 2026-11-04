@@ -28,6 +28,8 @@
         "symfony/dotenv": "8.1.*",
         "symfony/filesystem": "8.1.*",
         "symfony/framework-bundle": "8.1.*",
+        "symfony/http-client": "8.1.*",
+        "symfony/mailer": "8.1.*",
         "symfony/process": "8.1.*",
         "symfony/runtime": "8.1.*",
         "symfony/yaml": "8.1.*"
