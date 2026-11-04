@@ -49,6 +49,18 @@ final readonly class DeployKeys
         return false === $public ? throw new \RuntimeException('The deploy key has no public part.') : trim($public);
     }
 
+    /**
+     * A new key in place of the site's (OWNER-14): the old one no longer reads the repository once
+     * it's removed from it there.
+     */
+    public function rotate(SiteName $site, string $comment): string
+    {
+        $key = $this->key($site);
+        $this->filesystem->remove([$key, $key.'.pub']);
+
+        return $this->publicKey($site, $comment);
+    }
+
     public function exists(SiteName $site): bool
     {
         return is_file($this->key($site));

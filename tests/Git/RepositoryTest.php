@@ -35,6 +35,14 @@ final class RepositoryTest extends TestCase
         yield 'http, unencrypted' => ['http://github.com/me/blog.git'];
         yield 'a way out of the path' => ['https://github.com/me/../../etc'];
         yield 'credentials in the address' => ['https://user:token@github.com/me/blog.git'];
+        // The audit's (ISO-12, FUZZ-10)
+        yield 'a token as the user of an HTTPS address' => ['https://token@github.com/a/b'];
+        yield 'the server\'s PostgreSQL' => ['ssh://git@quire-database:5432/x'];
+        yield 'the server\'s own containers' => ['git@quire-agent:repo'];
+        yield 'cloud metadata' => ['https://169.254.169.254/latest/meta-data'];
+        yield 'a private address' => ['ssh://git@10.0.0.5/team/site.git'];
+        yield 'loopback' => ['https://127.0.0.1/me/blog.git'];
+        yield 'a port that isn\'t one' => ['ssh://git@git.example.com:99999/x'];
         yield 'a line break' => ["git@github.com:me/blog.git\n--upload-pack=x"];
         yield 'a space' => ['git@github.com:me/blog .git'];
     }
@@ -58,6 +66,9 @@ final class RepositoryTest extends TestCase
         yield 'a line break' => ["main\nx"];
         yield 'empty' => [''];
         yield 'a trailing slash' => ['main/'];
+        yield 'hidden' => ['.hidden'];
+        yield 'a hidden part' => ['a/.b'];
+        yield 'HEAD' => ['HEAD'];
     }
 
     #[DataProvider('namesThatArentBranches')]

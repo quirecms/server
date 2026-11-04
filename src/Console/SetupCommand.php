@@ -10,10 +10,7 @@ use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Style\SymfonyStyle;
 
-#[AsCommand(
-    name: 'server:setup',
-    description: 'Harden the server\'s PostgreSQL, and write every site\'s compose.server.yaml as this release does (run by the agent at every start; changes nothing twice)',
-)]
+#[AsCommand(name: 'server:setup', description: 'Harden the server\'s PostgreSQL, and write every site\'s compose.server.yaml as this release does (run by the agent at every start; changes nothing twice)', hidden: true)]
 final readonly class SetupCommand
 {
     public function __construct(

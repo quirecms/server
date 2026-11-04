@@ -26,17 +26,28 @@ use Quire\Server\Network\Ipv4Cidr;
  */
 final readonly class ComposePolicy
 {
-    /** Service settings without host powers: allowed as they are */
+    /**
+     * Service settings without host powers: allowed as they are. Among them, some that look as if they
+     * reached beyond the container but don't: "dns", "dns_opt", "dns_search" and "extra_hosts" only
+     * change what the container itself resolves (it reaches the same addresses through its networks'
+     * gateway anyway), "hostname" and "domainname" name it to itself, "labels" are data (but the
+     * server's and Docker's own: refused below). Limits ("shm_size", "tmpfs", memory) are charged to
+     * the container's own memory limit, which every service must have.
+     */
     private const array SAFE_SERVICE_KEYS = [
-        'annotations', 'attach', 'cap_drop', 'cap_add', 'command', 'cpu_count', 'cpu_percent', 'cpu_period', 'cpu_quota', 'cpu_rt_period', 'cpu_rt_runtime', 'cpu_shares', 'cpus', 'cpuset',
+        'attach', 'cap_drop', 'command', 'cpu_count', 'cpu_percent', 'cpu_period', 'cpu_quota', 'cpu_rt_period', 'cpu_rt_runtime', 'cpu_shares', 'cpus', 'cpuset',
         'depends_on', 'develop', 'dns', 'dns_opt', 'dns_search', 'domainname', 'entrypoint', 'environment', 'expose', 'extra_hosts', 'healthcheck', 'hostname', 'image', 'init',
         'labels', 'mac_address', 'mem_limit', 'mem_reservation', 'mem_swappiness', 'memswap_limit', 'pids_limit', 'platform', 'profiles', 'pull_policy', 'read_only', 'restart',
         'scale', 'shm_size', 'stdin_open', 'stop_grace_period', 'stop_signal', 'tmpfs', 'tty', 'ulimits', 'user', 'working_dir', 'secrets', 'configs',
     ];
 
-    /** Service settings that are allowed only with the values checked below */
+    /**
+     * Service settings that are allowed only with the values checked below. "cgroup" is a namespace
+     * ("host" shares the host's control groups); "logging" only with the json-file, local and none
+     * drivers (the others write to the host or to the network: syslog, journald, fluentd, gelf…).
+     */
     private const array CHECKED_SERVICE_KEYS = [
-        'build', 'blkio_config', 'cgroup', 'deploy', 'env_file', 'ipc', 'isolation', 'label_file', 'logging', 'network_mode', 'networks', 'oom_kill_disable', 'oom_score_adj',
+        'annotations', 'build', 'blkio_config', 'cap_add', 'cgroup', 'deploy', 'env_file', 'ipc', 'isolation', 'label_file', 'logging', 'network_mode', 'networks', 'oom_kill_disable', 'oom_score_adj',
         'pid', 'ports', 'post_start', 'pre_stop', 'runtime', 'security_opt', 'userns_mode', 'uts', 'volumes',
     ];
 
@@ -175,6 +186,32 @@ final readonly class ComposePolicy
             }
         }
 
+        // Labels in the server's and Docker's own namespaces, anywhere: nothing trusts them today,
+        // and none may become a site's way to pass for something else (HOST-14). But the site's name,
+        // as the server's override sets it on its containers. (com.quirecms.site and .contract are
+        // the site's own: the framework sets them.)
+        $own = ['com.quirecms.server.site' => $context->site];
+        $walk = function (mixed $value, string $where) use (&$walk, &$violations, $own): void {
+            if (!\is_array($value)) {
+                return;
+            }
+
+            foreach ($value as $key => $child) {
+                if ('labels' === $key) {
+                    foreach (\is_array($child) ? $child : [] as $label => $text) {
+                        [$name, $given] = \is_int($label) ? explode('=', $this->string($text), 2) + [1 => ''] : [$label, $this->string($text)];
+
+                        if (1 === preg_match('/^(com\.quirecms\.server|com\.docker)\./i', $name) && (null === ($own[$name] ?? null) || $own[$name] !== $given)) {
+                            $violations[] = \sprintf('%s: the label "%s" is the server\'s or Docker\'s own.', $where, $name);
+                        }
+                    }
+                } else {
+                    $walk($child, '' === $where ? (string) $key : $where.'.'.$key);
+                }
+            }
+        };
+        $walk($config, '');
+
         return $violations;
     }
 
@@ -202,6 +239,20 @@ final readonly class ComposePolicy
                 }
             } elseif (!\in_array($key, self::SAFE_SERVICE_KEYS, true) && !\in_array($key, self::CHECKED_SERVICE_KEYS, true) && !str_starts_with($key, 'x-')) {
                 $violations[] = \sprintf('"%s" isn\'t a setting the server allows (yet).', $key);
+            }
+        }
+
+        // Passed to the container's runtime as they are: harmless with runc, but nothing to need
+        if ([] !== $this->map($service['annotations'] ?? [])) {
+            $violations[] = '"annotations" are passed to the container\'s runtime: none are allowed.';
+        }
+
+        // A tmpfs in RAM, charged to the container's memory: not one that runs set-user-ID programs or has devices
+        foreach ($this->list($service['tmpfs'] ?? []) as $tmpfs) {
+            $options = explode(',', explode(':', $this->string($tmpfs), 2)[1] ?? '');
+
+            foreach (array_intersect(array_map(trim(...), $options), ['suid', 'dev']) as $option) {
+                $violations[] = \sprintf('"tmpfs: %s": the "%s" option isn\'t allowed.', $this->string($tmpfs), $option);
             }
         }
 

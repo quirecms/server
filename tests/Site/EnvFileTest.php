@@ -74,4 +74,58 @@ final class EnvFileTest extends TestCase
         $this->expectExceptionMessageIsOrContains('isn\'t a variable name');
         EnvFile::parse('')->with(['A B' => 'x']);
     }
+
+    /**
+     * @return iterable<string, array{string, string}>
+     */
+    public static function readAsComposeDoes(): iterable
+    {
+        yield 'plain' => ["COMPOSE_FILE=compose.yaml:compose.prod.yaml\n", 'compose.yaml:compose.prod.yaml'];
+        yield 'single quotes' => ["COMPOSE_FILE='compose.yaml'\n", 'compose.yaml'];
+        yield 'double quotes, nothing to expand' => ["COMPOSE_FILE=\"compose.yaml\"  # a comment\n", 'compose.yaml'];
+        yield 'after a byte-order mark' => ["\u{FEFF}COMPOSE_FILE=compose.yaml\n", 'compose.yaml'];
+        yield 'the last one wins' => ["COMPOSE_FILE=a.yaml\nCOMPOSE_FILE=b.yaml\n", 'b.yaml'];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('readAsComposeDoes')]
+    public function testAVariableWrittenSoThatComposeReadsItTheSame(string $content, string $value): void
+    {
+        self::assertSame($value, EnvFile::parse($content)->clear('COMPOSE_FILE'));
+    }
+
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function readOtherwiseByCompose(): iterable
+    {
+        // The audit's differential (FUZZ-11): Compose's own reader takes these otherwise
+        yield 'a variable Compose expands' => ["COMPOSE_FILE=\${A:-compose.yaml}\n"];
+        yield 'one expanded in double quotes' => ["COMPOSE_FILE=\"\$HOME/compose.yaml\"\n"];
+        yield 'YAML-style' => ["COMPOSE_FILE: compose.yaml\n"];
+        yield 'a quote over two lines' => ["COMPOSE_FILE='compose.yaml\nother.yaml'\n"];
+        yield 'an escape' => ["COMPOSE_FILE=\"compose.yaml\\r\"\n"];
+        yield 'text after the quote' => ["COMPOSE_FILE='a' b\n"];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('readOtherwiseByCompose')]
+    public function testOneComposeWouldReadOtherwiseIsRefused(string $content): void
+    {
+        $this->expectExceptionMessageIsOrContains('isn\'t written so that Quire Server reads it as Docker Compose does');
+        EnvFile::parse($content)->clear('COMPOSE_FILE');
+    }
+
+    public function testDoubleQuotedValuesAndWhatFollowsThem(): void
+    {
+        // STATIC-08: the escapes, and text after the closing quote
+        self::assertSame("a\nb\tc\\d\"e", EnvFile::parse("X=\"a\\nb\\tc\\\\d\\\"e\" ignored\n")->get('X'));
+        self::assertSame('a', EnvFile::parse("X=\"a\" b\n")->get('X'), 'Nothing after the closing quote.');
+        self::assertSame('unterminated', EnvFile::parse("X=\"unterminated\n")->get('X'));
+        self::assertNull(EnvFile::parse("Y=1\n")->clear('X'));
+    }
+
+    public function testANameOfDigitsIsRefusedAsAnyBadName(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        EnvFile::parse('')->with(['123' => 'x']);
+    }
 }

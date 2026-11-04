@@ -35,13 +35,24 @@ final class Operation
     }
 
     /**
-     * A value never to be written to the log (a password, a secret): replaced wherever it appears.
+     * A value never to be written to the log (a password, a secret): replaced wherever it appears, as
+     * it is and as programs print it encoded (in a URL, in JSON). Values under 6 characters aren't:
+     * they'd blank common words.
      */
     public function secret(string $value): void
     {
-        if (\strlen($value) >= 6) {
-            $this->secrets[] = $value;
+        if (\strlen($value) < 6) {
+            return;
         }
+
+        foreach ([$value, rawurlencode($value), urlencode($value), substr((string) json_encode($value, \JSON_UNESCAPED_UNICODE), 1, -1), substr((string) json_encode($value), 1, -1)] as $form) {
+            if (\strlen($form) >= 6 && !\in_array($form, $this->secrets, true)) {
+                $this->secrets[] = $form;
+            }
+        }
+
+        // The longest first: a form that contains another is replaced whole
+        usort($this->secrets, static fn (string $a, string $b): int => \strlen($b) <=> \strlen($a));
     }
 
     /**
@@ -114,7 +125,8 @@ final class Operation
             $text = str_replace($secret, '[secret]', $text);
         }
 
-        return $text;
+        // A password in an address ("smtp://user:password@host", "postgresql://…"), whoever's it is
+        return (string) preg_replace('#\b([a-z][a-z0-9+.-]{1,20}://[^\s:/@]{1,200}):[^\s@/]{1,500}@#i', '$1:[secret]@', $text);
     }
 
     private function end(bool $succeeded, ?string $error): void

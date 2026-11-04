@@ -27,6 +27,7 @@ final readonly class PollCommand
 {
     public function __construct(
         private SiteGit $repositories,
+        private \Quire\Server\Git\Git $git,
     ) {
     }
 
@@ -51,10 +52,23 @@ final readonly class PollCommand
             return Command::INVALID;
         }
 
-        if (null === $this->repositories->of($site)) {
+        $followed = $this->repositories->of($site);
+
+        if (null === $followed) {
             $io->error(\sprintf('"%s" doesn\'t follow a Git repository.', $site));
 
             return Command::FAILURE;
+        }
+
+        // Polling a repository it can't read would fail every few minutes, unseen (OWNER-14)
+        if ('on' === $state) {
+            try {
+                $this->git->remoteHead($followed['repository'], $site);
+            } catch (\Throwable $e) {
+                $io->error(['Polling stays off: the repository can\'t be read now.', $e->getMessage()]);
+
+                return Command::FAILURE;
+            }
         }
 
         $this->repositories->setPolling($site, 'on' === $state);

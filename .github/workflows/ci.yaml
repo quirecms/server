@@ -52,6 +52,9 @@ jobs:
       - name: ShellCheck
         # Every shell script (*.sh, and the quire-server command), as POSIX sh
         run: docker run --rm -v "$PWD:/m:ro" koalaman/shellcheck-alpine:v0.11.0 sh -c 'shellcheck -s sh -e SC2016 /m/bin/quire-server $(find /m -name "*.sh" -not -path "/m/vendor/*")'
+      - name: Hadolint
+        # The agent's Dockerfile (STATIC-10): what it runs as, what it installs and how
+        run: docker run --rm -i hadolint/hadolint:v2.12.0@sha256:30a8fd2e785ab6176eed53f74769e04f125afb2f74a6c52aef7d463583b6d45e < Dockerfile
 
   image:
     name: The agent's image, scanned

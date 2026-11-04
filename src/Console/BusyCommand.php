@@ -9,10 +9,7 @@ use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Style\SymfonyStyle;
 
-#[AsCommand(
-    name: 'server:busy',
-    description: 'Whether an operation runs now (then it fails, naming them): "quire-server up" and "down" ask first, since they would end it',
-)]
+#[AsCommand(name: 'server:busy', description: 'Whether an operation runs now (then it fails, naming them): "quire-server up" and "down" ask first, since they would end it', hidden: true)]
 final readonly class BusyCommand
 {
     public function __construct(

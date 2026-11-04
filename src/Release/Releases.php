@@ -112,6 +112,15 @@ final readonly class Releases
             }
         }
 
+        // Only plain files and folders (MAINT-11): a link "x -> /etc" then "x/…" would write outside it
+        $types = $this->runner->run(['tar', '-tvzf', $archive], timeout: 120)->orFail('Reading the release\'s archive');
+
+        foreach (explode("\n", trim($types->output)) as $entry) {
+            if ('' !== $entry && !\in_array($entry[0], ['-', 'd'], true)) {
+                throw new ReleaseVerificationFailed(\sprintf('The release\'s archive has a link or a special file in it ("%s"): not using it.', mb_substr($entry, 0, 200)));
+            }
+        }
+
         $this->runner->run(['tar', '-xzf', $archive, '-C', $into, '--strip-components=1', '--no-same-owner'], timeout: 300)->orFail('Extracting the release');
 
         if (!is_file($into.'/compose.yaml') || !is_file($into.'/bin/quire-server')) {

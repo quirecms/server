@@ -106,7 +106,7 @@ final readonly class UpdatePlanner
         $site = $this->paths->site($name);
 
         if (!is_file($site.'/composer.lock')) {
-            throw new \DomainException('The site has no composer.lock.');
+            throw new \DomainException('The site has no composer.lock, so its versions aren\'t known: commit one to its repository (composer update, then git add composer.lock) and deploy it.');
         }
 
         $workspace = sys_get_temp_dir().'/quire-audit-'.$name->value.'-'.bin2hex(random_bytes(6));

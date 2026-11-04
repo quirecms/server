@@ -80,5 +80,17 @@ https:// {
 }
 
 http:// {
-	redir https://{host}{uri} 308
+	# A domain the server has: to HTTPS. Any other: said so, here (NOVICE-11), rather than sent to an
+	# HTTPS address that has no certificate and fails in the visitor's browser. (The certificate
+	# authority's HTTP challenge is answered by Caddy before this, for the domains it may serve.)
+	@site {
+		expression `{host}.matches("^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$")`
+		file {
+			root /srv/quire/server/domains
+			try_files {host}
+		}
+	}
+
+	redir @site https://{host}{uri} 308
+	respond "No site here" 404
 }

@@ -111,6 +111,9 @@ final readonly class AddSiteCommand
             $io->writeln(\sprintf('%s got an email to choose a password.', $request->adminEmail));
         }
 
+        // Where to (NOVICE-08): the site's title and everything else are in its admin
+        $io->writeln(\sprintf('Sign in at https://%s/login; the site\'s title, its users and its settings are in its admin.', $domains[0]));
+
         return Command::SUCCESS;
     }
 }

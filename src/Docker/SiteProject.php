@@ -42,7 +42,7 @@ final readonly class SiteProject
             ...(Site::SHARED_DATABASE === $databaseMode ? ['worker' => []] : []),
         ]] : [];
 
-        return new self($directory, $directory.'/'.SiteFiles::ENV_FILE, new PolicyContext($project, $directory, $shared, $subnets?->project));
+        return new self($directory, $directory.'/'.SiteFiles::ENV_FILE, new PolicyContext($project, $directory, $shared, $subnets?->project, $name->value));
     }
 
     public function name(): string

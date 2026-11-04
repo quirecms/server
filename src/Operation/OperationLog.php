@@ -19,9 +19,14 @@ final readonly class OperationLog
     /** Why an operation the agent's stop cut short failed, and where to look */
     public const string INTERRUPTED = 'Interrupted: the agent stopped while it ran. What it left half done was put back when the agent started again ("quire-server logs agent" says how).';
 
+    /** Settings whose values are secrets, by their name's end */
+    private const string SECRET = '/(?:PASSWORD|SECRET|_KEY|TOKEN|_DSN|_URL)\z/';
+
     public function __construct(
         private Connection $connection,
         private string $schema = Schema::NAME,
+        /** Where sites' folders are: an operation on a site is scrubbed of its prod.env's secrets too */
+        private ?\Quire\Server\Site\ServerPaths $paths = null,
     ) {
     }
 
@@ -41,7 +46,15 @@ final readonly class OperationLog
             'status' => 'running',
         ], ['parameters' => Types::JSON]);
 
-        return new Operation($id, $action, $site, $this->append(...), $this->finish(...));
+        $operation = new Operation($id, $action, $site, $this->append(...), $this->finish(...));
+
+        // Every operation is scrubbed of the agent's own secrets, and an operation on a site of the
+        // site's: whatever a program prints (ISO-10, MAINT-09), not only what its caller thought of
+        foreach ($this->secrets($site) as $secret) {
+            $operation->secret($secret);
+        }
+
+        return $operation;
     }
 
     /**
@@ -72,6 +85,21 @@ final readonly class OperationLog
             'started_at' => self::text($row['started_at'] ?? ''),
             'finished_at' => null === ($row['finished_at'] ?? null) ? null : self::text($row['finished_at']),
         ], $query->executeQuery()->fetchAllAssociative());
+    }
+
+    /**
+     * An operation's whole ID from its first characters (8 at least, as "operations" shows them),
+     * or null when none (or more than one) starts so.
+     */
+    public function resolve(string $prefix): ?string
+    {
+        if (1 !== preg_match('/^[0-9a-f]{8}(?:[0-9a-f-]{0,28})\z/', $prefix)) {
+            return null;
+        }
+
+        $ids = $this->connection->fetchFirstColumn(\sprintf('SELECT id FROM %s.operation WHERE id::text LIKE ? LIMIT 2', $this->schema()), [$prefix.'%']);
+
+        return 1 === \count($ids) && \is_string($ids[0]) ? $ids[0] : null;
     }
 
     /**
@@ -111,6 +139,50 @@ final readonly class OperationLog
     public function abandonRunning(): int
     {
         return (int) $this->connection->executeStatement(\sprintf("UPDATE %s.operation SET status = 'failed', error = ?, finished_at = now() WHERE status = 'running'", $this->schema()), [self::INTERRUPTED]);
+    }
+
+    /**
+     * The agent's secrets (its environment's passwords, keys and the passwords in its addresses), and
+     * the site's (its prod.env's).
+     *
+     * @return list<string>
+     */
+    private function secrets(?SiteName $site): array
+    {
+        $values = [];
+
+        foreach (getenv() as $name => $value) {
+            if (1 === preg_match(self::SECRET, $name)) {
+                $values[] = $value;
+            }
+        }
+
+        if ($site instanceof SiteName && $this->paths instanceof \Quire\Server\Site\ServerPaths) {
+            $file = $this->paths->site($site).'/'.\Quire\Server\Site\SiteFiles::ENV_FILE;
+
+            try {
+                foreach (is_file($file) && !is_link($file) ? \Quire\Server\Site\EnvFile::read($file)->values() : [] as $name => $value) {
+                    if (1 === preg_match(self::SECRET, $name)) {
+                        $values[] = $value;
+                    }
+                }
+            } catch (\Throwable) {
+                // An env file it can't read has nothing it can scrub
+            }
+        }
+
+        $secrets = [];
+
+        foreach ($values as $value) {
+            // An address: its password is the secret (the rest of it, e.g. a host, is fine in a log)
+            $password = 1 === preg_match('#^[a-z][a-z0-9+.-]*://#i', $value) ? parse_url($value, \PHP_URL_PASS) : $value;
+
+            if (\is_string($password) && '' !== $password) {
+                $secrets[] = \is_string(parse_url($value, \PHP_URL_PASS)) ? rawurldecode($password) : $password;
+            }
+        }
+
+        return array_values(array_unique($secrets));
     }
 
     private function append(string $id, int $seq, string $line): void

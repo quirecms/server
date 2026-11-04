@@ -23,6 +23,8 @@ final class DomainTest extends TestCase
         yield 'international' => ['müller.example', 'xn--mller-kva.example'];
         yield 'punycode given' => ['xn--mller-kva.example', 'xn--mller-kva.example'];
         yield 'test TLD' => ['jane.test', 'jane.test'];
+        yield 'one script, not Latin' => ['пример.рф', 'xn--e1afmkfd.xn--p1ai'];
+        yield 'an international top-level name' => ['jane.xn--p1ai', 'jane.xn--p1ai'];
     }
 
     #[DataProvider('valid')]
@@ -42,6 +44,18 @@ final class DomainTest extends TestCase
     public static function invalid(): iterable
     {
         yield 'empty' => [''];
+        // The audit's (FUZZ-09, ISO-11)
+        yield 'punycode that isn\'t' => ['xn--zz.example'];
+        yield 'a reserved "--" label' => ['ab--cd.example'];
+        yield 'an address to some parsers' => ['0x7f.0x0.0x0.0x1'];
+        yield 'a Docker network\'s name as top label' => ['bob-php-1.quire-edge'];
+        yield 'localhost' => ['evil.localhost'];
+        yield '.local (mDNS)' => ['printer.local'];
+        yield '.internal (Docker\'s, cloud networks\')' => ['host.docker.internal'];
+        yield '.onion' => ['jane.onion'];
+        yield 'mixed scripts (a Cyrillic а)' => ['pаypal.com'];
+        yield 'a whole-script lookalike' => ['аррlе.com'];
+        yield 'mixed Greek' => ['pαypal.com'];
         yield 'single label' => ['localhost'];
         yield 'container name' => ['quire-database'];
         yield 'IPv4' => ['127.0.0.1'];

@@ -55,24 +55,50 @@ final class RuntimeImages
      * The build arguments that pin the runtime images a site's Dockerfile names, each checked.
      *
      * @param \Closure(string): void $say
+     * @param list<string>           $dockerfiles The Dockerfiles its builds use, in its folder
      *
      * @return array<string, string> Argument => image by digest
      *
      * @throws RuntimeImageNotTrusted When one doesn't check out
      */
-    public function pinned(string $directory, \Closure $say): array
+    public function pinned(string $directory, \Closure $say, array $dockerfiles = ['Dockerfile']): array
     {
-        $dockerfile = @file_get_contents($directory.'/Dockerfile');
+        $arguments = [];
 
-        if (false === $dockerfile) {
-            return [];
+        foreach (array_unique($dockerfiles) as $file) {
+            // A path the policy allowed: inside the site's folder (MAINT-07: the one the build uses)
+            $dockerfile = str_contains($file, '..') ? false : @file_get_contents($directory.'/'.ltrim($file, '/'));
+
+            if (false !== $dockerfile) {
+                $arguments += $this->pin($dockerfile, $file, $say);
+            }
         }
 
+        return $arguments;
+    }
+
+    /**
+     * @param \Closure(string): void $say
+     *
+     * @return array<string, string>
+     */
+    private function pin(string $dockerfile, string $file, \Closure $say): array
+    {
         $arguments = [];
-        // ARG lines before the first FROM: the images FROM may name
-        // (Instructions are case-insensitive.)
+        // ARG lines before the first FROM: the images FROM may name (case-insensitive; a value in
+        // quotes too, SUPPLY-09)
         $head = preg_split('/^[ \t]*FROM[ \t]/mi', $dockerfile, 2)[0] ?? '';
-        preg_match_all('/^[ \t]*ARG[ \t]+([A-Z_]+)=(\S+)[ \t]*$/mi', $head, $matches, \PREG_SET_ORDER);
+        preg_match_all('/^[ \t]*ARG[ \t]+([A-Z_]+)=(?|"([^"\s]+)"|\'([^\'\s]+)\'|(\S+))[ \t]*$/mi', $head, $matches, \PREG_SET_ORDER);
+        // What's built on Quire's runtime but can't be checked (MAINT-07) is refused, not a log line:
+        // a FROM naming it itself, or an argument before the first FROM it can't read (a line
+        // continuation). An ARG after the first FROM names no image to build on.
+        $strip = static fn (string $text): string => strtolower((string) preg_replace('/^[ \t]*#.*$/m', '', $text));
+        $read = \count(array_filter($matches, static fn (array $match): bool => isset(self::ARGUMENTS[$match[1]]) && str_starts_with($match[2], self::REPOSITORY)));
+        $literal = preg_match('/^[ \t]*FROM[ \t]+(?:--\S+[ \t]+)*'.preg_quote(self::REPOSITORY, '/').'/mi', $dockerfile);
+
+        if (1 === $literal || substr_count($strip($head), self::REPOSITORY) > $read) {
+            throw new RuntimeImageNotTrusted(\sprintf('%s builds on Quire\'s runtime (%s) in a way that can\'t be checked: name it with "ARG RUNTIME=…" and "ARG RUNTIME_BUILDER=…" before the first FROM, as the skeleton does.', $file, self::REPOSITORY));
+        }
 
         foreach ($matches as [, $name, $image]) {
             if (!isset(self::ARGUMENTS[$name])) {

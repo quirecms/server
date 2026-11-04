@@ -130,6 +130,8 @@ final readonly class ServerUpdater
         } catch (\Throwable $e) {
             $this->record('server.update', ['version' => $target->value], $channel, $requestedBy, $lines, $e);
 
+            // Anything but the swap's own failure (which says itself whether it put the server back)
+            // happened before the server was touched: it's as it was (MAINT-08)
             throw $e instanceof ServerUpdateFailed ? $e : new ServerUpdateFailed($e->getMessage(), restored: true, previous: $e);
         } finally {
             $this->filesystem->remove($work);
@@ -197,6 +199,8 @@ final readonly class ServerUpdater
         } catch (\Throwable $e) {
             $this->record('server.undo', ['version' => $backup->from], $channel, $requestedBy, $lines, $e);
 
+            // Anything but the swap's own failure (which says itself whether it put the server back)
+            // happened before the server was touched: it's as it was (MAINT-08)
             throw $e instanceof ServerUpdateFailed ? $e : new ServerUpdateFailed($e->getMessage(), restored: true, previous: $e);
         }
 

@@ -27,6 +27,8 @@ final readonly class PolicyContext
         public array $sharedNetworks,
         /** The addresses its own networks may have (its project's /27), or null for none chosen by it */
         public ?Ipv4Cidr $subnet = null,
+        /** The site's name, as the server's override labels its containers with it (null: not known) */
+        public ?string $site = null,
     ) {
         $real = realpath($directory);
 
@@ -77,6 +79,10 @@ final readonly class PolicyContext
      * The real path: of the path itself when it exists, otherwise of its deepest existing folder with
      * the rest appended, so a symbolic link anywhere along it is followed. Null when ".." would leave
      * the root.
+     *
+     * Checked now, read by Compose later (time of check, time of use): what could change the path in
+     * between is the site's own folder, which only the agent writes (a Git deploy, under the site's
+     * lock, before its check), so the answer holds when Compose reads it.
      */
     private function resolve(string $path): ?string
     {

@@ -323,7 +323,7 @@ inside 'quire-server backups:now 2>&1' | tee "$logs"/now.log | sed 's/^/    /'
 check 'every site and the server are backed up off the server' "grep -q 'Backed up off the server: jane, server' $logs/now.log"
 check 'each site'\''s backups are listed on their own' "[ \"\$(inside 'quire-server backups jane' | grep -cE '^ +[0-9a-f]{8} ')\" = 1 ] && [ \"\$(inside 'quire-server backups server' | grep -cE '^ +[0-9a-f]{8} ')\" = 1 ]"
 check 'what is stored is encrypted (no site data in it as text)' "! inside 'docker exec s3 sh -c \"grep -rl -e site_jane -e \\\"Jane before\\\" /data\"' >/dev/null 2>&1"
-check 'its secrets aren'\''t in its log' "! inside \"quire-server operations \$(inside 'quire-server operations' | grep backups.nightly | head -1 | awk '{print \$1}')\" | grep -q -e e2e-secret -e '$password'"
+check 'its secrets aren'\''t in its log' "! inside \"quire-server operations \$(inside 'quire-server operations' | grep backups.all | head -1 | awk '{print \$1}')\" | grep -q -e e2e-secret -e '$password'"
 
 inside "docker exec jane-php-1 bin/console quire:settings:set site.title 'Jane after'" >/dev/null
 inside "docker exec jane-php-1 bin/console dbal:run-sql -q 'INSERT INTO public.app_order VALUES (3)'" >/dev/null
@@ -475,6 +475,10 @@ check "the server starts on $major again" "pg 'SHOW server_version' | grep -q '^
 # As if the machine had stopped right after the switch: its record says "switched", the agent didn't
 # start, the site ran (it starts by itself) and wrote to the new major
 inside "sed -i 's/\"state\": \"done\"/\"state\": \"switched\"/' /srv/quire/backups/database/*/upgrade.json && docker stop quire-server-agent-1 >/dev/null"
+# Changed by hand, the record isn't the updater's own any more (HOST-13): nothing is taken from it
+check 'a record the updater didn'\''t seal isn'\''t taken' "inside 'quire-server database:upgrade --recover 2>&1' | grep -q 'No upgrade was cut short'"
+# Sealed as the updater seals it: what a real cut-short upgrade leaves
+inside 'for record in /srv/quire/backups/database/*/upgrade.json; do printf "upgrade.json %s\n" "$(sha256sum "$record" | cut -d " " -f 1)" | openssl dgst -sha256 -hmac "$(cat /srv/quire/server/.updater-key)" -r | cut -d " " -f 1 > "${record%/upgrade.json}/.seal"; done && ls /srv/quire/backups/database/*/.seal >/dev/null'
 inside "docker exec jane-php-1 bin/console quire:settings:set site.title 'Jane meanwhile'" >/dev/null
 inside 'quire-server database:upgrade --recover 2>&1' > "$logs"/recover.log || true
 sed 's/^/    /' "$logs"/recover.log
@@ -511,6 +515,7 @@ check 'a password was shown once (no email server)' "grep -q 'signs in with the 
 check 'HTTPS through the front door' "[ \"\$(inside \"curl -sk $resolve -o /dev/null -w '%{http_code}' https://jane.test/\")\" = 200 ]"
 check 'its second domain too' "[ \"\$(inside \"curl -sk $resolve -o /dev/null -w '%{http_code}' https://www.jane.test/_quire/health\")\" = 200 ]"
 check 'HTTP redirects to HTTPS' "inside \"curl -s -o /dev/null -w '%{http_code} %{redirect_url}' -H 'Host: jane.test' http://127.0.0.1/\" | grep -q '308 https://jane.test/'"
+check 'a domain with no site says so over HTTP, rather than redirecting' "[ \"\$(inside \"curl -s -w ' %{http_code}' -H 'Host: shop.test' http://127.0.0.1/\")\" = 'No site here 404' ]"
 check 'a forged Host header gets 421, not another container' "[ \"\$(inside \"curl -sk $resolve -o /dev/null -w '%{http_code}' -H 'Host: quire-database' https://jane.test/\")\" = 421 ]"
 check 'a Host other than the TLS name gets 421' "[ \"\$(inside \"curl -sk --resolve www.jane.test:443:127.0.0.1 -o /dev/null -w '%{http_code}' -H 'Host: jane.test' https://www.jane.test/\")\" = 421 ]"
 check 'an unknown domain gets no certificate' "! inside \"curl -sk $resolve -o /dev/null https://evil.test/\""
@@ -610,7 +615,7 @@ fi
 if want git; then
 echo '== A site in Git mode (a repository on an SSH Git server, deployed from it)'
 # A Git server only the agent's network reaches, accepting nothing but the keys added to it.
-inside 'docker run -d --name git-server --network quire-data alpine:3.22 sh -c "apk add -q --no-cache openssh git && ssh-keygen -A && adduser -D -s /usr/bin/git-shell git && sed -i \"s/^git:!:/git:*:/\" /etc/shadow && mkdir -p /home/git/.ssh && touch /home/git/.ssh/authorized_keys && chown -R git:git /home/git && chmod 700 /home/git/.ssh && exec /usr/sbin/sshd -D -e" >/dev/null'
+inside 'docker run -d --name git-server --network quire-data --network-alias git.e2e.test alpine:3.22 sh -c "apk add -q --no-cache openssh git && ssh-keygen -A && adduser -D -s /usr/bin/git-shell git && sed -i \"s/^git:!:/git:*:/\" /etc/shadow && mkdir -p /home/git/.ssh && touch /home/git/.ssh/authorized_keys && chown -R git:git /home/git && chmod 700 /home/git/.ssh && exec /usr/sbin/sshd -D -e" >/dev/null'
 inside 'docker run --rm -v /root/blog:/root/blog composer:2.10.3 create-project quire/skeleton /root/blog/w "^0.1" --no-install --no-scripts --no-plugins --no-interaction --no-progress -q'
 until inside 'docker exec git-server sh -c "id git && pgrep sshd"' >/dev/null 2>&1; do sleep 2; done
 commit() { inside "docker exec git-server sh -c 'cd /tmp/w && $1 && git add -A && git -c user.email=dev@example.com -c user.name=Dev commit -qm \"$2\" && git push -q /home/git/blog.git main && chown -R git:git /home/git/blog.git'"; }
@@ -619,7 +624,8 @@ commit 'true' 'The site'
 key=$(inside 'quire-server site:key blog' | grep '^ssh-ed25519 ')
 inside "docker exec git-server sh -c 'echo \"$key\" >> /home/git/.ssh/authorized_keys'"
 check 'its deploy key is root'\''s only, outside its folder' "[ \"\$(inside 'stat -c %a /srv/quire/server/keys/blog /srv/quire/server/keys/blog/id_ed25519' | tr '\n' ' ')\" = '700 600 ' ]"
-inside 'quire-server site:add blog --git=ssh://git@git-server/home/git/blog.git --branch=main --domain=blog.test --admin-email=dev@example.com 2>&1' | tee "$logs"/git-add.log | sed 's/^/    /'
+check 'a repository on one of this machine'\''s own names is refused' "inside 'quire-server site:add blog --git=ssh://git@git-server/home/git/blog.git --branch=main --domain=blog.test --admin-email=dev@example.com 2>&1' | tr -s ' \n' ' ' | grep -q 'on a host on the internet'"
+inside 'quire-server site:add blog --git=ssh://git@git.e2e.test/home/git/blog.git --branch=main --domain=blog.test --admin-email=dev@example.com 2>&1' | tee "$logs"/git-add.log | sed 's/^/    /'
 gresolve='--resolve blog.test:443:127.0.0.1'
 check 'it runs its repository'\''s branch' "[ \"\$(inside \"curl -sk $gresolve -o /dev/null -w '%{http_code}' https://blog.test/\")\" = 200 ]"
 check 'its checkout is clean (the server'\''s files excluded)' "[ -z \"\$(inside 'git -C /srv/quire/sites/blog status --porcelain')\" ] && inside 'test -f /srv/quire/sites/blog/prod.env'"

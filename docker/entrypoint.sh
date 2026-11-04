@@ -2,6 +2,9 @@
 # The agent's start: its logins to PostgreSQL, wait for PostgreSQL, bring the registry's schema up to date, harden PostgreSQL,
 # then run the agent (or the command given, e.g. by "quire-server").
 set -eu
+# What the agent writes is readable by others at most, never writable (ISO-15: a umask of 000
+# left every file of a site's folder 0666)
+umask 022
 
 if [ "${1:-}" = 'bin/console' ] && [ "${2:-}" = 'server:agent' ]; then
 	attempts=60

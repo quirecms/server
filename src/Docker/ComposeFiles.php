@@ -22,7 +22,7 @@ final readonly class ComposeFiles
      */
     public function violations(SiteProject $project): array
     {
-        $files = EnvFile::read($project->envFile)->get('COMPOSE_FILE') ?? 'compose.yaml';
+        $files = EnvFile::read($project->envFile)->clear('COMPOSE_FILE') ?? 'compose.yaml';
         $violations = [];
 
         foreach (explode(':', $files) as $file) {

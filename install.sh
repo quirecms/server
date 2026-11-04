@@ -30,7 +30,10 @@
 #                      before any site has its addresses
 #   --no-os-updates    Leave the operating system's updates as they are
 #   --unsupported-os   Install on another system anyway, untested (see "Supported systems" in the README)
-#   --test-certificates  Certificates from the front door's own authority, not Let's Encrypt (tests)
+#   --test-certificates  Certificates from the front door's own authority, not Let's Encrypt (tests,
+#                      without a public name: browsers warn)
+#   --staging-certificates  Certificates from Let's Encrypt's staging authority (tests on a public
+#                      name, e.g. <ip>.sslip.io, without using up Let's Encrypt's limits: browsers warn)
 #
 # The whole script is a function called on its last line: a download cut short runs nothing.
 set -eu
@@ -75,8 +78,11 @@ compose() {
 	(cd "$root/server" && docker compose --project-directory "$root/server" --env-file "$root/server/server.env" "$@")
 }
 
+# A random secret of N bytes, in hex: checked, as an empty one in server.env would go unseen
 random_hex() {
-	od -An -N"$1" -tx1 /dev/urandom | tr -d ' \n'
+	hex=$(od -An -N"$1" -tx1 /dev/urandom | tr -d ' \n') || die "Couldn't read random bytes for a secret."
+	[ "${#hex}" -eq $(($1 * 2)) ] || die "Couldn't make a secret of $1 random bytes."
+	printf '%s' "$hex"
 }
 
 check_machine() {
@@ -142,6 +148,8 @@ install_docker() {
 
 	say 'Installing Docker'
 	export DEBIAN_FRONTEND=noninteractive
+	# Ubuntu's needrestart would draw its progress bars and ask about services: it restarts what it must, quietly
+	export NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1
 	apt-get update -qq
 	apt-get install -qq -y ca-certificates curl gnupg >/dev/null
 	install -m 0755 -d /etc/apt/keyrings
@@ -227,6 +235,10 @@ fetch() {
 		|| die "The signature of the release's image didn't check out: not installing."
 	note 'Its image'\''s signature checks out too'
 
+	# Its checksum is signed; still, only plain files and folders, inside it (MAINT-11): no link, no
+	# hard link, no absolute path or "..", whatever the archive says
+	tar -tvzf "$work/$archive" | cut -c1 | grep -qv '^[d-]$' && die "$archive has links in it: not installing."
+	tar -tzf "$work/$archive" | grep -Eq '^/|(^|/)\.\.(/|$)' && die "$archive has paths outside itself: not installing."
 	tar -xzf "$work/$archive" -C "$work/files" --strip-components=1 --no-same-owner
 	from="$work/files"
 }
@@ -238,30 +250,45 @@ install_files() {
 		return
 	fi
 
+	# Not one an install cut short left half done (or someone else's): it's put in place whole, below
+	if [ -e "$root/server" ]; then
+		die "$root/server is there, but without server.env: an install was cut short before it finished, or the folder isn't Quire Server's. Move it away (mv $root/server $root/server.old) and run this again."
+	fi
+
 	fetch
 	say "Putting the server in $root/server"
-	mkdir -p "$root/server/domains" "$root/server/keys" "$root/sites" "$root/backups"
-	chmod 755 "$root" "$root/server" "$root/server/domains"
+	# Built beside, then moved into place in one step: the folder is a whole release, or isn't there
+	staging="$root/.server-installing"
+	rm -rf "$staging"
+	mkdir -p "$staging/domains" "$staging/keys" "$root/sites" "$root/backups"
+	chmod 755 "$root" "$staging" "$staging/domains"
 	# Sites' folders hold their secrets; backups hold their data; keys read Git mode sites' repositories.
-	chmod 700 "$root/sites" "$root/backups" "$root/server/keys"
-	tar -C "$from" --exclude=./vendor --exclude=./var --exclude=./tests --exclude=./.git -cf - . | tar -C "$root/server" -xf - --no-same-owner
+	chmod 700 "$root/sites" "$root/backups" "$staging/keys"
+	tar -C "$from" --exclude=./vendor --exclude=./var --exclude=./tests --exclude=./.git -cf - . | tar -C "$staging" -xf - --no-same-owner
 	if [ "$from" != "$source" ]; then rm -rf "$work"; fi
-	chown -R root:root "$root/server"
-	chmod -R go-w "$root/server"
+	chown -R root:root "$staging"
+	chmod -R go-w "$staging"
 
 	# server.env last: its presence says the files are in place.
 	umask 077
-	sed -e "s/^QUIRE_SERVER_APP_SECRET=.*/QUIRE_SERVER_APP_SECRET=$(random_hex 32)/" \
-		-e "s/^QUIRE_SERVER_POSTGRES_PASSWORD=.*/QUIRE_SERVER_POSTGRES_PASSWORD=$(random_hex 24)/" \
-		-e "s/^QUIRE_SERVER_DATABASE_PASSWORD=.*/QUIRE_SERVER_DATABASE_PASSWORD=$(random_hex 24)/" \
+	# Each made first, checked, then written (a failure in "$(…)" inside sed's arguments would go unseen)
+	app_secret=$(random_hex 32)
+	postgres_password=$(random_hex 24)
+	database_password=$(random_hex 24)
+	sed -e "s/^QUIRE_SERVER_APP_SECRET=.*/QUIRE_SERVER_APP_SECRET=$app_secret/" \
+		-e "s/^QUIRE_SERVER_POSTGRES_PASSWORD=.*/QUIRE_SERVER_POSTGRES_PASSWORD=$postgres_password/" \
+		-e "s/^QUIRE_SERVER_DATABASE_PASSWORD=.*/QUIRE_SERVER_DATABASE_PASSWORD=$database_password/" \
 		-e "s/^QUIRE_SERVER_ACME_EMAIL=.*/QUIRE_SERVER_ACME_EMAIL=$email/" \
 		-e "s#^QUIRE_SERVER_IMAGE=.*#QUIRE_SERVER_IMAGE=$image#" \
 		-e "s#^COMPOSE_FILE=.*#COMPOSE_FILE=compose.yaml${source:+:compose.build.yaml}#" \
-		"$root/server/server.env.dist" >"$root/server/server.env.tmp"
-	if [ "$test_certificates" = 1 ]; then printf '\n# Tests: certificates from the front door'\''s own authority\nQUIRE_SERVER_TLS_GLOBAL=local_certs\n' >>"$root/server/server.env.tmp"; fi
-	chmod 600 "$root/server/server.env.tmp"
-	mv "$root/server/server.env.tmp" "$root/server/server.env"
+		"$staging/server.env.dist" >"$staging/server.env"
+	if [ "$test_certificates" = 1 ]; then printf '\n# Tests: certificates from the front door'\''s own authority\nQUIRE_SERVER_TLS_GLOBAL=local_certs\n' >>"$staging/server.env"; fi
+	if [ "$staging_certificates" = 1 ]; then printf '\n# Tests: certificates from Let'\''s Encrypt'\''s staging authority (browsers warn; real public names only)\nQUIRE_SERVER_TLS_GLOBAL='\''acme_ca https://acme-staging-v02.api.letsencrypt.org/directory'\''\n' >>"$staging/server.env"; fi
+	# What was checked and installed (root only): the release, its archive's checksum and its image
+	if [ -n "$image" ]; then printf 'VERSION=%s\nARCHIVE_SHA256=%s\nIMAGE=%s\n' "$version" "$digest" "$image" >"$staging/.installed"; fi
+	chmod 600 "$staging/server.env"
 	umask 022
+	mv "$staging" "$root/server"
 
 	# The command: the one of the release in the server's folder (an update brings its own), knowing
 	# where the server is
@@ -387,11 +414,12 @@ start_front() {
 	# Who holds ports 80 and 443: another web server, or a container
 	holders=''
 	if command -v ss >/dev/null 2>&1; then
-		holders=$(ss -Hltnup 2>/dev/null | awk '$5 ~ /:(80|443)$/ { print $5, $7 }')
+		# Docker's own docker-proxy publishes a container's port: the container is listed below instead
+		holders=$(ss -Hltnup 2>/dev/null | awk '$5 ~ /:(80|443)$/ && $7 !~ /"docker-proxy"/ { print $5, $7 }')
 	elif command -v netstat >/dev/null 2>&1; then
-		holders=$(netstat -ltnup 2>/dev/null | awk '$4 ~ /:(80|443)$/ { print $4, $7 }')
+		holders=$(netstat -ltnup 2>/dev/null | awk '$4 ~ /:(80|443)$/ && $7 !~ /docker-proxy/ { print $4, $7 }')
 	fi
-	containers=$(docker ps --format '{{.Names}} {{.Ports}}' | grep -E ':(80|443)->' || true)
+	containers=$(docker ps --format 'the container {{.Names}}: {{.Ports}}' | grep -E ':(80|443)->' || true)
 	if [ -n "$holders$containers" ]; then
 		printf '%s\n%s\n' "$holders" "$containers" | sed '/^$/d; s/^/    /' >&2
 		die 'Ports 80 and 443 are taken (above): the front door needs them. Stop what holds them (or move those sites behind the server), and run this again.'
@@ -431,6 +459,7 @@ main() {
 	os_updates=1
 	unsupported_os=0
 	test_certificates=0
+	staging_certificates=0
 
 	for argument in "$@"; do
 		case "$argument" in
@@ -442,6 +471,7 @@ main() {
 			--no-os-updates) os_updates=0 ;;
 			--unsupported-os) unsupported_os=1 ;;
 			--test-certificates) test_certificates=1 ;;
+			--staging-certificates) staging_certificates=1 ;;
 			-h | --help) sed -n '2,/^set -eu/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
 			*) die "Unknown option: $argument (see --help)" ;;
 		esac
@@ -461,9 +491,18 @@ main() {
 		die "\"$site_networks\" (--site-networks) isn't a range (10.72.0.0/16, say)."
 	fi
 
-	# One installer at a time
-	mkdir /run/quire-server-install.lock 2>/dev/null || die 'Another installation runs (or one was cut short: remove /run/quire-server-install.lock).'
-	trap 'rmdir /run/quire-server-install.lock' EXIT
+	# One installer at a time; one cut short (a dropped SSH connection) leaves its lock, taken over
+	lock=/run/quire-server-install.lock
+	if ! mkdir "$lock" 2>/dev/null; then
+		holder=$(cat "$lock/pid" 2>/dev/null || true)
+		if [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null; then
+			die "Another installation runs (process $holder): wait for it to finish."
+		fi
+		[ -n "$holder" ] || [ -d "$lock" ] || die "Couldn't take $lock."
+		warn 'An installation was cut short before: going on from where it was.'
+	fi
+	echo $$ >"$lock/pid"
+	trap 'rm -rf "$lock"' EXIT
 
 	check_machine
 	install_docker

@@ -127,8 +127,9 @@ final readonly class UpdateSiteCommand
         }
 
         if (!$plan->changesAnything()) {
+            $quire = $plan->quireFrom();
             $plan->discard();
-            $io->success('The site is up to date.');
+            $io->success(null === $quire ? 'The site is up to date.' : \sprintf('The site is up to date: Quire %s is the newest its composer.json allows (and every other package, its newest too).', ltrim($quire, 'v')));
 
             return Command::SUCCESS;
         }

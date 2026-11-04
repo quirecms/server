@@ -121,6 +121,44 @@ final readonly class SiteDatabases
                 $this->limit($role);
             }
         }
+        // What other sites do isn't a site's to read (ISO-13): every database's and session's
+        // statistics, cluster-wide, from any database. Revoked in each, and in template1 for those to come.
+        foreach (['template1', ...$this->admin->fetchFirstColumn("SELECT datname FROM pg_database WHERE datname LIKE 'site\\_%'")] as $database) {
+            if (\is_string($database)) {
+                $this->inDatabase($database, static function (Connection $connection): void {
+                    $connection->executeStatement('REVOKE SELECT ON pg_catalog.pg_stat_activity, pg_catalog.pg_stat_database, pg_catalog.pg_stat_database_conflicts FROM PUBLIC');
+
+                    // And the functions they read, which a role could call itself
+                    foreach ($connection->fetchFirstColumn("SELECT oid::regprocedure::text FROM pg_proc WHERE pronamespace = 'pg_catalog'::regnamespace AND (proname = 'pg_stat_get_activity' OR proname LIKE 'pg\\_stat\\_get\\_db\\_%' OR proname LIKE 'pg\\_stat\\_get\\_backend\\_%')") as $function) {
+                        if (\is_string($function)) {
+                            $connection->executeStatement(\sprintf('REVOKE EXECUTE ON FUNCTION %s FROM PUBLIC', $function));
+                        }
+                    }
+                });
+            }
+        }
+    }
+
+    /**
+     * @param \Closure(Connection): void $do
+     */
+    private function inDatabase(string $database, \Closure $do): void
+    {
+        $params = $this->admin->getParams();
+        $connection = \Doctrine\DBAL\DriverManager::getConnection([
+            'driver' => 'pdo_pgsql',
+            'host' => \is_string($params['host'] ?? null) ? $params['host'] : 'localhost',
+            'port' => \is_int($params['port'] ?? null) ? $params['port'] : 5432,
+            'user' => \is_string($params['user'] ?? null) ? $params['user'] : 'postgres',
+            'password' => \is_string($params['password'] ?? null) ? $params['password'] : '',
+            'dbname' => $database,
+        ]);
+
+        try {
+            $do($connection);
+        } finally {
+            $connection->close();
+        }
     }
 
     /**

@@ -38,6 +38,8 @@ use Symfony\Component\Filesystem\Filesystem;
 final readonly class OffsiteBackups
 {
     public const string NIGHTLY = 'backups.nightly';
+    /** Everything the night does, asked for now ("backups:now" without a site) */
+    public const string ALL = 'backups.all';
     public const string SITE_TAG = 'quire-site';
     public const string SERVER_TAG = 'quire-server';
     /** A Git mode site's: its code is its repository's, so it isn't in its backup */
@@ -115,10 +117,10 @@ final readonly class OffsiteBackups
      *
      * @return array{backed_up: list<string>, failed: list<string>}
      */
-    public function nightly(string $channel, string $requestedBy, \Closure $say): array
+    public function nightly(string $channel, string $requestedBy, \Closure $say, string $action = self::NIGHTLY): array
     {
         $this->settings->validate();
-        $operation = $this->operations->start(self::NIGHTLY, null, [], $channel, $requestedBy);
+        $operation = $this->operations->start(self::ALL === $action ? self::ALL : self::NIGHTLY, null, [], $channel, $requestedBy);
 
         if ($this->signing->ensure()) {
             $operation->line('The server\'s key for its backups was made: "quire-server status" shows its public key, to keep with the backups\' password.');
@@ -168,8 +170,9 @@ final readonly class OffsiteBackups
             }
 
             $sunday = '7' === $this->now()->setTimezone(new \DateTimeZone('UTC'))->format('N');
-            $this->ledger->forgotten($this->restic->forget(prune: $sunday));
-            $log($sunday ? 'Old backups forgotten, and their storage freed' : 'Old backups forgotten');
+            $forgotten = $this->restic->forget(prune: $sunday);
+            $this->ledger->forgotten($forgotten);
+            $log(\sprintf('Kept as the retention says (%s): %s%s', $this->settings->keep, [] === $forgotten ? 'none older to forget' : \count($forgotten).' older forgotten', $sunday ? ', and the storage only they used freed' : ''));
 
             try {
                 $this->vouch();

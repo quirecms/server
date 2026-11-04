@@ -376,7 +376,7 @@ final readonly class SiteManager
             }
 
             $env = EnvFile::read($envPath);
-            $project = $env->get('COMPOSE_PROJECT_NAME') ?? $name->value;
+            $project = $env->clear('COMPOSE_PROJECT_NAME') ?? $name->value;
 
             // Docker's objects are the project's by its name and label: a site's project follows a site
             // name's rules (no "_", nothing of the server's, e.g. "quire-server", whose containers
@@ -387,7 +387,7 @@ final readonly class SiteManager
                 throw new \DomainException(\sprintf('Its Compose project name (COMPOSE_PROJECT_NAME in prod.env) isn\'t one this server can manage: %s', $e->getMessage()), $e->getCode(), previous: $e);
             }
 
-            $domains = [] === $domains ? self::domainsOf($env->get('SERVER_NAME') ?? '') : $domains;
+            $domains = [] === $domains ? self::domainsOf($env->clear('SERVER_NAME') ?? '') : $domains;
 
             if ([] === $domains) {
                 throw new \DomainException('Its domains aren\'t known (it has no SERVER_NAME): pass them with --domain.');
@@ -415,7 +415,7 @@ final readonly class SiteManager
 
                 $step('Changing its settings (a copy of them is kept)');
                 $this->files->write($before, $env->content(), 0o600);
-                $files = $env->get('COMPOSE_FILE') ?? 'compose.yaml:compose.prod.yaml';
+                $files = $env->clear('COMPOSE_FILE') ?? 'compose.yaml:compose.prod.yaml';
                 $subnets = $this->links->ensure($name, $project, false);
                 $undo[] = fn () => $this->links->remove($name, $project);
                 $this->files->writeOverride($directory, $name, $domains, Site::OWN_DATABASE, $subnets, $project);

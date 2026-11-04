@@ -25,10 +25,7 @@ use Symfony\Component\Console\Attribute\Option;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Style\SymfonyStyle;
 
-#[AsCommand(
-    name: 'server:agent',
-    description: 'The agent\'s own work: keeps the front door in line with the registry',
-    help: <<<'HELP'
+#[AsCommand(name: 'server:agent', description: 'The agent\'s own work: keeps the front door in line with the registry', hidden: true, help: <<<'HELP'
         Runs as the agent container's main process. When it starts, it waits for the Docker gate, removes
         what releases before the gate left (the docker-proxy, privileged builders) and gives each site its
         scope on the gate (and no other site one); operations a crash or a restart interrupted are marked
@@ -38,8 +35,7 @@ use Symfony\Component\Console\Style\SymfonyStyle;
         backups off the server are made when due, sites due for their nightly automatic updates get them, problems that need the owner are found and
         told (D-35: "quire-server status"), and a heartbeat file says the agent is alive (for
         Docker's health check; also at each step of a long deploy or update).
-        HELP,
-)]
+        HELP)]
 final class AgentCommand
 {
     public const string HEARTBEAT = '/tmp/quire-server-agent.heartbeat';

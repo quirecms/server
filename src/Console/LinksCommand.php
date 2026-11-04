@@ -10,10 +10,7 @@ use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Style\SymfonyStyle;
 
-#[AsCommand(
-    name: 'server:links',
-    description: 'Put the front door and PostgreSQL back on every site\'s link (the agent does it every minute; "quire-server up" right away)',
-)]
+#[AsCommand(name: 'server:links', description: 'Put the front door and PostgreSQL back on every site\'s link (the agent does it every minute; "quire-server up" right away)', hidden: true)]
 final readonly class LinksCommand
 {
     public function __construct(

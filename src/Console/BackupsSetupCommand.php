@@ -183,7 +183,10 @@ final readonly class BackupsSetupCommand
             'Keep it with the backups\' password: restoring them on another machine checks it, so that a backup someone else put in the bucket isn\'t taken for this server\'s.',
         ]);
 
-        $io->success('Backups off the server are set up: every night from '.$this->current->hour.':00 UTC. "quire-server backups:now" makes the first one now.');
+        $hour = \Quire\Server\Update\AutomaticUpdates::parseHour($this->current->hour, 'QUIRE_SERVER_BACKUP_HOUR');
+        $io->success(null === $hour
+            ? 'Backups off the server are set up, but they don\'t run by themselves on this server (QUIRE_SERVER_BACKUP_HOUR=off): "quire-server backups:now" makes one.'
+            : \sprintf('Backups off the server are set up: every night from %02d:00 UTC.%s', $hour, \Quire\Server\Backup\OffsiteBackups::isDue(null, $hour, new \DateTimeImmutable()) ? ' The first one is made within a minute, by the agent.' : ' "quire-server backups:now" makes the first one now.'));
 
         return Command::SUCCESS;
     }

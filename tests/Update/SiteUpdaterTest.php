@@ -200,6 +200,7 @@ final class SiteUpdaterTest extends RegistryTestCase
             },
             'git clean' => static fn (array $command): ProcessResult => ScriptedRunner::ok($command),
             'git ls-tree' => static fn (array $command): ProcessResult => ScriptedRunner::ok($command),
+            'git status' => static fn (array $command): ProcessResult => ScriptedRunner::ok($command),
         ]);
         $this->keys = new DeployKeys($this->runner, $this->paths);
         $this->git = new Git($this->runner, $this->keys);

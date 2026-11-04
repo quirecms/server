@@ -374,7 +374,7 @@ final readonly class DatabaseUpgrader
             try {
                 $this->containers->removeBeside();
 
-                if ($this->runningMajor() !== $upgrade->to || $this->folder->env()->get('COMPOSE_FILE') !== $images->composeFile($this->folder->env()->get('COMPOSE_FILE') ?? 'compose.yaml', $upgrade->to)) {
+                if ($this->runningMajor() !== $upgrade->to || $this->folder->env()->clear('COMPOSE_FILE') !== $images->composeFile($this->folder->env()->clear('COMPOSE_FILE') ?? 'compose.yaml', $upgrade->to)) {
                     $this->switchTo($upgrade->to, $images);
                 }
 
@@ -547,7 +547,7 @@ final readonly class DatabaseUpgrader
     {
         $this->stack->stopDatabase($this->folder);
         $env = $this->folder->env();
-        $this->folder->writeEnv($env->with(['COMPOSE_FILE' => $images->composeFile($env->get('COMPOSE_FILE') ?? 'compose.yaml', $major)]));
+        $this->folder->writeEnv($env->with(['COMPOSE_FILE' => $images->composeFile($env->clear('COMPOSE_FILE') ?? 'compose.yaml', $major)]));
         $this->stack->up($this->folder, max($this->wait, self::ROLLBACK_WAIT), services: ['database']);
         $this->connection->close();
         [$running] = $this->running();
@@ -586,7 +586,7 @@ final readonly class DatabaseUpgrader
             $this->containers->removeBeside();
 
             // Before the switch, the old major still runs, untouched: no need to restart it.
-            if ($this->runningMajor() !== $upgrade->from || $this->folder->env()->get('COMPOSE_FILE') !== $images->composeFile($this->folder->env()->get('COMPOSE_FILE') ?? 'compose.yaml', $upgrade->from)) {
+            if ($this->runningMajor() !== $upgrade->from || $this->folder->env()->clear('COMPOSE_FILE') !== $images->composeFile($this->folder->env()->clear('COMPOSE_FILE') ?? 'compose.yaml', $upgrade->from)) {
                 $this->switchTo($upgrade->from, $images);
             }
 

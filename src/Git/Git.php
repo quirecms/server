@@ -17,6 +17,13 @@ use Quire\Server\Site\SiteName;
  */
 final readonly class Git
 {
+    /** The most a site's checkout may be: files, and bytes in all (ISO-16) */
+    public const int MAX_FILES = 100_000;
+    public const int MAX_BYTES = 2 << 30;
+
+    /** What the server writes in a Git mode site's folder: not changes of the site's */
+    private const array SERVER_WRITES = [SiteFiles::ENV_FILE, SiteFiles::OVERRIDE, SiteFiles::ENV_FILE.'.before-server', 'composer.lock'];
+
     /** The server's files in a site's folder, which the repository never has (or overwrites) */
     private const array SERVER_FILES = ['/'.SiteFiles::ENV_FILE, '/'.SiteFiles::ENV_FILE.'.*', '/'.SiteFiles::OVERRIDE];
 
@@ -112,6 +119,8 @@ final readonly class Git
         $this->git($repository, $site, $directory, ['merge-base', '--is-ancestor', $commit, 'refs/remotes/origin/'.$repository->branch])
             ->orFail(\sprintf('Finding commit %s on the branch "%s"', substr($commit, 0, 12), $repository->branch));
         $this->checkServerFiles($repository, $site, $directory, $commit);
+        $this->checkSize($repository, $site, $directory, $commit);
+        $this->checkUnchanged($repository, $site, $directory);
         $this->git($repository, $site, $directory, ['reset', '--hard', '--quiet', $commit], $output)->orFail('Checking out the commit');
         $this->git($repository, $site, $directory, ['clean', '-ffdq'], $output)->orFail('Removing files the commit doesn\'t have');
     }
@@ -127,6 +136,52 @@ final readonly class Git
 
         if ([] !== $tracked) {
             throw new \DomainException(\sprintf('%s has %s, the server\'s own files in a site\'s folder: remove %s from the repository.', Repository::isCommit($commit) ? 'Commit '.substr($commit, 0, 12) : 'The branch\'s newest commit', implode(', ', $tracked), 1 === \count($tracked) ? 'it' : 'them'));
+        }
+    }
+
+    /**
+     * A commit no bigger than a site's folder should be (ISO-16): a small repository can check out to
+     * millions of files (a "tree bomb"), and fill the server's disk and inodes before any build.
+     */
+    private function checkSize(Repository $repository, SiteName $site, string $directory, string $commit): void
+    {
+        $tree = $this->git($repository, $site, $directory, ['ls-tree', '-r', '-l', '--full-tree', $commit])->orFail('Reading the commit\'s files')->output;
+        $files = 0;
+        $bytes = 0;
+
+        foreach (explode("\n", $tree) as $line) {
+            // "<mode> blob <id> <size>\t<path>"
+            if (1 === preg_match('/^\d+ blob [0-9a-f]+ +(\d+)\t/', $line, $match)) {
+                ++$files;
+                $bytes += (int) $match[1];
+            }
+        }
+
+        if ($files > self::MAX_FILES || $bytes > self::MAX_BYTES) {
+            throw new \DomainException(\sprintf('Commit %s has %d files, %d MB: more than a site\'s folder takes (%d files, %d MB). Nothing was checked out.', substr($commit, 0, 12), $files, intdiv($bytes, 1 << 20), self::MAX_FILES, self::MAX_BYTES >> 20));
+        }
+    }
+
+    /**
+     * The folder as its last commit has it (OWNER-13): checking out another one removes what the
+     * repository doesn't have, so a file edited or added in the folder by hand would be lost with no
+     * backup. Refused, with which files; the server's own files there aren't the site's to commit.
+     */
+    private function checkUnchanged(Repository $repository, SiteName $site, string $directory): void
+    {
+        $status = $this->git($repository, $site, $directory, ['status', '--porcelain', '--untracked-files=all', '--no-renames'])->orFail('Reading the folder\'s changes (git status)')->output;
+        $changed = [];
+
+        foreach (explode("\n", $status) as $line) {
+            $path = substr($line, 3);
+
+            if ('' !== trim($line) && !\in_array($path, self::SERVER_WRITES, true)) {
+                $changed[] = $path;
+            }
+        }
+
+        if ([] !== $changed) {
+            throw new \DomainException(\sprintf('The site\'s folder has changes its repository doesn\'t (%s): checking out another commit would delete them. Commit them to the repository, or remove them from the folder, then try again.', implode(', ', \array_slice($changed, 0, 10)).(\count($changed) > 10 ? ' and '.(\count($changed) - 10).' more' : '')));
         }
     }
 

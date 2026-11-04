@@ -12,10 +12,7 @@ use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Style\SymfonyStyle;
 
-#[AsCommand(
-    name: 'server:site:updates',
-    description: 'Which updates a site gets by itself, every night: security (the default), all, or off',
-    help: <<<'HELP'
+#[AsCommand(name: 'server:site:auto-updates', description: 'Which updates a site gets by itself, every night: security (the default), all, or off', aliases: ['server:site:updates'], help: <<<'HELP'
         Every night (from QUIRE_SERVER_UPDATE_HOUR, UTC, in server.env: 3 by default; "off" for none on
         this server), each site gets
         the updates its policy says, as "site:update" makes them: built beside, backed up, checked,
@@ -29,8 +26,7 @@ use Symfony\Component\Console\Style\SymfonyStyle;
         Never by itself: an update that changes files of the skeleton the site edited, or Quire's
         version without Quire's signed release feed vouching for it. Git mode sites don't get any:
         their updates are made in their repository.
-        HELP,
-)]
+        HELP)]
 final readonly class UpdatePolicyCommand
 {
     public function __construct(
@@ -50,7 +46,10 @@ final readonly class UpdatePolicyCommand
             $site = new SiteName($name);
 
             if (null === $policy) {
-                $io->writeln(\sprintf('"%s" gets %s.', $site, $this->describe($this->policies->of($site))));
+                // A Git mode site's updates are its repository's: none here, whatever is set (MAINT-10)
+                $io->writeln(null !== $this->repositories->of($site)
+                    ? \sprintf('"%s" follows a Git repository: its updates are made there, so it gets none by itself.', $site)
+                    : \sprintf('"%s" gets %s.', $site, $this->describe($this->policies->of($site))));
 
                 return Command::SUCCESS;
             }

@@ -61,6 +61,9 @@ final readonly class DatabaseUpgrade
     }
 
     /**
+     * The upgrade at its next state, saved (upgrade.json): not a mere copy, as the record is what an
+     * interrupted upgrade is resumed or undone from (MAINT-08).
+     *
      * @param list<string>|null $stopped
      */
     public function with(string $state, ?array $stopped = null): self
@@ -85,6 +88,8 @@ final readonly class DatabaseUpgrade
             'created_at' => $this->createdAt->format(\DATE_ATOM),
             'changed_at' => $this->changedAt?->format(\DATE_ATOM),
         ], \JSON_PRETTY_PRINT | \JSON_UNESCAPED_SLASHES | \JSON_THROW_ON_ERROR)."\n");
+        // The updater's seal (HOST-13): the record names the containers an undo starts again
+        \Quire\Server\ServerUpdate\Seal::of(\dirname($this->directory, 3))->seal($this->directory, ['upgrade.json']);
     }
 
     /**
@@ -130,7 +135,7 @@ final readonly class DatabaseUpgrade
     {
         $content = @file_get_contents($directory.'/upgrade.json');
 
-        if (false === $content) {
+        if (false === $content || !\Quire\Server\ServerUpdate\Seal::of(\dirname($directory, 3))->holds($directory, ['upgrade.json'])) {
             return null;
         }
 
