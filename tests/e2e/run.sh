@@ -170,15 +170,32 @@ if want adopt && ! from_release; then
 echo '== Problems reach the owner (D-35): once when they start, once when they are over'
 # The owner's mailbox: Mailpit, where the agent reaches it (the server's network)
 inside 'docker run -d --name mailpit --network quire-data --network-alias mailpit -p 127.0.0.1:8025:8025 axllent/mailpit:v1.33.0@sha256:9b3a463be15354c0f0eba91697d80e3e0d8a5623ef0e627cacc836bc17fd5231 >/dev/null'
+# And the owner's webhook: HTTPS, with a certificate from an authority of this run's own, which only
+# this run's agent is made to trust (below); it checks each request's signature as a receiver would
+whsecret=$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')
+inside 'mkdir -p /root/hook && cd /root/hook && openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -keyout ca.key -out ca.pem -days 2 -subj "/CN=Quire e2e webhook authority" >/dev/null 2>&1 && openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -keyout key.pem -out req.csr -subj "/CN=webhook.e2e.test" >/dev/null 2>&1 && printf "subjectAltName=DNS:webhook.e2e.test\n" > ext && openssl x509 -req -in req.csr -CA ca.pem -CAkey ca.key -CAcreateserial -out cert.pem -days 2 -extfile ext >/dev/null 2>&1 && chmod 644 key.pem'
+docker cp "$here/tests/e2e/webhook-receiver.py" "$dind:/root/hook/receiver.py"
+inside "docker run -d --name webhook --network quire-data --network-alias webhook.e2e.test -e WEBHOOK_SECRET=$whsecret -v /root/hook:/hook:ro python:3.14.10-alpine@sha256:eb2c62658b8d51bff0acc408504b76521d02030de56a8a3c1e830083e89b89d2 python3 /hook/receiver.py /hook/cert.pem /hook/key.pem >/dev/null"
+# What the webhook got, one JSON line per request; waits (as mailed) for one with this in it, signed
+hooks() { inside 'docker exec webhook cat /tmp/hooks.log 2>/dev/null'; }
+hooked() { for _ in $(seq 36); do if hooks | grep -F "$1" | grep -qF '"valid": true'; then return 0; fi; sleep 5; done; return 1; }
 inside 'cp -p /srv/quire/server/server.env /root/server.env.before-notify && sed -i -e "s#^QUIRE_SERVER_MAILER_DSN=.*#QUIRE_SERVER_MAILER_DSN=smtp://mailpit:1025#" -e "s#^QUIRE_SERVER_NOTIFY_EMAIL=.*#QUIRE_SERVER_NOTIFY_EMAIL=owner@example.com#" -e "s#^QUIRE_SERVER_NAME=.*#QUIRE_SERVER_NAME=e2e#" /srv/quire/server/server.env && grep -q "^QUIRE_SERVER_NOTIFY_EMAIL=owner@example.com" /srv/quire/server/server.env && quire-server up >/dev/null 2>&1'
+# The webhook too: its path is a secret of its own (as Slack's and Discord's are)
+inside "sed -i -e 's#^QUIRE_SERVER_NOTIFY_WEBHOOK=.*#QUIRE_SERVER_NOTIFY_WEBHOOK=https://webhook.e2e.test/hooks/path-secret-e2e#' -e 's#^QUIRE_SERVER_NOTIFY_SECRET=.*#QUIRE_SERVER_NOTIFY_SECRET=$whsecret#' /srv/quire/server/server.env && quire-server up >/dev/null 2>&1"
+# This agent, as it runs now, trusts the run's authority (recreated, it doesn't any more)
+inside 'docker exec -i quire-server-agent-1 sh -c "cat >> /etc/ssl/certs/ca-certificates.crt" < /root/hook/ca.pem'
 # Subjects of the mails Mailpit got, one per line
 mails() { inside "curl -s 'http://127.0.0.1:8025/api/v1/messages?limit=50'" | tr ',' '\n' | sed -n 's/^"Subject":"\(.*\)"$/\1/p'; }
 # Waits (up to 3 minutes: the agent's rounds are a minute apart) for a mail whose subject has this
 mailed() { for _ in $(seq 36); do if mails | grep -qF "$1"; then return 0; fi; sleep 5; done; return 1; }
-check 'a test notification arrives by email' "inside 'quire-server notify:test' | grep -q 'Sent: email to owner@example.com' && mailed 'Quire Server e2e: a test'"
+inside 'quire-server notify:test 2>&1' > "$logs"/notify-test.log || true
+sed 's/^/    /' "$logs"/notify-test.log
+check 'a test notification arrives by email' "grep -q 'Sent: email to owner@example.com' $logs/notify-test.log && mailed 'Quire Server e2e: a test'"
+check 'and by webhook, signed, as JSON, to its path' "grep -q 'Sent: webhook to webhook.e2e.test' $logs/notify-test.log && hooked 'Quire Server e2e: a test' && hooks | grep -F 'Quire Server e2e: a test' | grep -qF '\"path\": \"/hooks/path-secret-e2e\", \"type\": \"application/json\"'"
 # Last night, as the agent records it: demo's automatic update failed
 inside "docker exec -e PGPASSWORD=$postgres_password quire-server-database-1 psql -U postgres -d quire_server -qc \"INSERT INTO server.operation (id, action, site, channel, requested_by, status, error, finished_at) VALUES (gen_random_uuid(), 'site.update', 'demo', 'agent', 'automatic', 'failed', 'planted-error-text', now())\""
 check 'the agent tells of it, by itself' "mailed 'Quire Server e2e: The automatic update of demo failed'"
+check 'the webhook is told it started, with its key' "hooked '{\"event\": \"started\", \"key\": \"operation:site.update:demo\"}'"
 check 'the mail says what to do, and no tool output' "inside \"curl -s 'http://127.0.0.1:8025/api/v1/message/latest'\" > $logs/problem-mail.json && grep -q 'quire-server operations' $logs/problem-mail.json && ! grep -q planted-error-text $logs/problem-mail.json && ! grep -qF \"$postgres_password\" $logs/problem-mail.json"
 check 'quire-server status lists it, with its key' "inside 'quire-server status' | grep -q 'The automatic update of demo failed.*key operation:site.update:demo'"
 check 'every other command says a problem needs you' "inside 'quire-server site:list 2>&1 >/dev/null' | grep -q '1 problem needs you'"
@@ -187,7 +204,9 @@ check 'status reads the front door'\''s certificates' "inside 'quire-server stat
 inside "docker exec -e PGPASSWORD=$postgres_password quire-server-database-1 psql -U postgres -d quire_server -qc \"INSERT INTO server.operation (id, action, site, channel, requested_by, status, finished_at) VALUES (gen_random_uuid(), 'site.update', 'demo', 'cli', 'root', 'succeeded', now())\""
 check 'it is told once more when it is over, and only then' "mailed 'Quire Server e2e: Fixed: The automatic update of demo failed' && [ \"\$(mails | grep -cF 'The automatic update of demo failed')\" = 2 ]"
 check 'and then nothing needs you' "inside 'quire-server status' | grep -q '^No problems' && ! inside 'quire-server site:list 2>&1 >/dev/null' | grep -q 'needs you'"
-inside 'docker rm -f mailpit >/dev/null && cp -p /root/server.env.before-notify /srv/quire/server/server.env && quire-server up >/dev/null 2>&1'
+check 'the webhook is told it was fixed, once' "hooked '{\"event\": \"fixed\", \"key\": \"operation:site.update:demo\"}' && [ \"\$(hooks | grep -cF '\"event\": \"fixed\", \"key\": \"operation:site.update:demo\"')\" = 1 ]"
+check 'every request was signed, and the webhook'\''s path is in no log' "! hooks | grep -qF '\"valid\": false' && ! inside 'quire-server logs agent 2>&1' | grep -q path-secret-e2e && ! inside 'quire-server status 2>&1' | grep -q path-secret-e2e && ! inside 'quire-server operations 2>&1' | grep -q path-secret-e2e"
+inside 'docker rm -f mailpit webhook >/dev/null && cp -p /root/server.env.before-notify /srv/quire/server/server.env && quire-server up >/dev/null 2>&1'
 fi
 
 if linking; then
