@@ -43,6 +43,14 @@ final class Failures
             return ['why' => 'Composer couldn\'t work out the versions to install'.$reason, 'next' => 'Fix the site\'s composer.json (or the constraint asked for), then try again.'];
         }
 
+        if (self::transient($output)) {
+            $host = 1 === preg_match('/"?https?:\/\/([A-Za-z0-9.-]+\.[A-Za-z]{2,})[\/"]/', $output, $match) ? $match[1] : null;
+            $status = 1 === preg_match('/\bHTTP\/[\d.]+ (\d{3})\b/', $output, $match) ? ' HTTP '.$match[1] : null;
+            $package = 1 === preg_match('/Failed to download (\S+) from dist/', $output, $match) ? ' while '.$match[1].' was downloaded' : '';
+
+            return ['why' => \sprintf('%s%s%s: a problem on its side or on the way, usually brief', $host ?? 'a host it needs', null === $status ? ' didn\'t answer in time' : ' answered'.$status, $package), 'next' => 'Try again in a few minutes. If it goes on, check the host\'s status page and the server\'s network.'];
+        }
+
         if (1 === preg_match('/Could not resolve host|Failed to connect to|could not translate host name|Temporary failure in name resolution|Name (?:does not resolve|or service not known)|Connection timed out|Connection refused|Network is unreachable|i\/o timeout|TLS handshake timeout|curl error (?:6|7|28)\b/i', $output)) {
             $host = null;
 
@@ -62,13 +70,33 @@ final class Failures
             $said = null;
 
             if (1 === preg_match('/#(\d+) ERROR: process/', $lines, $step) && preg_match_all('/^#'.$step[1].' [\d.]+ (.+)$/m', $lines, $stepLines) > 0) {
-                $said = $stepLines[1][\count($stepLines[1]) - 1];
+                // The last line that says something: not a command's usage Composer and Symfony print after
+                // their error ("install [--prefer-source] [--prefer-dist] …")
+                foreach (array_reverse($stepLines[1]) as $line) {
+                    if ('' !== trim($line) && 1 !== preg_match('/^\s*[\w:-]* ?\[--[\w-]+/', $line)) {
+                        $said = $line;
+
+                        break;
+                    }
+                }
             }
 
             return ['why' => \sprintf('a step of its build failed (exit code %s): %s', $match[2], self::clean($said ?? strtok(str_replace('\\n', "\n", $match[1]), "\n"), 160)), 'next' => 'The operation\'s log ("quire-server operations") has the step\'s whole output; fix what it says in the site\'s code, then try again.'];
         }
 
         return null;
+    }
+
+    /**
+     * Whether a failure is one that passes by itself: a host's server error or rate limit (HTTP 5xx,
+     * 429), a connection cut or timed out on the way. Not a name that doesn't resolve or a connection
+     * refused: those are usually a setting, and trying again only makes the owner wait.
+     */
+    public static function transient(string $output): bool
+    {
+        $output = (string) preg_replace('/\s+/', ' ', $output);
+
+        return 1 === preg_match('/(?:could not be downloaded|Failed to download|failed to (?:fetch|resolve source metadata|copy)|unexpected status|returned error|status code)[^.]{0,200}?\bHTTP\/[\d.]+ (?:5\d\d|429)\b|\bHTTP\/[\d.]+ (?:5\d\d|429)\b[^.]{0,40}(?:Gateway|Service Unavailable|Bad Gateway|Too Many Requests|Internal Server Error)|\b(?:502 Bad Gateway|503 Service Unavailable|504 Gateway Time-?out|429 Too Many Requests)\b|Connection reset by peer|TLS handshake timeout|i\/o timeout|Operation timed out|curl error 28\b|unexpected EOF/i', $output);
     }
 
     /**

@@ -28,6 +28,7 @@ final class FailuresTest extends TestCase
         yield 'a deploy key removed (#15)' => ['fail-deploy-key-removed.txt', 'the repository refused the site\'s deploy key', 'quire-server site:key <site>'];
         yield 'the Git host unreachable (#16)' => ['fail-git-host-unreachable.txt', '172.21.0.5 couldn\'t be reached from this server', 'network and DNS'];
         yield 'Packagist unreachable (#17)' => ['fail-offline-site-add.txt', 'repo.packagist.org couldn\'t be reached from this server', 'network and DNS'];
+        yield 'GitHub\'s 504 on one download, mid-build (droplet scale test, 2026-11-05)' => ['fail-build-download-504.txt', 'api.github.com answered HTTP 504 while symfony/process was downloaded: a problem on its side or on the way, usually brief', 'Try again in a few minutes'];
         yield 'a package that doesn\'t exist (#13)' => ['fail-update-missing-package-oplog.txt', 'Composer couldn\'t work out the versions to install: Root composer.json requires quire/does-not-exist, it could not be found in any version, there may be a typo in the package name.', 'composer.json'];
     }
 
@@ -57,6 +58,34 @@ final class FailuresTest extends TestCase
         self::assertSame('a step of its build failed (exit code 3): asset build failed: out of memory', Failures::explain($output)['why'] ?? null);
         // The rendered message the audit recorded: the step's command, when its output isn't there
         self::assertStringStartsWith('a step of its build failed (exit code 3): mkdir -p var/cache', Failures::explain((string) file_get_contents(__DIR__.'/fixtures/fail-update-build-step.txt'))['why'] ?? '');
+    }
+
+    public function testAFailedStepSaysItsErrorNotTheUsageAfterIt(): void
+    {
+        // Composer and Symfony's console print the command's usage after their error box
+        $output = implode("\n", [
+            '#17 6.314 In PackageRepository.php line 88:',
+            '#17 6.314   The lock file is not up to date with the latest changes in composer.json.',
+            '#17 6.315 install [--prefer-source] [--prefer-dist] [--prefer-install PREFER-INSTALL] [--dry-run] [--dev]',
+            '#17 6.315 ',
+            '#17 ERROR: process "/bin/bash -euxo pipefail -c composer install --no-dev" did not complete successfully: exit code: 4',
+        ]);
+
+        self::assertSame('a step of its build failed (exit code 4): The lock file is not up to date with the latest changes in composer.json.', Failures::explain($output)['why'] ?? null);
+    }
+
+    public function testOnlyWhatPassesByItselfIsTriedAgain(): void
+    {
+        self::assertTrue(Failures::transient((string) file_get_contents(__DIR__.'/fixtures/fail-build-download-504.txt')), 'A host\'s 504.');
+        self::assertTrue(Failures::transient('curl error 28 while downloading https://repo.packagist.org/p2/quire/core.json: Operation timed out after 10001 milliseconds'));
+        self::assertTrue(Failures::transient('failed to fetch: unexpected status from GET request to https://ghcr.io/v2/quirecms/runtime/blobs/sha256:00: 503 Service Unavailable'));
+        self::assertTrue(Failures::transient('read tcp 10.72.0.5:4312->140.82.121.6:443: read: connection reset by peer'));
+
+        foreach (['fail-disk-full-deploy.txt', 'fail-offline-site-add.txt', 'fail-update-missing-package-oplog.txt', 'fail-update-build-step.txt', 'fail-deploy-key-removed.txt'] as $fixture) {
+            self::assertFalse(Failures::transient((string) file_get_contents(__DIR__.'/fixtures/'.$fixture)), $fixture.': a setting or the site\'s code, said at once.');
+        }
+
+        self::assertFalse(Failures::transient('The "https://api.github.com/repos/x/y/zipball/1" file could not be downloaded (HTTP/2 404 )'), 'Not there: not there either in 30 s.');
     }
 
     public function testWhatItDoesntKnowIsNotGuessed(): void

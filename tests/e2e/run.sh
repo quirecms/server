@@ -730,6 +730,16 @@ waited=0
 until inside 'quire-server operations --site=jane' | grep site.recover | grep -qv running || [ $waited -ge 300 ]; do sleep 10; waited=$((waited + 10)); done
 check 'the agent puts the site back as it was before, by itself' "inside 'quire-server operations --site=jane' | grep -q 'site.recover.*succeeded' && [ \"\$(inside \"docker inspect jane-php-1 --format '{{.Image}}'\")\" = \"$before\" ] && ! inside 'test -e /srv/quire/backups/jane/release.json' && [ \"\$(inside \"curl -sk $resolve -o /dev/null -w '%{http_code}' https://jane.test/\")\" = 200 ]"
 
+echo '== The machine restarts: everything comes back by itself'
+# As a reboot does it: Docker stops every container and starts again with the data it had. A container
+# Docker counts as stopped by hand (any docker stop, or docker kill with any signal, since it last
+# started) stays down; the server's PostgreSQL did, after the agent reloaded its rules with a kill.
+docker restart "$dind" >/dev/null
+until inside 'docker info' >/dev/null 2>&1; do sleep 1; done
+waited=0
+until [ "$(inside "curl -sk $resolve -o /dev/null -w '%{http_code}' https://jane.test/" 2>/dev/null)" = 200 ] || [ $waited -ge 300 ]; do sleep 5; waited=$((waited + 5)); done
+check 'after the machine restarts, the server'\''s PostgreSQL, its agent and the site come back by themselves' "inside 'quire-server ps --format \"{{.Service}} {{.Health}}\"' | grep -q 'database healthy' && inside 'quire-server ps --format \"{{.Service}} {{.Health}}\"' | grep -q 'agent healthy' && [ \"\$(inside \"curl -sk $resolve -o /dev/null -w '%{http_code}' https://jane.test/\")\" = 200 ]"
+
 echo '== Removing the site'
 inside 'quire-server site:remove jane --yes 2>&1' | tee "$logs"/remove.log | sed 's/^/    /'
 check 'it says how to bring it back' "grep -q 'site:restore-removed jane' $logs/remove.log"

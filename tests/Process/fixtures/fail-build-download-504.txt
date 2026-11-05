@@ -1,0 +1,53 @@
+#17 0.724   - Downloading composer/semver (3.6.0)
+#17 0.725   - Downloading symfony/asset-mapper (v8.1.11)
+#17 0.726   - Downloading symfony/asset (v8.1.0)
+#17 0.726   - Downloading sebastian/diff (9.0.1)
+#17 0.727   - Downloading quire/core (v0.1.2)
+#17 0.731   - Downloading quire/admin (v0.1.2)
+#17 0.731   - Downloading quire/theme-default (v0.1.2)
+#17 0.731   - Downloading symfony/dotenv (v8.1.6)
+#17 3.159   - Downloading symfony/process (v8.1.10)
+#17 4.350   - Downloading symfony/process (v8.1.10)
+#17 5.545   - Downloading symfony/process (v8.1.10)
+#17 6.244     Failed to download symfony/process from dist: The "https://api.github.com/repos/symfony/process/zipball/08aa69fa0998bb65a089f9e148a2c0f8b391398e" file could not be downloaded (HTTP/2 504 )
+#17 6.309 
+#17 6.314 In CurlDownloader.php line 966:
+#17 6.314                                                                                
+#17 6.314   The "https://api.github.com/repos/symfony/process/zipball/08aa69fa0998bb65a  
+#17 6.314   089f9e148a2c0f8b391398e" file could not be downloaded (HTTP/2 504 )          
+#17 6.314                                                                                
+#17 6.314 
+#17 6.315 install [--prefer-source] [--prefer-dist] [--prefer-install PREFER-INSTALL] [--dry-run] [--download-only] [--dev] [--no-suggest] [--no-dev] [--no-security-blocking] [--no-blocking] [--no-autoloader] [--no-progress] [--no-install] [--audit] [--audit-format AUDIT-FORMAT] [-v|vv|vvv|--verbose] [-o|--optimize-autoloader] [-a|--classmap-authoritative] [--strict-psr-autoloader] [--apcu-autoloader] [--apcu-autoloader-prefix APCU-AUTOLOADER-PREFIX] [--ignore-platform-req IGNORE-PLATFORM-REQ] [--ignore-platform-reqs] [--] [<packages>...]
+#17 6.315 
+#17 ERROR: process "/bin/bash -euxo pipefail -c composer install --no-cache --prefer-dist --no-dev --no-autoloader --no-scripts --no-progress" did not complete successfully: exit code: 100
+------
+ > [php frankenphp_prod_builder 3/6] RUN composer install --no-cache --prefer-dist --no-dev --no-autoloader --no-scripts --no-progress:
+6.244     Failed to download symfony/process from dist: The "https://api.github.com/repos/symfony/process/zipball/08aa69fa0998bb65a089f9e148a2c0f8b391398e" file could not be downloaded (HTTP/2 504 )
+6.309 
+6.314 In CurlDownloader.php line 966:
+6.314                                                                                
+6.314   The "https://api.github.com/repos/symfony/process/zipball/08aa69fa0998bb65a  
+6.314   089f9e148a2c0f8b391398e" file could not be downloaded (HTTP/2 504 )          
+6.314                                                                                
+6.314 
+6.315 install [--prefer-source] [--prefer-dist] [--prefer-install PREFER-INSTALL] [--dry-run] [--download-only] [--dev] [--no-suggest] [--no-dev] [--no-security-blocking] [--no-blocking] [--no-autoloader] [--no-progress] [--no-install] [--audit] [--audit-format AUDIT-FORMAT] [-v|vv|vvv|--verbose] [-o|--optimize-autoloader] [-a|--classmap-authoritative] [--strict-psr-autoloader] [--apcu-autoloader] [--apcu-autoloader-prefix APCU-AUTOLOADER-PREFIX] [--ignore-platform-req IGNORE-PLATFORM-REQ] [--ignore-platform-reqs] [--] [<packages>...]
+6.315 
+------
+Dockerfile:61
+
+--------------------
+
+  59 |     # prevent the reinstallation of vendors at every changes in the source code
+
+  60 |     COPY --link composer.* symfony.* ./
+
+  61 | >>> RUN composer install --no-cache --prefer-dist --no-dev --no-autoloader --no-scripts --no-progress
+
+  62 |     
+
+  63 |     # copy sources
+
+--------------------
+
+target worker: failed to solve: process "/bin/bash -euxo pipefail -c composer install --no-cache --prefer-dist --no-dev --no-autoloader --no-scripts --no-progress" did not complete successfully: exit code: 100
+
