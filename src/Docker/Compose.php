@@ -140,14 +140,23 @@ final readonly class Compose
             $arguments[] = $name.'='.$image;
         }
 
-        $builder = $this->builders->ensure($project, $this->gate->site($project), $output);
-        $built = $this->compose($project, ['build', '--pull', '--builder', $builder, ...$arguments], timeout: 1800, output: $output);
+        $site = $this->gate->site($project);
+        $builder = $this->builders->ensure($project, $site, $output);
 
-        // A download that failed on the way (a host's 504, a connection cut) passes by itself: once more
-        if (!$built->successful() && \Quire\Server\Process\Failures::transient($built->output."\n".$built->errorOutput)) {
-            $say(\sprintf("A download failed on the way (%s). Trying again in %d s…\n", \Quire\Server\Process\Failures::explain($built->output."\n".$built->errorOutput)['why'] ?? 'a host didn\'t answer', (int) $this->retrySeconds));
-            usleep((int) ($this->retrySeconds * 1_000_000));
+        try {
             $built = $this->compose($project, ['build', '--pull', '--builder', $builder, ...$arguments], timeout: 1800, output: $output);
+
+            // A download that failed on the way (a host's 504, a connection cut) passes by itself: once more
+            if (!$built->successful() && \Quire\Server\Process\Failures::transient($built->output."\n".$built->errorOutput)) {
+                $say(\sprintf("A download failed on the way (%s). Trying again in %d s…\n", \Quire\Server\Process\Failures::explain($built->output."\n".$built->errorOutput)['why'] ?? 'a host didn\'t answer', (int) $this->retrySeconds));
+                usleep((int) ($this->retrySeconds * 1_000_000));
+                $built = $this->compose($project, ['build', '--pull', '--builder', $builder, ...$arguments], timeout: 1800, output: $output);
+            }
+        } finally {
+            // Its builder runs only while it builds (Builders)
+            foreach ($this->builders->release($project, $site) as $note) {
+                $say('Note: '.$note."\n");
+            }
         }
 
         $built->orFail('Building the site');

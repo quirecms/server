@@ -84,6 +84,49 @@ final readonly class SiteRegistry
         return $this->get($name) ?? throw new \LogicException('The site was just added.');
     }
 
+    /**
+     * The site's domains, all at once (the first is the primary one). Fails when the site is removed
+     * or unknown, or a domain belongs to another site.
+     *
+     * @param list<Domain> $domains
+     */
+    public function setDomains(SiteName $name, array $domains): Site
+    {
+        if ([] === $domains) {
+            throw new \InvalidArgumentException('A site needs at least one domain.');
+        }
+
+        $this->connection->transactional(function () use ($name, $domains): void {
+            $status = $this->connection->fetchOne(\sprintf('SELECT status FROM %s.site WHERE name = ? FOR UPDATE', $this->schema()), [$name->value]);
+
+            if (false === $status || Site::REMOVED === $status) {
+                throw new \DomainException(\sprintf('There\'s no site named "%s".', $name));
+            }
+
+            $values = array_map(static fn (Domain $domain): string => $domain->value, $domains);
+            $owners = $this->connection->fetchAllKeyValue(\sprintf('SELECT domain, site FROM %s.domain WHERE domain IN (?) AND site <> ? ORDER BY domain', $this->schema()), [$values, $name->value], [ArrayParameterType::STRING]);
+
+            foreach ($owners as $domain => $owner) {
+                throw new \DomainException(\sprintf('The domain "%s" belongs to the site "%s".', $domain, \is_scalar($owner) ? (string) $owner : '?'));
+            }
+
+            $this->connection->delete($this->table('domain'), ['site' => $name->value]);
+
+            foreach ($domains as $index => $domain) {
+                try {
+                    $this->connection->insert($this->table('domain'), ['domain' => $domain->value, 'site' => $name->value, 'is_primary' => 0 === $index], ['is_primary' => 'boolean']);
+                } catch (UniqueConstraintViolationException $e) {
+                    // Taken meanwhile by another site, or given twice
+                    throw new \DomainException(\sprintf('The domain "%s" was given twice, or was just taken by another site.', $domain), $e->getCode(), previous: $e);
+                }
+            }
+
+            $this->connection->executeStatement(\sprintf('UPDATE %s.site SET updated_at = now() WHERE name = ?', $this->schema()), [$name->value]);
+        });
+
+        return $this->get($name) ?? throw new \LogicException('The site was just changed.');
+    }
+
     public function setStatus(SiteName $name, string $status): void
     {
         if (!\in_array($status, [Site::CREATING, Site::RUNNING, Site::REMOVING, Site::FAILED, Site::REMOVED], true)) {

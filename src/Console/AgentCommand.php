@@ -140,6 +140,10 @@ final class AgentCommand
             $io->writeln(\sprintf('Docker: removed the privileged builder of an earlier release (%s)', $builder));
         }
 
+        foreach ($this->builders->stopIdle() as $builder) {
+            $io->writeln(\sprintf('Docker: stopped an idle builder (%s); it starts again for its site\'s next build', $builder));
+        }
+
         $projects = [];
 
         foreach ($this->registry->all() as $site) {

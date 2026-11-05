@@ -24,6 +24,8 @@ final class BuildersTest extends TestCase
 
     private ScriptedRunner $runner;
 
+    private bool $pruneFails = false;
+
     #[\Override]
     protected function setUp(): void
     {
@@ -37,6 +39,8 @@ final class BuildersTest extends TestCase
             'docker volume rm' => static fn (array $command): ProcessResult => ScriptedRunner::ok($command),
             'docker network inspect' => static fn (array $command): ProcessResult => ScriptedRunner::ok($command),
             'docker buildx inspect' => static fn (array $command): ProcessResult => ScriptedRunner::ok($command),
+            'docker buildx prune' => fn (array $command): ProcessResult => $this->pruneFails ? ScriptedRunner::failed($command, "ERROR: no builder \"site\" found\n") : ScriptedRunner::ok($command),
+            'docker container stop' => static fn (array $command): ProcessResult => ScriptedRunner::ok($command),
             // Builders of earlier releases, one of them a site's with a project older than projects' rules
             'docker container ls' => static fn (array $command): ProcessResult => ScriptedRunner::ok($command, "buildx_buildkit_quire-jane-0123456789ab0\nbuildx_buildkit_quire-demo_x-abcdefabcdef0\nbuildx_buildkit_quire-someone-elses\n"),
         ]);
@@ -95,6 +99,34 @@ final class BuildersTest extends TestCase
         GateFixture::builders($this->runner, $this->root)->ensure($this->project(), self::SITE);
         self::assertSame(['docker', 'container', 'start', 'quire-buildkit-jane'], $this->command('docker container start'));
         self::assertNotContains('docker container run', $this->runner->keys());
+    }
+
+    public function testAfterABuildItsCacheIsTrimmedAndItsBuilderStopped(): void
+    {
+        self::assertSame([], GateFixture::builders($this->runner, $this->root)->release($this->project(), self::SITE));
+        self::assertSame(['docker buildx prune', 'docker container stop'], $this->runner->keys());
+        self::assertSame(['docker', 'buildx', 'prune', '--builder', 'site', '--force', '--max-used-space', '512mb'], $this->command('docker buildx prune'));
+        self::assertSame(self::SITE, $this->env('docker buildx prune'), 'On the site\'s socket, as its builds.');
+        self::assertSame(['docker', 'container', 'stop', '--time', '30', 'quire-buildkit-jane'], $this->command('docker container stop'));
+        self::assertSame(GateFixture::TRUSTED, $this->env('docker container stop')['DOCKER_HOST'] ?? null);
+    }
+
+    public function testACacheThatWasntTrimmedIsSaidAndTheBuilderStoppedAnyway(): void
+    {
+        $this->pruneFails = true;
+        $notes = GateFixture::builders($this->runner, $this->root)->release($this->project(), self::SITE);
+
+        self::assertSame(['The site\'s build cache wasn\'t trimmed (ERROR: no builder "site" found): its next build tries again.'], $notes);
+        self::assertContains('docker container stop', $this->runner->keys());
+    }
+
+    public function testAtTheAgentsStartOnlySitesBuildersAreStopped(): void
+    {
+        $this->runner->script['docker container ls'] = static fn (array $command): ProcessResult => new ProcessResult(['docker', 'container', 'ls'], 0, "quire-buildkit-jane\nquire-buildkit-kim\nsomething-else\n", '');
+
+        self::assertSame(['quire-buildkit-jane', 'quire-buildkit-kim'], GateFixture::builders($this->runner, $this->root)->stopIdle());
+        self::assertSame(['docker', 'container', 'ls', '--filter', 'label=com.quirecms.server.builder', '--format', '{{.Names}}'], $this->command('docker container ls'), 'Running ones, by their label.');
+        self::assertSame(['docker container ls', 'docker container stop', 'docker container stop'], $this->runner->keys());
     }
 
     public function testOnlyTheBuildersOfEarlierReleasesGo(): void

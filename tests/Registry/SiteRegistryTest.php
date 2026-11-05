@@ -91,6 +91,29 @@ final class SiteRegistryTest extends RegistryTestCase
         self::assertSame(Site::CREATING, $again->status);
     }
 
+    public function testASitesDomainsChangeAllAtOnceAndOthersStayTheirs(): void
+    {
+        $registry = new SiteRegistry($this->connection, $this->schema);
+        $registry->add(new SiteName('jane'), [new Domain('jane.example'), new Domain('www.jane.example')], Site::SHARED_DATABASE, 'jane');
+        $registry->add(new SiteName('kim'), [new Domain('kim.example')], Site::SHARED_DATABASE, 'kim');
+
+        $site = $registry->setDomains(new SiteName('jane'), [new Domain('www.jane.example'), new Domain('jane.test')]);
+        self::assertSame(['www.jane.example', 'jane.test'], array_map(static fn (Domain $domain): string => $domain->value, $site->domains), 'The first is the main one.');
+
+        try {
+            $registry->setDomains(new SiteName('jane'), [new Domain('jane.test'), new Domain('kim.example')]);
+            self::fail('Kim\'s domain was taken.');
+        } catch (\DomainException $e) {
+            self::assertStringContainsString('"kim.example" belongs to the site "kim"', $e->getMessage());
+        }
+
+        self::assertSame(['www.jane.example', 'jane.test'], array_map(static fn (Domain $domain): string => $domain->value, $registry->get(new SiteName('jane'))->domains ?? []), 'All or nothing.');
+
+        $registry->setStatus(new SiteName('kim'), Site::REMOVED);
+        $this->expectExceptionMessageIsOrContains('There\'s no site named "kim".');
+        $registry->setDomains(new SiteName('kim'), [new Domain('kim.example')]);
+    }
+
     public function testOneOperationAtATimePerSite(): void
     {
         $lock = new SiteLock($this->connection, $this->schema);

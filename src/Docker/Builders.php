@@ -19,6 +19,10 @@ use Quire\Server\Process\ProcessRunner;
  * grants it one (gate/host-setup.sh loads it). Not "no-new-privileges": newuidmap needs its file
  * capabilities to map its users. It's on the sandbox network: the internet (base images, packages),
  * none of the server's networks or sites, nor Docker's default bridge.
+ *
+ * A builder runs only while its site builds: started for the build, its cache trimmed to CACHE after
+ * it, then stopped. Idle, a hundred builders held more memory than the hundred sites they build
+ * (about 110 MiB each), and their caches grew by 1.5 GB a site with nothing to trim them.
  */
 final readonly class Builders
 {
@@ -39,6 +43,12 @@ final readonly class Builders
 
     /** The most processes a build may run */
     private const int PIDS = 4096;
+
+    /**
+     * The most build cache a site keeps between builds: the newest, so a rebuild still finds its
+     * packages' downloads and its unchanged layers. Untrimmed, a site's grew past 1.5 GB.
+     */
+    public const string CACHE = '512mb';
 
     /** How long a builder may take to answer, once started */
     private const int START_SECONDS = 60;
@@ -103,6 +113,56 @@ final readonly class Builders
         }
 
         return self::NAME;
+    }
+
+    /**
+     * After a build, whatever its outcome: the site's cache trimmed to CACHE and its builder stopped,
+     * until its next build starts it again. Neither failing fails the build: what's said is returned.
+     *
+     * @param array<string, string|false> $site The environment of the site's Docker configuration (Gate::site())
+     *
+     * @return list<string> What didn't work, said for the person who asked
+     */
+    public function release(SiteProject $project, array $site): array
+    {
+        $notes = [];
+        $trimmed = $this->runner->run(['docker', 'buildx', 'prune', '--builder', self::NAME, '--force', '--max-used-space', self::CACHE], $site, timeout: 300);
+
+        if (!$trimmed->successful()) {
+            $notes[] = \sprintf('The site\'s build cache wasn\'t trimmed (%s): its next build tries again.', $this->lastLine($trimmed));
+        }
+
+        $stopped = $this->docker(['container', 'stop', '--time', '30', self::container($project->name())], 120);
+
+        if (!$stopped->successful()) {
+            $notes[] = \sprintf('The site\'s builder wasn\'t stopped (%s): it holds memory until the agent starts again.', $this->lastLine($stopped));
+        }
+
+        return $notes;
+    }
+
+    /**
+     * Builders left running, e.g. by a release before builders stopped after their builds, or by a
+     * build the agent's stop cut short: stopped. Only at the agent's start, when no build can run (each
+     * runs in the agent's container).
+     *
+     * @return list<string> The containers stopped
+     */
+    public function stopIdle(): array
+    {
+        $listed = $this->docker(['container', 'ls', '--filter', 'label='.self::LABEL, '--format', '{{.Names}}'], 60)->orFail('Listing the sites\' builders');
+        $stopped = [];
+
+        foreach (explode("\n", trim($listed->output)) as $container) {
+            if (1 !== preg_match('/^quire-buildkit-[a-z0-9][a-z0-9-]*\z/', $container)) {
+                continue;
+            }
+
+            $this->docker(['container', 'stop', '--time', '30', $container], 120)->orFail('Stopping a site\'s idle builder');
+            $stopped[] = $container;
+        }
+
+        return $stopped;
     }
 
     /**
@@ -173,6 +233,13 @@ final readonly class Builders
             \in_array($found, self::APPARMOR, true) => $found,
             default => throw new \RuntimeException(\sprintf('The host\'s setup for builds is missing or unknown (%s): see "quire-server logs host-setup".', '' === $found ? 'nothing in '.$this->facts : '"'.$found.'"')),
         };
+    }
+
+    private function lastLine(\Quire\Server\Process\ProcessResult $result): string
+    {
+        $lines = array_values(array_filter(array_map(trim(...), explode("\n", $result->errorOutput."\n".$result->output)), static fn (string $line): bool => '' !== $line));
+
+        return [] === $lines ? 'no reason given' : $lines[\count($lines) - 1];
     }
 
     /**
