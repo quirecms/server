@@ -85,10 +85,11 @@ final class BackupsSetupCommandTest extends RegistryTestCase
         self::assertStringContainsString('aren\'t protected: these keys (server.env) can delete', (string) preg_replace('/\s+/', ' ', $tester->getDisplay()), 'Said, not refused: a backup that can be deleted beats none.');
         self::assertTrue(new Checks($this->connection, $this->schema)->get('backups.protection')['failing'] ?? false);
 
-        $this->bucket = new FakeBucket(FakeBucket::COMPLIANCE, 30);
+        // The command reads the real clock: the bucket's must be today's, or the days left shrink by one a day
+        $this->bucket = new FakeBucket(FakeBucket::COMPLIANCE, 30, now: gmdate('Y-m-d\\TH:i:s\\Z'));
         $tester = $this->tester();
         $tester->execute(['--repository' => 's3:https://new.example.com/backups', '--access-key' => 'new', '--region' => 'fra1', '--yes' => true], ['interactive' => false]);
-        self::assertMatchesRegularExpression('/stays recoverable for (29|30) days/', $tester->getDisplay(), 'The fake bucket\'s clock is its own.');
+        self::assertStringContainsString('stays recoverable for 30 days', $tester->getDisplay());
         self::assertFalse(new Checks($this->connection, $this->schema)->get('backups.protection')['failing'] ?? true);
     }
 

@@ -48,6 +48,8 @@ final readonly class WebhookChannel implements Channel
                 'headers' => ['Content-Type' => 'application/json', self::SIGNATURE => self::signature($body, $this->settings->secret)],
                 // Where it goes is the owner's setting, not the receiver's
                 'max_redirects' => 0,
+                // TLS 1.2 or newer, whatever the client's defaults say
+                'crypto_method' => \STREAM_CRYPTO_METHOD_TLSv1_2_CLIENT,
                 'timeout' => 10,
                 'max_duration' => 20,
             ]);
