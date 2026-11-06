@@ -215,10 +215,11 @@ services:
       timeout: 5s
       retries: 5
       start_period: 60s
-    # Room for several sites' connections, and some kept for the server's own (its registry):
-    # sites at their limit (32 each) can't lock the agent out.
+    # Connections for as many sites as the machine's memory holds (QUIRE_SERVER_DATABASE_CONNECTIONS,
+    # which "quire-server up" sizes: bin/database-connections.sh, D-39), and some kept for the server's
+    # own (its registry): sites at their limit (16 each) can't lock the agent out.
     # Logins by address (database/pg_hba.conf): each site's role only from its link.
-    command: [postgres, -c, max_connections=200, -c, reserved_connections=10, -c, hba_file=/etc/postgresql/pg_hba.conf]
+    command: [postgres, -c, "max_connections=${QUIRE_SERVER_DATABASE_CONNECTIONS:-200}", -c, reserved_connections=10, -c, hba_file=/etc/postgresql/pg_hba.conf]
     security_opt: [no-new-privileges:true]
     shm_size: 256m
 

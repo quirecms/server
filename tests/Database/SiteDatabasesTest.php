@@ -146,8 +146,8 @@ final class SiteDatabasesTest extends KernelTestCase
         $settings = explode(',', $role['rolconfig']);
         sort($settings);
 
-        self::assertSame(SiteDatabases::CONNECTIONS, $role['rolconnlimit']);
-        self::assertSame(['idle_in_transaction_session_timeout=10min', 'statement_timeout=15min', 'temp_file_limit=5GB'], $settings);
+        self::assertSame(16, $role['rolconnlimit']);
+        self::assertSame(['idle_in_transaction_session_timeout=10min', 'idle_session_timeout=11min', 'statement_timeout=15min', 'temp_file_limit=5GB'], $settings);
     }
 
     public function testTheVerifierHasPostgresFormat(): void

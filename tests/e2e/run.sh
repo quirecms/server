@@ -548,6 +548,35 @@ echo "$caps" | sed 's/^/    /'
 check 'the site runs without capabilities (the web one: only to bind port 80)' "[ \"\$(echo \"\$caps\" | head -1)\" = '[ALL] [CAP_NET_BIND_SERVICE] [no-new-privileges:true]' ] && [ \"\$(echo \"\$caps\" | tail -1)\" = '[ALL] [] [no-new-privileges:true]' ]"
 check 'the site has no own PostgreSQL (the shared one)' "! inside 'docker ps --format \"{{.Names}}\"' | grep -q jane-database"
 check 'its role opens its database' "inside 'docker exec jane-php-1 php bin/console dbal:run-sql -q \"SELECT 1\"'"
+# Its database connections (D-39): 4 PHP threads, its role's limit and idle timeout, PostgreSQL sized
+# for this machine's memory
+check 'its php runs 4 PHP threads (not 2 a CPU)' "inside 'docker logs jane-php-1 2>&1' | grep 'FrankenPHP started' | tail -1 | grep -q '\"worker_threads\":4,'"
+check 'its role: 16 connections, idle sessions end after 11 minutes' "[ \"\$(pg \"SELECT rolconnlimit FROM pg_roles WHERE rolname = 'site_jane'\")\" = 16 ] && pg \"SELECT array_to_string(rolconfig, ',') FROM pg_roles WHERE rolname = 'site_jane'\" | grep -q 'idle_session_timeout=11min'"
+sized=$(inside '. /srv/quire/server/bin/database-connections.sh && database_connections' || echo unknown)
+echo "    PostgreSQL's connections for this machine: $sized"
+check 'PostgreSQL takes the connections sized for the machine, as server.env says' "[ \"\$(pg 'SHOW max_connections')\" = \"$sized\" ] && inside 'grep -qx QUIRE_SERVER_DATABASE_CONNECTIONS=$sized /srv/quire/server/server.env'"
+check 'with the site visited, its role holds at most 1 + 4 connections' "inside \"curl -sk $resolve -o /dev/null https://jane.test/\" && [ \"\$(pg \"SELECT count(*) FROM pg_stat_activity WHERE usename = 'site_jane'\")\" -le 5 ]"
+# jane's php started again, until it's healthy (3 minutes at most)
+restart_jane_php() {
+	inside 'docker restart jane-php-1' >/dev/null
+	for _ in $(seq 180); do
+		[ "$(inside "docker inspect jane-php-1 --format '{{.State.Health.Status}}'")" = healthy ] && return 0
+		sleep 1
+	done
+	return 1
+}
+# An idle session ends (here after 5 s, so the test doesn't wait 11 minutes): only the job worker's
+# stays, which asks for jobs every second. Then back to 11 minutes, and php started again with it.
+pg "ALTER ROLE site_jane SET idle_session_timeout = '5s'" >/dev/null
+restart_jane_php
+inside "curl -sk $resolve -o /dev/null https://jane.test/" || true
+sleep 8
+idle=$(pg "SELECT count(*) FROM pg_stat_activity WHERE usename = 'site_jane'" || echo unknown)
+echo "    its connections after 8 idle seconds: $idle"
+check 'a quiet site gives its PHP connections back (only the job worker keeps one)' "[ \"$idle\" = 1 ]"
+pg "ALTER ROLE site_jane SET idle_session_timeout = '11min'" >/dev/null
+restart_jane_php
+check 'and it answers as before' "[ \"\$(inside \"curl -sk $resolve -o /dev/null -w '%{http_code}' https://jane.test/\")\" = 200 ]"
 docker cp "$here/tests/e2e/try-databases.php" "$dind:/root/try-databases.php"
 inside 'docker cp /root/try-databases.php jane-php-1:/app/var/try-databases.php'
 tried=$(inside 'docker exec jane-php-1 php /app/var/try-databases.php' || true)
