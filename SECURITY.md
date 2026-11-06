@@ -6,15 +6,17 @@ Quire Server runs as root and manages Docker: a flaw in it can be a flaw in ever
 
 **Please do not report security vulnerabilities through public GitHub issues, discussions or pull requests.**
 
-Report them privately through GitHub instead:
+Report them privately, in either of these ways:
 
-1. Go to the [Security tab](https://github.com/quirecms/server/security) of this repository.
-2. Click **Report a vulnerability**.
-3. Describe the issue, with as much of this as you can:
-   - the version (`quire-server version`) or commit;
-   - what an attacker needs (e.g. "a Git mode site's repository", "a site's folder", "the network");
-   - steps to reproduce, or a proof of concept;
-   - the impact: what an attacker gets.
+- **Through GitHub:** go to the [Security tab](https://github.com/quirecms/server/security) of this repository, and click **Report a vulnerability**.
+- **By email:** write to [security@quirecms.com](mailto:security@quirecms.com).
+
+Describe the issue, with as much of this as you can:
+
+- the version (`quire-server version`) or commit;
+- what an attacker needs (e.g. "a Git mode site's repository", "a site's folder", "the network");
+- steps to reproduce, or a proof of concept;
+- the impact: what an attacker gets.
 
 Only the maintainers can see your report.
 
