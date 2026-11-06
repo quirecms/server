@@ -77,7 +77,7 @@ final readonly class ContainerRunner implements ProcessRunner
                     'docker', 'run', '--rm', '--name', $name, '--label', self::LABEL.'=1',
                     '--network', self::NETWORK,
                     '--user', $this->user.':'.$this->user,
-                    '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges:true',
+                    '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges=true',
                     '--read-only', '--tmpfs', '/tmp:size=512m,mode=1777',
                     '--memory', '1g', '--pids-limit', '256', '--cpus', '1',
                     '--volume', $copy.':'.self::FOLDER,

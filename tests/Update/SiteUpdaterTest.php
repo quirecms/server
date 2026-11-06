@@ -754,8 +754,8 @@ final class SiteUpdaterTest extends RegistryTestCase
             'name' => 'jane',
             'networks' => ['default' => ['name' => 'jane_default', 'ipam' => ['config' => [['subnet' => (string) $subnets->project]]]], 'quire-link-jane' => ['name' => 'quire-link-jane', 'external' => true]],
             'services' => [
-                'php' => ['image' => 'quire-sites/jane/php-prod', 'build' => $build, 'cap_drop' => ['ALL'], 'security_opt' => ['no-new-privileges:true'], 'mem_limit' => '536870912', 'pids_limit' => 256, 'networks' => ['default' => null, 'quire-link-jane' => ['aliases' => ['jane.example.quire.internal']]]],
-                'worker' => ['image' => 'quire-sites/jane/php-prod', 'build' => $build, 'cap_drop' => ['ALL'], 'security_opt' => ['no-new-privileges:true'], 'mem_limit' => '536870912', 'pids_limit' => 256, 'networks' => ['default' => null, 'quire-link-jane' => null]],
+                'php' => ['image' => 'quire-sites/jane/php-prod', 'build' => $build, 'cap_drop' => ['ALL'], 'security_opt' => ['no-new-privileges=true'], 'mem_limit' => '536870912', 'pids_limit' => 256, 'networks' => ['default' => null, 'quire-link-jane' => ['aliases' => ['jane.example.quire.internal']]]],
+                'worker' => ['image' => 'quire-sites/jane/php-prod', 'build' => $build, 'cap_drop' => ['ALL'], 'security_opt' => ['no-new-privileges=true'], 'mem_limit' => '536870912', 'pids_limit' => 256, 'networks' => ['default' => null, 'quire-link-jane' => null]],
             ],
         ];
     }

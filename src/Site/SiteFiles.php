@@ -111,7 +111,7 @@ final readonly class SiteFiles
         $hosts = array_map(static fn (Domain $domain): string => $domain->value, $domains);
         $primary = $hosts[0];
         $link = SiteLinks::name($project ?? $site->value);
-        $hardening = ['security_opt' => ['no-new-privileges:true'], 'cap_drop' => ['ALL']];
+        $hardening = ['security_opt' => ['no-new-privileges=true'], 'cap_drop' => ['ALL']];
         // Every container of the site comes back after a reboot or a crash: said here, whatever its own
         // files say (the skeleton's PostgreSQL had none, so an adopted site came back without it)
         $hardening['restart'] = 'unless-stopped';

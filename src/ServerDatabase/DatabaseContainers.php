@@ -249,7 +249,7 @@ final readonly class DatabaseContainers
             '--env', 'PGDATA='.self::MOUNT.'/'.$this->major($major).'/docker',
             '--env', 'POSTGRES_INITDB_ARGS=--auth-host=scram-sha-256 --auth-local=scram-sha-256',
             '--volume', $volume.':'.self::MOUNT,
-            '--security-opt', 'no-new-privileges:true',
+            '--security-opt', 'no-new-privileges=true',
             '--shm-size', '256m',
             $image,
         ], 300)->orFail(\sprintf('Starting PostgreSQL %d beside the server\'s', $major));
@@ -314,7 +314,7 @@ final readonly class DatabaseContainers
      */
     private function helper(string $image, string $volume, string $program, array $arguments): ProcessResult
     {
-        return $this->docker(['run', '--rm', '--network', 'none', '--security-opt', 'no-new-privileges:true', '--volume', $volume.':'.self::MOUNT, '--entrypoint', $program, $image, ...$arguments], 600);
+        return $this->docker(['run', '--rm', '--network', 'none', '--security-opt', 'no-new-privileges=true', '--volume', $volume.':'.self::MOUNT, '--entrypoint', $program, $image, ...$arguments], 600);
     }
 
     private function major(int $major): string

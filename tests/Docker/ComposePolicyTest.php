@@ -114,7 +114,7 @@ final class ComposePolicyTest extends TestCase
         yield 'the agent\'s image (installed from a checkout, it runs by that name)' => [['services' => ['php' => ['image' => 'quire-server-agent']]], 'the image it builds is named "quire-server-agent"'];
         yield 'another site\'s image, run' => [['services' => ['worker' => ['build' => null, 'image' => 'quire-sites/blog/php-prod']]], '"image: quire-sites/blog/php-prod" is another site\'s'];
         yield 'a service with Docker\'s default capabilities (NET_RAW)' => [['services' => ['sidecar' => ['image' => 'alpine:3.22', 'network_mode' => 'service:php']]], 'Service "sidecar": "cap_drop: [ALL]" is missing'];
-        yield 'a service that may gain privileges' => [['services' => ['sidecar' => ['image' => 'alpine:3.22', 'cap_drop' => ['ALL'], 'mem_limit' => '64m', 'pids_limit' => 16]]], 'Service "sidecar": "security_opt: [no-new-privileges:true]" is missing'];
+        yield 'a service that may gain privileges' => [['services' => ['sidecar' => ['image' => 'alpine:3.22', 'cap_drop' => ['ALL'], 'mem_limit' => '64m', 'pids_limit' => 16]]], 'Service "sidecar": "security_opt: [no-new-privileges=true]" is missing'];
         yield 'no memory limit' => [['services' => ['php' => ['mem_limit' => null]]], 'Service "php": "mem_limit" is missing'];
         yield 'too many processes' => [['services' => ['php' => ['pids_limit' => 100000]]], 'Service "php": "pids_limit" (1 to 4096) is missing'];
         yield 'many of a service' => [['services' => ['worker' => ['scale' => 50]]], '"scale: 50": a site runs one container of each service'];
@@ -287,9 +287,19 @@ final class ComposePolicyTest extends TestCase
 
     public function testHarmlessValuesOfForbiddenSettingsPass(): void
     {
-        $config = array_replace_recursive($this->site(), ['services' => ['php' => ['privileged' => false, 'gpus' => 'false', 'blkio_config' => ['weight' => 300], 'post_start' => [['command' => ['id'], 'privileged' => false]], 'isolation' => 'default', 'oom_kill_disable' => 'false', 'deploy' => ['resources' => ['limits' => ['cpus' => '1.5', 'memory' => '1073741824', 'pids' => 512]], 'restart_policy' => ['condition' => 'on-failure']], 'cap_add' => ['NET_BIND_SERVICE', 'cap_net_bind_service', 'CHOWN', 'SETUID'], 'scale' => 1, 'devices' => [], 'security_opt' => ['no-new-privileges:true'], 'cap_drop' => ['ALL'], 'oom_score_adj' => 0, 'logging' => ['driver' => 'json-file'], 'x-custom' => 'anything', 'build' => ['tags' => ['quire-sites/jane/php-prod:before-update']]], 'worker' => ['network_mode' => 'service:php']]]);
+        $config = array_replace_recursive($this->site(), ['services' => ['php' => ['privileged' => false, 'gpus' => 'false', 'blkio_config' => ['weight' => 300], 'post_start' => [['command' => ['id'], 'privileged' => false]], 'isolation' => 'default', 'oom_kill_disable' => 'false', 'deploy' => ['resources' => ['limits' => ['cpus' => '1.5', 'memory' => '1073741824', 'pids' => 512]], 'restart_policy' => ['condition' => 'on-failure']], 'cap_add' => ['NET_BIND_SERVICE', 'cap_net_bind_service', 'CHOWN', 'SETUID'], 'scale' => 1, 'devices' => [], 'security_opt' => ['no-new-privileges=true'], 'cap_drop' => ['ALL'], 'oom_score_adj' => 0, 'logging' => ['driver' => 'json-file'], 'x-custom' => 'anything', 'build' => ['tags' => ['quire-sites/jane/php-prod:before-update']]], 'worker' => ['network_mode' => 'service:php']]]);
 
         self::assertSame([], $this->violations($config));
+    }
+
+    public function testEverySpellingOfNoNewPrivilegesPasses(): void
+    {
+        // "=" is Docker's spelling, ":" the one it still takes (with a warning), and a site's own files may have either
+        foreach (['no-new-privileges=true', 'no-new-privileges:true', 'no-new-privileges'] as $option) {
+            $config = array_replace_recursive($this->site(), ['services' => ['php' => ['security_opt' => [$option]], 'worker' => ['security_opt' => [$option]]]]);
+
+            self::assertSame([], $this->violations($config), $option);
+        }
     }
 
     public function testASitesOwnNetworksKeepToItsAddresses(): void
@@ -362,7 +372,7 @@ final class ComposePolicyTest extends TestCase
                     'labels' => ['com.quirecms.site' => 'true', 'com.quirecms.server.site' => 'jane'],
                     'networks' => $networks + ['quire-edge' => ['aliases' => ['jane.example', 'www.jane.example']]],
                     'restart' => 'unless-stopped',
-                    'security_opt' => ['no-new-privileges:true'],
+                    'security_opt' => ['no-new-privileges=true'],
                     'cap_drop' => ['ALL'],
                     'mem_limit' => '1073741824',
                     'pids_limit' => 512,
@@ -380,7 +390,7 @@ final class ComposePolicyTest extends TestCase
                     'healthcheck' => ['test' => ['CMD', 'php', '-r', 'exit(0);']],
                     'networks' => $networks,
                     'restart' => 'unless-stopped',
-                    'security_opt' => ['no-new-privileges:true'],
+                    'security_opt' => ['no-new-privileges=true'],
                     'cap_drop' => ['ALL'],
                     'mem_limit' => '536870912',
                     'pids_limit' => 256,
