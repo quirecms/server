@@ -32,6 +32,12 @@ final readonly class SiteFiles
      */
     public const string EDGE_SUFFIX = '.quire.internal';
 
+    /**
+     * FrankenPHP worker threads a site's php runs: 4 serve about 80 to 200 pages a second, plenty for a
+     * site, and each holds one database connection (SiteDatabases::CONNECTIONS) while it's in use.
+     */
+    public const int PHP_THREADS = 4;
+
     /** What a server writes in a site's prod.env (its secrets a new site gets anew) */
     private const array SERVERS = ['COMPOSE_FILE', 'COMPOSE_PROJECT_NAME', 'SERVER_NAME', 'APP_SECRET', 'QUIRE_DATABASE_PASSWORD', 'POSTGRES_PASSWORD'];
 
@@ -120,6 +126,9 @@ final readonly class SiteFiles
                 // The front door's address on the site's link, and nothing else: a proxy anywhere else
                 // could claim any client address (M-08)
                 'SYMFONY_TRUSTED_PROXIES' => $subnets->frontDoor(),
+                // Its PHP threads, said rather than FrankenPHP's default (2 a CPU): each holds a
+                // database connection and a booted Symfony, which would grow with the machine (D-39)
+                'FRANKENPHP_WORKER_CONFIG' => 'num '.self::PHP_THREADS,
             ],
             'labels' => ['com.quirecms.site' => 'true', 'com.quirecms.server.site' => $site->value],
             // Its link, where the front door finds it by these names; its own network for the internet

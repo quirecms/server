@@ -354,6 +354,19 @@ check_site_range() {
 	die "This machine routes part of the range sites' addresses come from ($range) elsewhere: $(printf '%s' "$overlaps" | tr '\n' ',' | sed 's/,/, /g'). Sites with addresses there would lose their traffic to it. Run the installer again with ${free:+--site-networks=$free, which nothing here routes, or }--site-networks=<another private range, /8 to /22>."
 }
 
+# PostgreSQL's connections, for this machine's memory (D-39): set in server.env, also on a machine
+# that was resized since the install
+size_database() {
+	# A release from before D-39 has no sizing
+	[ -f "$root/server/bin/database-connections.sh" ] || return 0
+	# shellcheck source=/dev/null
+	. "$root/server/bin/database-connections.sh"
+	changed=$(database_connections_sync "$root/server")
+	# Said only when a PostgreSQL runs with the old value
+	if [ -n "$changed" ] && docker container inspect quire-server-database-1 >/dev/null 2>&1; then note "$changed"; fi
+	note "PostgreSQL takes $(database_connections_set "$root/server") connections (sized from this machine's memory)"
+}
+
 start_core() {
 	say 'Starting the server (its front door last)'
 	if grep -q '^QUIRE_SERVER_IMAGE=.' "$root/server/server.env"; then
@@ -520,6 +533,7 @@ main() {
 	install_docker
 	install_files
 	check_site_range
+	size_database
 	start_core
 	adopt_sites
 	start_front

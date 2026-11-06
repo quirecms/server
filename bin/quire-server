@@ -54,6 +54,8 @@ fi
 cd "$root/server"
 # shellcheck source=/dev/null
 . "$root/server/bin/site-range.sh"
+# shellcheck source=/dev/null
+. "$root/server/bin/database-connections.sh"
 
 case "${1:-help}" in
 	up)
@@ -62,6 +64,9 @@ case "${1:-help}" in
 		for argument do shift; [ "$argument" = --force ] || set -- "$@" "$argument"; done
 		# A network added on the sites' range since the install (it starts anyway: said, not refused)
 		site_range_warn "$root/server"
+		# PostgreSQL's connections for this machine's memory (D-39): a resized machine changes them,
+		# and PostgreSQL starts again with them here
+		database_connections_sync "$root/server" >&2
 		compose up --detach --wait "$@"
 		# The front door has no health check: after a port was taken, it can run without its ports.
 		if ! front_ports; then
