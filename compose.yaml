@@ -36,6 +36,8 @@ services:
     security_opt: [no-new-privileges:true]
     mem_limit: 512m
     pids_limit: 1024
+    # Among the last the kernel stops when memory runs out: sites' containers go first (D-40)
+    oom_score_adj: -500
 
   # The only part that can act on Docker (through the gate): adds and removes sites, keeps the front
   # door's domains in line. It has no network listener.
@@ -61,6 +63,8 @@ services:
       QUIRE_SERVER_NOTIFY_SECRET: ${QUIRE_SERVER_NOTIFY_SECRET:-}
       QUIRE_SERVER_NAME: ${QUIRE_SERVER_NAME:-}
       QUIRE_SERVER_QUIRE_VERSION: ${QUIRE_SERVER_QUIRE_VERSION:-^0.1}
+      # What building a site takes (MB): a new site isn't built with less memory free (D-40)
+      QUIRE_SERVER_BUILD_MEMORY_MB: ${QUIRE_SERVER_BUILD_MEMORY_MB:-1536}
       QUIRE_SERVER_ROOT: ${QUIRE_SERVER_ROOT:-/srv/quire}
       # Which release runs ("quire-server version")
       QUIRE_SERVER_IMAGE: ${QUIRE_SERVER_IMAGE:-}
@@ -116,6 +120,8 @@ services:
     security_opt: [no-new-privileges:true]
     mem_limit: 1g
     pids_limit: 1024
+    # Among the last the kernel stops when memory runs out: sites' containers go first (D-40)
+    oom_score_adj: -500
 
   # Updates the server itself ("quire-server update"): only run on demand, never by "up". It is the
   # release that runs now (it checks the new one before using any of it), and it replaces the server's
@@ -172,6 +178,8 @@ services:
     security_opt: [no-new-privileges:true]
     mem_limit: 256m
     pids_limit: 256
+    # Among the last the kernel stops when memory runs out: sites' containers go first (D-40)
+    oom_score_adj: -500
 
   # What the host needs for sites' builds (gate/host-setup.sh): the AppArmor profile their rootless
   # BuildKit runs under, loaded with the host's own tools. It runs at each start of the server, before
@@ -222,6 +230,9 @@ services:
     command: [postgres, -c, "max_connections=${QUIRE_SERVER_DATABASE_CONNECTIONS:-200}", -c, reserved_connections=10, -c, hba_file=/etc/postgresql/pg_hba.conf]
     security_opt: [no-new-privileges:true]
     shm_size: 256m
+    # The last the kernel stops when memory runs out (D-40): its processes inherit it, its backends
+    # too, and one backend stopped takes every site's database through crash recovery (droplet B)
+    oom_score_adj: -900
 
 networks:
   # The front door's own, its way out (certificates). Sites aren't on it: the front door reaches each

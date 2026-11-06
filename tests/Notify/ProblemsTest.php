@@ -105,6 +105,21 @@ final class ProblemsTest extends RegistryTestCase
         $this->problems->sync([new Problem(Problems::NOTIFY, 'x', 'y')]);
     }
 
+    public function testMemoryRunningOutIsToldOnlyOnceItHasLastedTenMinutes(): void
+    {
+        $memory = new Problem('memory', 'Memory is running out.', 'Add memory.');
+        $this->problems->sync([$memory]);
+        self::assertSame([], $this->problems->due()['started'], 'A build\'s peak passes by itself.');
+
+        $this->problems->sync([]);
+        $this->problems->forgetUntold();
+        self::assertSame(['started' => [], 'reminded' => [], 'over' => []], $this->problems->due(), 'Over sooner: never told.');
+
+        $this->problems->sync([$memory]);
+        $this->connection->executeStatement(\sprintf("UPDATE %s.problem SET since = now() - interval '11 minutes'", $this->connection->quoteSingleIdentifier($this->schema)));
+        self::assertSame(['memory'], $this->keys($this->problems->due()['started']), 'Still there 10 minutes on: told.');
+    }
+
     public function testKeysAreChecked(): void
     {
         $this->expectException(\InvalidArgumentException::class);

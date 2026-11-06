@@ -212,6 +212,27 @@ final class SiteManagerTest extends RegistryTestCase
         self::assertStringNotContainsString($this->envValue($env, 'APP_SECRET'), $log);
     }
 
+    public function testANewSiteIsntBuiltOnAMachineWithoutRoomForIt(): void
+    {
+        $meminfo = $this->root.'/meminfo';
+        new Filesystem()->dumpFile($meminfo, "MemTotal:       32859000 kB\nMemAvailable:     921600 kB\n");
+
+        try {
+            $this->manager(memory: new \Quire\Server\Host\Memory(1536, $meminfo))->add($this->request(), 'cli', 'darko', static fn (): null => null);
+            self::fail('Refused.');
+        } catch (\DomainException $e) {
+            self::assertStringStartsWith('This server has 900 MB of memory free: building a new site takes about 1.5 GB', $e->getMessage());
+        }
+
+        self::assertNull($this->registry->get($this->name), 'Refused before anything was made: no site,');
+        self::assertDirectoryDoesNotExist($this->paths->site($this->name), 'no folder,');
+        self::assertFalse($this->databases->exists($this->name), 'no database.');
+
+        // With room, it's added as ever
+        new Filesystem()->dumpFile($meminfo, "MemTotal:       32859000 kB\nMemAvailable:    8000000 kB\n");
+        self::assertSame(Site::RUNNING, $this->manager(memory: new \Quire\Server\Host\Memory(1536, $meminfo))->add($this->request(), 'cli', 'darko', static fn (): null => null)->site->status);
+    }
+
     public function testAFailedInstallUndoesEverything(): void
     {
         $this->script['docker compose exec'] = static fn (array $command): ProcessResult => 'quire:install' === ($command[12] ?? '')
@@ -995,7 +1016,7 @@ final class SiteManagerTest extends RegistryTestCase
         self::assertFileDoesNotExist($this->root.'/gate/scopes/'.$this->name->value.'.json', 'Its socket on the gate too.');
     }
 
-    private function manager(bool $checksCode = false): SiteManager
+    private function manager(bool $checksCode = false, ?\Quire\Server\Host\Memory $memory = null): SiteManager
     {
         $runner = new readonly class($this) implements ProcessRunner {
             public function __construct(private SiteManagerTest $test)
@@ -1032,6 +1053,7 @@ final class SiteManagerTest extends RegistryTestCase
             GateFixture::links($runner, $this->connection, $this->schema),
             new SiteNetworks($this->connection, $this->schema),
             'smtp://mailer:25',
+            memory: $memory,
         );
     }
 
