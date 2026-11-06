@@ -20,6 +20,8 @@ use Symfony\Component\Filesystem\Filesystem;
 
 final class WatchTest extends RegistryTestCase
 {
+    private ?string $meminfo = null;
+
     private OperationLog $operations;
     private SiteRegistry $registry;
     private string $certificates;
@@ -163,13 +165,29 @@ final class WatchTest extends RegistryTestCase
         self::assertSame([], $this->problems());
     }
 
+    public function testMemoryRunningOut(): void
+    {
+        $this->meminfo = sys_get_temp_dir().'/quire-watch-meminfo-'.bin2hex(random_bytes(6));
+        // 32 GB with 3 GB free: under a tenth
+        new Filesystem()->dumpFile($this->meminfo, "MemTotal:       32859000 kB\nMemAvailable:    3145728 kB\n");
+        self::assertSame('Memory is running out: 3.0 GB free of 31.3 GB.', $this->problems()['memory']->summary ?? null);
+
+        // 4 GB with 450 MB free: a tenth, but under 512 MB
+        new Filesystem()->dumpFile($this->meminfo, "MemTotal:        4005000 kB\nMemAvailable:     460800 kB\n");
+        self::assertArrayHasKey('memory', $this->problems());
+
+        new Filesystem()->dumpFile($this->meminfo, "MemTotal:        4005000 kB\nMemAvailable:    2980000 kB\n");
+        self::assertSame([], $this->problems());
+        new Filesystem()->remove($this->meminfo);
+    }
+
     /**
      * @return array<string, Problem>
      */
     private function problems(bool $backups = false): array
     {
         $settings = $backups ? new BackupSettings('s3:https://s3.example/bucket', 'key', 'secret', str_repeat('p', 20)) : new BackupSettings('', '', '', '');
-        $watch = new Watch($this->connection, $settings, new Certificates($this->certificates), new ServerPaths('/srv/quire'), new \Quire\Server\Notify\Checks($this->connection, $this->schema), $this->schema, fn (): \DateTimeImmutable => $this->now, fn (): array => $this->disk);
+        $watch = new Watch($this->connection, $settings, new Certificates($this->certificates), new ServerPaths('/srv/quire'), new \Quire\Server\Notify\Checks($this->connection, $this->schema), $this->schema, fn (): \DateTimeImmutable => $this->now, fn (): array => $this->disk, null === $this->meminfo ? null : new \Quire\Server\Host\Memory(meminfo: $this->meminfo));
         $problems = [];
 
         foreach ($watch->problems() as $problem) {

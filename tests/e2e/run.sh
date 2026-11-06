@@ -577,6 +577,17 @@ check 'a quiet site gives its PHP connections back (only the job worker keeps on
 pg "ALTER ROLE site_jane SET idle_session_timeout = '11min'" >/dev/null
 restart_jane_php
 check 'and it answers as before' "[ \"\$(inside \"curl -sk $resolve -o /dev/null -w '%{http_code}' https://jane.test/\")\" = 200 ]"
+# Memory running out (D-40): the server's own are the last the kernel stops; a new site isn't built
+# without room for it
+oom() { inside "cat /proc/\$(docker inspect --format '{{.State.Pid}}' $1)/oom_score_adj"; }
+backend=$(inside "pgrep -P \$(docker inspect --format '{{.State.Pid}}' quire-server-database-1) | head -1" || echo none)
+check 'PostgreSQL is the last the kernel stops, its backends too (-900)' "[ \"\$(oom quire-server-database-1)\" = -900 ] && [ \"\$(inside 'cat /proc/$backend/oom_score_adj')\" = -900 ]"
+check 'then the agent, the gate and the front door (-500); a site'\''s containers first (0)' "[ \"\$(oom quire-server-agent-1) \$(oom quire-server-gate-1) \$(oom quire-server-front-1) \$(oom jane-php-1)\" = '-500 -500 -500 0' ]"
+inside 'cp -p /srv/quire/server/server.env /root/server.env.before && sed -i "/^QUIRE_SERVER_BUILD_MEMORY_MB=/d" /srv/quire/server/server.env && echo QUIRE_SERVER_BUILD_MEMORY_MB=10000000 >> /srv/quire/server/server.env && quire-server up >/dev/null 2>&1'
+refused=$(inside 'quire-server site:add tiny --domain=tiny.test --admin-email=tiny@example.com 2>&1' || true)
+echo "$refused" | sed 's/^/    /' | head -4
+check 'a new site isn'\''t built on a machine without room for it, and nothing is left' "echo \"\$refused\" | grep -q 'of memory free: building a new site takes about' && ! inside 'quire-server site:list' | grep -q tiny && ! inside 'test -e /srv/quire/sites/tiny'"
+inside 'cp -p /root/server.env.before /srv/quire/server/server.env && rm /root/server.env.before && quire-server up >/dev/null 2>&1'
 docker cp "$here/tests/e2e/try-databases.php" "$dind:/root/try-databases.php"
 inside 'docker cp /root/try-databases.php jane-php-1:/app/var/try-databases.php'
 tried=$(inside 'docker exec jane-php-1 php /app/var/try-databases.php' || true)
