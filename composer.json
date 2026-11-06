@@ -16,6 +16,11 @@
             "homepage": "https://quirecms.com"
         }
     ],
+    "support": {
+        "email": "hello@quirecms.com",
+        "issues": "https://github.com/quirecms/server/issues",
+        "security": "https://github.com/quirecms/server/security/policy"
+    },
     "require": {
         "php": ">=8.5",
         "ext-intl": "*",

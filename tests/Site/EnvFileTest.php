@@ -14,7 +14,7 @@ final class EnvFileTest extends TestCase
         COMPOSE_FILE=compose.yaml:compose.prod.yaml
         SERVER_NAME=demo.quirecms.com   # the domain
         export APP_SECRET='abc#def'
-        MAILER_DSN="smtp://darko%40poposki.mk:p\"w@smtp.gmail.com:587"
+        MAILER_DSN="smtp://jane%40mail.example:p\"w@smtp.mail.example:587"
 
         POSTGRES_PASSWORD = spaced
         ENV;
@@ -25,7 +25,7 @@ final class EnvFileTest extends TestCase
             'COMPOSE_FILE' => 'compose.yaml:compose.prod.yaml',
             'SERVER_NAME' => 'demo.quirecms.com',
             'APP_SECRET' => 'abc#def',
-            'MAILER_DSN' => 'smtp://darko%40poposki.mk:p"w@smtp.gmail.com:587',
+            'MAILER_DSN' => 'smtp://jane%40mail.example:p"w@smtp.mail.example:587',
             'POSTGRES_PASSWORD' => 'spaced',
         ], EnvFile::parse(self::WRITTEN_BY_A_PERSON)->values());
     }
@@ -42,7 +42,7 @@ final class EnvFileTest extends TestCase
             COMPOSE_FILE='compose.yaml:compose.prod.yaml:compose.server.yaml'
             SERVER_NAME=demo.quirecms.com   # the domain
             export APP_SECRET='abc#def'
-            MAILER_DSN="smtp://darko%40poposki.mk:p\"w@smtp.gmail.com:587"
+            MAILER_DSN="smtp://jane%40mail.example:p\"w@smtp.mail.example:587"
 
             POSTGRES_PASSWORD = spaced
             COMPOSE_PROJECT_NAME='demo'
