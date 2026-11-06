@@ -47,6 +47,7 @@ class Receiver(http.server.BaseHTTPRequestHandler):
 
 server = http.server.ThreadingHTTPServer(('', 443), Receiver)
 context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+context.minimum_version = ssl.TLSVersion.TLSv1_3
 context.load_cert_chain(sys.argv[1], sys.argv[2])
 server.socket = context.wrap_socket(server.socket, server_side=True)
 server.serve_forever()

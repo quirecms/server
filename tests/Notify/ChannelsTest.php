@@ -48,6 +48,21 @@ final class ChannelsTest extends TestCase
         self::assertSame(0, $options['max_redirects'], 'Where it goes is the owner\'s setting, not the receiver\'s.');
     }
 
+    public function testAWebhookNeverSpeaksTlsOlderThan12(): void
+    {
+        $sent = [];
+        $client = new MockHttpClient(static function (string $method, string $url, array $options) use (&$sent): MockResponse {
+            $sent[] = $options;
+
+            return new MockResponse('ok', ['http_code' => 200]);
+        });
+
+        // A client whose defaults would allow TLS 1.0
+        new WebhookChannel($this->settings(), $client->withOptions(['crypto_method' => \STREAM_CRYPTO_METHOD_TLSv1_0_CLIENT]))->send('Subject', 'Text', []);
+
+        self::assertSame(\STREAM_CRYPTO_METHOD_TLSv1_2_CLIENT, $sent[0]['crypto_method']);
+    }
+
     public function testAWebhookThatDoesntTakeItFailsWithoutItsSecretAddress(): void
     {
         $channel = new WebhookChannel($this->settings(), new MockHttpClient([new MockResponse('', ['http_code' => 302, 'response_headers' => ['Location' => 'http://elsewhere.example/']])]));
