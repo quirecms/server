@@ -418,7 +418,7 @@ final readonly class ComposePolicy
         }
 
         if ([] === array_filter($this->list($service['security_opt'] ?? []), fn (mixed $option): bool => 1 === preg_match('/^no-new-privileges(?:[:=]true)?\z/', $this->string($option)))) {
-            $violations[] = '"security_opt: [no-new-privileges:true]" is missing.';
+            $violations[] = '"security_opt: [no-new-privileges=true]" is missing.';
         }
 
         $deploy = $this->map($service['deploy'] ?? []);

@@ -1174,7 +1174,7 @@ final class SiteManagerTest extends RegistryTestCase
         // Its addresses, as SiteLinks gave them
         $subnet = (string) (new SiteNetworks($this->connection, $this->schema)->find($this->name)->project ?? '10.72.0.32/27');
         $networks = ['default' => ['name' => $project.'_default', 'ipam' => ['config' => [['subnet' => $subnet]]]], $link => ['name' => $link, 'external' => true]];
-        $php = ['image' => 'quire-sites/'.$project.'/php-prod', 'build' => $build, 'cap_drop' => ['ALL'], 'security_opt' => ['no-new-privileges:true'], 'mem_limit' => '536870912', 'pids_limit' => 256, 'networks' => ['default' => null, $link => ['aliases' => $this->aliases()]], 'volumes' => [['type' => 'volume', 'source' => 'storage_data', 'target' => '/app/storage']]];
+        $php = ['image' => 'quire-sites/'.$project.'/php-prod', 'build' => $build, 'cap_drop' => ['ALL'], 'security_opt' => ['no-new-privileges=true'], 'mem_limit' => '536870912', 'pids_limit' => 256, 'networks' => ['default' => null, $link => ['aliases' => $this->aliases()]], 'volumes' => [['type' => 'volume', 'source' => 'storage_data', 'target' => '/app/storage']]];
 
         if ($this->ownDatabase) {
             return [
@@ -1182,8 +1182,8 @@ final class SiteManagerTest extends RegistryTestCase
                 'networks' => $networks,
                 'services' => [
                     'php' => $php,
-                    'worker' => ['image' => 'quire-sites/'.$project.'/php-prod', 'build' => $build, 'cap_drop' => ['ALL'], 'security_opt' => ['no-new-privileges:true'], 'mem_limit' => '536870912', 'pids_limit' => 256, 'networks' => ['default' => null]],
-                    'database' => ['image' => 'postgres:18-alpine', 'cap_drop' => ['ALL'], 'security_opt' => ['no-new-privileges:true'], 'mem_limit' => '536870912', 'pids_limit' => 256, 'networks' => ['default' => null], 'volumes' => [['type' => 'volume', 'source' => 'database_data', 'target' => '/var/lib/postgresql']]],
+                    'worker' => ['image' => 'quire-sites/'.$project.'/php-prod', 'build' => $build, 'cap_drop' => ['ALL'], 'security_opt' => ['no-new-privileges=true'], 'mem_limit' => '536870912', 'pids_limit' => 256, 'networks' => ['default' => null]],
+                    'database' => ['image' => 'postgres:18-alpine', 'cap_drop' => ['ALL'], 'security_opt' => ['no-new-privileges=true'], 'mem_limit' => '536870912', 'pids_limit' => 256, 'networks' => ['default' => null], 'volumes' => [['type' => 'volume', 'source' => 'database_data', 'target' => '/var/lib/postgresql']]],
                 ],
                 'volumes' => ['storage_data' => ['name' => $project.'_storage_data'], 'database_data' => ['name' => $project.'_database_data']],
             ];
@@ -1194,7 +1194,7 @@ final class SiteManagerTest extends RegistryTestCase
             'networks' => $networks,
             'services' => [
                 'php' => $php,
-                'worker' => ['image' => 'quire-sites/'.$project.'/php-prod', 'build' => $build, 'cap_drop' => ['ALL'], 'security_opt' => ['no-new-privileges:true'], 'mem_limit' => '536870912', 'pids_limit' => 256, 'networks' => ['default' => null, $link => null]],
+                'worker' => ['image' => 'quire-sites/'.$project.'/php-prod', 'build' => $build, 'cap_drop' => ['ALL'], 'security_opt' => ['no-new-privileges=true'], 'mem_limit' => '536870912', 'pids_limit' => 256, 'networks' => ['default' => null, $link => null]],
             ],
             'volumes' => ['storage_data' => ['name' => $project.'_storage_data']],
         ];
