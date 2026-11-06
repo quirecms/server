@@ -245,6 +245,63 @@ final class SiteManagerTest extends RegistryTestCase
         self::assertSame(Site::RUNNING, $this->manager()->add($this->request(), 'cli', 'darko', static fn (): null => null)->site->status);
     }
 
+    public function testABuildADownloadFailedOnTheWayIsTriedOnceMore(): void
+    {
+        $failed = (string) file_get_contents(__DIR__.'/../Process/fixtures/fail-build-download-504.txt');
+        $builds = 0;
+        $this->script['docker compose build'] = static function (array $command) use (&$builds, $failed): ProcessResult {
+            ++$builds;
+
+            return 1 === $builds ? new ProcessResult(self::strings($command), 1, '', $failed) : self::ok($command, '');
+        };
+
+        self::assertSame(Site::RUNNING, $this->manager()->add($this->request(), 'cli', 'darko', static fn (): null => null)->site->status);
+        self::assertSame(2, $builds, 'GitHub\'s 504 passes by itself: once more.');
+        $id = $this->operations->latest()[0]['id'];
+        self::assertStringContainsString('A download failed on the way (api.github.com answered HTTP 504', implode("\n", $this->operations->lines($id)));
+    }
+
+    public function testABuildWhoseDownloadFailsTwiceSaysWhyAndWhatToDo(): void
+    {
+        $failed = (string) file_get_contents(__DIR__.'/../Process/fixtures/fail-build-download-504.txt');
+        $builds = 0;
+        $this->script['docker compose build'] = static function (array $command) use (&$builds, $failed): ProcessResult {
+            ++$builds;
+
+            return new ProcessResult(self::strings($command), 1, '', $failed);
+        };
+
+        try {
+            $this->manager()->add($this->request(), 'cli', 'darko', static fn (): null => null);
+            self::fail('It didn\'t fail.');
+        } catch (\RuntimeException $e) {
+            self::assertStringContainsString('api.github.com answered HTTP 504 while symfony/process was downloaded', $e->getMessage());
+            self::assertStringContainsString('Try again in a few minutes', $e->getMessage());
+            self::assertStringNotContainsString('site\'s code', $e->getMessage(), 'Not the owner\'s to fix.');
+        }
+
+        self::assertSame(2, $builds, 'Only once more.');
+        $this->assertNothingLeft();
+    }
+
+    public function testABuildThatFailsForGoodIsntTriedAgain(): void
+    {
+        $builds = 0;
+        $this->script['docker compose build'] = static function (array $command) use (&$builds): ProcessResult {
+            ++$builds;
+
+            return new ProcessResult(self::strings($command), 1, '', "no space left on device\n");
+        };
+
+        try {
+            $this->manager()->add($this->request(), 'cli', 'darko', static fn (): null => null);
+            self::fail('It didn\'t fail.');
+        } catch (\RuntimeException) {
+        }
+
+        self::assertSame(1, $builds);
+    }
+
     public function testCodeQuireDidntReleaseIsNeverBuilt(): void
     {
         // Packagist serves quire/core 0.1.3 from another commit than the one Quire released (a moved tag)
@@ -855,7 +912,7 @@ final class SiteManagerTest extends RegistryTestCase
             new SkeletonInstaller($runner),
             $this->databases,
             new \Quire\Server\Site\SiteFiles(),
-            $compose = new Compose($runner, new ComposePolicy(), new ComposeFiles(), new RuntimeImages($runner, new RuntimeFloors($this->connection, $this->schema)), new RuntimeBuilds($this->connection, $this->schema), GateFixture::gate($runner, $this->root, $this->name->value, 'kim', 'old-site'), GateFixture::builders($runner, $this->root), $checksCode ? new \Quire\Server\Update\CodeCheck(new \Quire\Server\Release\QuireFeed(new \Quire\Server\Release\GitHubReleases($runner))) : null),
+            $compose = new Compose($runner, new ComposePolicy(), new ComposeFiles(), new RuntimeImages($runner, new RuntimeFloors($this->connection, $this->schema)), new RuntimeBuilds($this->connection, $this->schema), GateFixture::gate($runner, $this->root, $this->name->value, 'kim', 'old-site'), GateFixture::builders($runner, $this->root), $checksCode ? new \Quire\Server\Update\CodeCheck(new \Quire\Server\Release\QuireFeed(new \Quire\Server\Release\GitHubReleases($runner))) : null, retrySeconds: 0.0),
             $this->frontDoor,
             $this->paths,
             new Git($runner, $keys = new DeployKeys($runner, $this->paths), new \Quire\Server\Git\GitHosts(resolve: static fn (): array => ['140.82.121.4'])),

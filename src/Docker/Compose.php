@@ -28,6 +28,8 @@ final readonly class Compose
         private Builders $builders,
         /** The code it builds against Quire's signed feed (D-38) */
         private ?\Quire\Server\Update\CodeCheck $code = null,
+        /** How long a build waits before trying again, after a download failed on the way */
+        private float $retrySeconds = 30.0,
     ) {
     }
 
@@ -139,7 +141,16 @@ final readonly class Compose
         }
 
         $builder = $this->builders->ensure($project, $this->gate->site($project), $output);
-        $this->compose($project, ['build', '--pull', '--builder', $builder, ...$arguments], timeout: 1800, output: $output)->orFail('Building the site');
+        $built = $this->compose($project, ['build', '--pull', '--builder', $builder, ...$arguments], timeout: 1800, output: $output);
+
+        // A download that failed on the way (a host's 504, a connection cut) passes by itself: once more
+        if (!$built->successful() && \Quire\Server\Process\Failures::transient($built->output."\n".$built->errorOutput)) {
+            $say(\sprintf("A download failed on the way (%s). Trying again in %d s…\n", \Quire\Server\Process\Failures::explain($built->output."\n".$built->errorOutput)['why'] ?? 'a host didn\'t answer', (int) $this->retrySeconds));
+            usleep((int) ($this->retrySeconds * 1_000_000));
+            $built = $this->compose($project, ['build', '--pull', '--builder', $builder, ...$arguments], timeout: 1800, output: $output);
+        }
+
+        $built->orFail('Building the site');
         // What it's built on now: a newer runtime is built on at night.
         $this->builds->record($project->name(), $pinned);
     }

@@ -37,7 +37,7 @@ final class DatabaseAccessTest extends RegistryTestCase
         mkdir($this->directory);
         $this->runner = new ScriptedRunner([
             'docker network inspect' => fn (array $command): ProcessResult => ScriptedRunner::ok($command, $this->subnets),
-            'docker kill --signal' => fn (array $command): ProcessResult => '' === $this->reload ? ScriptedRunner::ok($command) : ScriptedRunner::failed($command, $this->reload),
+            'docker exec --user' => fn (array $command): ProcessResult => '' === $this->reload ? ScriptedRunner::ok($command) : ScriptedRunner::failed($command, $this->reload),
         ]);
         $this->access = GateFixture::access($this->runner, $this->connection, $this->schema, $this->directory);
         $this->registry = new SiteRegistry($this->connection, $this->schema);
@@ -58,12 +58,12 @@ final class DatabaseAccessTest extends RegistryTestCase
             'host quire_server_test postgres 172.19.0.0/16 scram-sha-256',
             'host all postgres 172.19.0.0/16 scram-sha-256',
         ], $this->rules(DatabaseAccess::SERVER), 'The registry\'s role to the registry; the administrative one to every database.');
-        self::assertSame(['docker network inspect', 'docker kill --signal'], $this->runner->keys(), 'PostgreSQL reads them again.');
-        self::assertSame(['docker', 'kill', '--signal', 'HUP', 'quire-server-database-1'], $this->runner->runs[1]['command']);
+        self::assertSame(['docker network inspect', 'docker exec --user'], $this->runner->keys(), 'PostgreSQL reads them again.');
+        self::assertSame(['docker', 'exec', '--user', 'postgres', 'quire-server-database-1', 'pg_ctl', 'reload', '--silent'], $this->runner->runs[1]['command'], 'pg_ctl\'s reload, inside: a docker kill (any signal) counts as stopping it by hand, and then it stays down after the machine restarts.');
         self::assertSame('644', decoct(fileperms($this->directory.'/'.DatabaseAccess::SERVER) & 0o777), 'PostgreSQL\'s own user reads it.');
 
         self::assertFalse($this->access->server(), 'Nothing changed, nothing reloaded.');
-        self::assertSame(['docker network inspect', 'docker kill --signal', 'docker network inspect'], $this->runner->keys());
+        self::assertSame(['docker network inspect', 'docker exec --user', 'docker network inspect'], $this->runner->keys());
     }
 
     public function testTheServersNetworkMadeAgainIsWhereItsRolesComeFromNow(): void
@@ -138,8 +138,13 @@ final class DatabaseAccessTest extends RegistryTestCase
 
     public function testPostgresqlNotRunningReadsTheRulesWhenItStarts(): void
     {
-        $this->reload = 'Error response from daemon: cannot kill container: quire-server-database-1: container 5b1f… is not running';
+        $this->reload = 'Error response from daemon: container 5b1f… is not running';
 
+        self::assertTrue($this->access->server());
+
+        // The container runs, PostgreSQL in it hasn't started yet
+        $this->reload = "pg_ctl: PID file \"/var/lib/postgresql/18/docker/postmaster.pid\" does not exist\nIs server running?";
+        $this->subnets = "172.22.0.0/16\n";
         self::assertTrue($this->access->server());
 
         $this->reload = 'Error response from daemon: No such container: quire-server-database-1';

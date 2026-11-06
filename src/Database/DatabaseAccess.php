@@ -24,8 +24,12 @@ use Quire\Server\Site\SiteFiles;
  *     no use from another site's containers.
  *
  * Anything else is refused, but inside PostgreSQL's own container (dumps and restores run there). A
- * change takes effect with a reload (SIGHUP), never a restart; a file PostgreSQL can't read is put back
- * as it was before it's reloaded, as PostgreSQL wouldn't start with it.
+ * change takes effect with a reload, never a restart; a file PostgreSQL can't read is put back as it
+ * was before it's reloaded, as PostgreSQL wouldn't start with it.
+ *
+ * The reload is pg_ctl's, run inside the container: never "docker kill --signal HUP", which Docker
+ * counts as stopping the container by hand (any signal does), so that "restart: unless-stopped" no
+ * longer brings PostgreSQL back after the machine restarts, and every site stays down.
  */
 final readonly class DatabaseAccess
 {
@@ -194,16 +198,25 @@ final readonly class DatabaseAccess
     }
 
     /**
-     * PostgreSQL reads its rules again (what pg_reload_conf() does). Not running: it reads them when
-     * it starts.
+     * PostgreSQL reads its rules again (what pg_reload_conf() does), without a login: these rules may
+     * be what lets the agent log in. Not running (the container, or PostgreSQL in it, not started
+     * yet): it reads them when it starts.
      */
     private function reload(): void
     {
-        $reloaded = $this->docker(['kill', '--signal', 'HUP', SiteLinks::DATABASE]);
+        $reloaded = $this->docker(['exec', '--user', 'postgres', SiteLinks::DATABASE, 'pg_ctl', 'reload', '--silent']);
 
-        if (!$reloaded->successful() && !str_contains($reloaded->errorOutput, 'No such container') && !str_contains($reloaded->errorOutput, 'is not running')) {
-            $reloaded->orFail('Having PostgreSQL read its logins\' rules again');
+        if ($reloaded->successful()) {
+            return;
         }
+
+        foreach (['No such container', 'is not running', 'Is server running?'] as $notRunning) {
+            if (str_contains($reloaded->errorOutput, $notRunning) || str_contains($reloaded->output, $notRunning)) {
+                return;
+            }
+        }
+
+        $reloaded->orFail('Having PostgreSQL read its logins\' rules again');
     }
 
     private function identifier(Connection $connection, string $parameter): string

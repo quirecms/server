@@ -87,7 +87,7 @@ final class SiteLinksTest extends RegistryTestCase
 
                 return ScriptedRunner::ok($command);
             },
-            'docker kill --signal' => function (array $command): ProcessResult {
+            'docker exec --user' => function (array $command): ProcessResult {
                 ++$this->reloads;
 
                 return ScriptedRunner::ok($command);
