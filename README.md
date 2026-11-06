@@ -117,6 +117,7 @@ Its Compose project (its `COMPOSE_PROJECT_NAME`, or its folder's name) must foll
 quire-server site:add jane --domain=jane.example --domain=www.jane.example --admin-email=jane@example.com --title="Jane's notes" [--invite]
 quire-server site:adopt demo            # a site installed before the server (see above)
 quire-server site:list
+quire-server site:domains jane [--domain=jane.example --domain=www.jane.example]   # its domains, or others instead
 quire-server version                    # which release this server runs
 quire-server update [--to=0.2.0] [--check] [--undo]   # the server itself, see "Updating the server"
 quire-server database:upgrade [--check] [--to=19] [--undo] [--clean]   # its PostgreSQL, see "Upgrading PostgreSQL"
@@ -153,6 +154,8 @@ quire-server up | down | ps | logs     # the server itself ("down -v" is refused
 - **Sites that keep their own PostgreSQL** (adopted ones) have it removed with them; the server's PostgreSQL holds the others' databases.
 - **Removing** backs the site up to `/srv/quire/backups/<site>/final-<time>.tar`, closes its domains, removes its containers, volumes and database, and moves its folder to `/srv/quire/sites/.removed/`. A site that can't start can't be backed up: `--skip-backup` removes it anyway, and its data is gone.
 - Point each domain's DNS at the server. Its certificate comes at the first visit (from Let's Encrypt).
+- **Changing domains:** `site:domains jane --domain=…` gives it these instead, all of them, the first as its main one. It's started again with them (a few seconds offline), and the front door serves the new ones only. Point the new ones' DNS at the server first. If anything fails, it's put back as it was.
+- **Builds** run in a BuildKit builder of the site's own, started for the build and stopped after it, its cache trimmed to its newest 512 MB after each one: idle, it takes no memory, and at most 512 MB of disk.
 
 ## Problems
 

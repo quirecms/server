@@ -531,6 +531,9 @@ echo '== Adding a site (a few minutes: it is built)'
 inside 'quire-server site:add jane --domain=jane.test --domain=www.jane.test --domain=jane.127.0.0.1.sslip.io --admin-email=jane@example.com --title="Jane" 2>&1' | tee "$logs"/add.log | sed 's/^/    /'
 check 'the site runs' "inside 'quire-server site:list' | grep -q running"
 check 'a password was shown once (no email server)' "grep -q 'signs in with the password' $logs/add.log"
+cache=$(inside 'du -sm "$(docker volume inspect --format "{{.Mountpoint}}" quire-buildkit-jane-state)" | cut -f1' || echo unknown)
+echo "    its build cache: $cache MB"
+check 'its builder runs only while it builds: stopped, its cache trimmed (to 512 MB)' "[ \"\$(inside \"docker inspect quire-buildkit-jane --format '{{.State.Running}}'\")\" = false ] && [ \"$cache\" -le 600 ] 2>/dev/null"
 
 check 'HTTPS through the front door' "[ \"\$(inside \"curl -sk $resolve -o /dev/null -w '%{http_code}' https://jane.test/\")\" = 200 ]"
 check 'its second domain too' "[ \"\$(inside \"curl -sk $resolve -o /dev/null -w '%{http_code}' https://www.jane.test/_quire/health\")\" = 200 ]"
@@ -729,6 +732,13 @@ inside 'docker restart quire-server-agent-1 >/dev/null'
 waited=0
 until inside 'quire-server operations --site=jane' | grep site.recover | grep -qv running || [ $waited -ge 300 ]; do sleep 10; waited=$((waited + 10)); done
 check 'the agent puts the site back as it was before, by itself' "inside 'quire-server operations --site=jane' | grep -q 'site.recover.*succeeded' && [ \"\$(inside \"docker inspect jane-php-1 --format '{{.Image}}'\")\" = \"$before\" ] && ! inside 'test -e /srv/quire/backups/jane/release.json' && [ \"\$(inside \"curl -sk $resolve -o /dev/null -w '%{http_code}' https://jane.test/\")\" = 200 ]"
+
+echo '== Its domains change'
+inside 'quire-server site:domains jane --domain=jane.test --domain=www.jane.test --domain=jane2.test --yes 2>&1' | sed 's/^/    /'
+check 'a domain it gets is served' "[ \"\$(inside \"curl -sk --resolve jane2.test:443:127.0.0.1 -o /dev/null -w '%{http_code}' https://jane2.test/\")\" = 200 ] && [ \"\$(inside \"curl -sk $resolve -o /dev/null -w '%{http_code}' https://jane.test/\")\" = 200 ]"
+check 'one it no longer has is not (421)' "[ \"\$(inside \"curl -sk --resolve jane.127.0.0.1.sslip.io:443:127.0.0.1 -o /dev/null -w '%{http_code}' https://jane.127.0.0.1.sslip.io/\")\" = 421 ]"
+check 'they are listed, the main one first' "inside 'quire-server site:domains jane' | head -1 | grep -qx 'jane.test (main)'"
+inside 'quire-server site:domains jane --domain=jane.test --domain=www.jane.test --domain=jane.127.0.0.1.sslip.io --yes >/dev/null 2>&1'
 
 echo '== The machine restarts: everything comes back by itself'
 # As a reboot does it: Docker stops every container and starts again with the data it had. A container

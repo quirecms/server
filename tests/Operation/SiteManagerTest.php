@@ -46,6 +46,9 @@ final class SiteManagerTest extends RegistryTestCase
     /** @var array<string, string> The BuildKit builders' containers there are, and the BuildKit each was created with (Builders) */
     private array $builders = [];
 
+    /** @var list<string> The builders stopped, in order */
+    private array $stopped = [];
+
     /** @var list<string> The builders registered in the site's Docker configuration */
     private array $registered = [];
 
@@ -121,6 +124,13 @@ final class SiteManagerTest extends RegistryTestCase
                 return self::ok($command, '');
             },
             'docker volume rm' => static fn (array $command): ProcessResult => self::ok($command, ''),
+            // After each build: its cache trimmed, its builder stopped (Builders::release)
+            'docker buildx prune' => static fn (array $command): ProcessResult => self::ok($command, ''),
+            'docker container stop' => function (array $command): ProcessResult {
+                $this->stopped[] = self::argument($command, 5);
+
+                return self::ok($command, '');
+            },
             // The server's PostgreSQL, where a site's database is dumped and restored (SiteDatabaseDumps)
             'docker ps --quiet' => static fn (array $command): ProcessResult => self::ok($command, "abcdef123456\n"),
             'docker exec -e' => static fn (array $command): ProcessResult => self::ok($command, ''),
@@ -514,12 +524,106 @@ final class SiteManagerTest extends RegistryTestCase
         self::assertIsInt($at);
         self::assertSame('site', $build[$at + 1] ?? null);
         self::assertEqualsCanonicalizing([$container => Builders::BUILDKIT, $container.'-blog' => Builders::BUILDKIT], $this->builders, 'The other site\'s stays.');
+        // (On the site's own socket, as every buildx command: respond() checks it)
+        self::assertContains(['docker', 'buildx', 'prune', '--builder', 'site', '--force', '--max-used-space', Builders::CACHE], $this->dockerCommands(), 'Its cache trimmed after the build…');
+        self::assertSame([$container], $this->stopped, 'Then its builder stopped: it runs only while it builds.');
 
         $manager->remove($this->name, false, 'cli', 'darko', static fn (): null => null);
 
         self::assertSame([$container.'-blog' => Builders::BUILDKIT], $this->builders, 'Its own goes with it, with its cache.');
         self::assertContains(['docker', 'volume', 'rm', '--force', $container.'-state'], $this->dockerCommands());
         self::assertFileDoesNotExist($this->root.'/gate/scopes/'.$this->name->value.'.json', 'Its socket on the gate goes too.');
+    }
+
+    public function testABuilderIsStoppedEvenWhenItsBuildFails(): void
+    {
+        $this->script['docker compose build'] = static fn (array $command): ProcessResult => new ProcessResult(self::strings($command), 1, '', "no space left on device\n");
+
+        try {
+            $this->manager()->add($this->request(), 'cli', 'darko', static fn (): null => null);
+            self::fail('It didn\'t fail.');
+        } catch (\RuntimeException) {
+        }
+
+        self::assertSame(['quire-buildkit-'.$this->name->value], $this->stopped);
+        self::assertContains(['docker', 'volume', 'rm', '--force', 'quire-buildkit-'.$this->name->value.'-state'], $this->dockerCommands(), 'Then gone with its cache, with the site.');
+    }
+
+    public function testASitesDomainsChange(): void
+    {
+        $manager = $this->manager();
+        $manager->add($this->request(), 'cli', 'darko', static fn (): null => null);
+        $this->commands = [];
+        $said = [];
+
+        $site = $manager->setDomains($this->name, [new Domain('jane.test'), new Domain('jane.example')], 'cli', 'darko', static function (string $step) use (&$said): void {
+            $said[] = $step;
+        });
+
+        self::assertSame(['jane.test', 'jane.example'], array_map(static fn (Domain $domain): string => $domain->value, $site->domains), 'The first is the main one.');
+        self::assertSame(['Recording its domains', 'Writing its settings', 'Starting it again with them (a few seconds offline)', 'Opening its new domains to visitors'], $said);
+        self::assertSame(['jane.example' => $this->name->value, 'jane.test' => $this->name->value], $this->frontDoor->all(), 'The new one open, the one it no longer has closed.');
+        /** @var array{services: array{php: array{networks: array<string, array{aliases: list<string>}>, environment: array<string, string>}}} $written */
+        $written = Yaml::parse((string) file_get_contents($this->paths->site($this->name).'/compose.server.yaml'), Yaml::PARSE_CUSTOM_TAGS);
+        self::assertSame(['jane.test.quire.internal', 'jane.example.quire.internal'], $written['services']['php']['networks']['quire-link-'.$this->name->value]['aliases'], 'The front door reaches it by its new names.');
+        self::assertSame(['http://jane.test, http://jane.example, php:80', 'https://jane.test'], [$written['services']['php']['environment']['SERVER_NAME'], $written['services']['php']['environment']['DEFAULT_URI']]);
+        self::assertSame('jane.test', $this->envValue((string) file_get_contents($this->paths->site($this->name).'/prod.env'), 'SERVER_NAME'));
+        self::assertSame(['config', 'up'], array_map(static fn (array $command): string => $command[8], $this->commands()), 'Checked, and started again with them: not built again.');
+        self::assertSame(['site.domains', 'succeeded'], [$this->operations->latest()[0]['action'], $this->operations->latest()[0]['status']]);
+
+        $this->commands = [];
+        $manager->setDomains($this->name, [new Domain('jane.test'), new Domain('jane.example')], 'cli', 'darko', static fn (): null => null);
+        self::assertSame([], $this->commands, 'The same ones: nothing to do.');
+    }
+
+    public function testAnotherSitesDomainIsntTaken(): void
+    {
+        $manager = $this->manager();
+        $manager->add($this->request(), 'cli', 'darko', static fn (): null => null);
+        $kim = new SiteName('t'.bin2hex(random_bytes(3)).'-kim');
+        $this->registry->add($kim, [new Domain('kim.example')], Site::SHARED_DATABASE, $kim->value);
+        $override = (string) file_get_contents($this->paths->site($this->name).'/compose.server.yaml');
+        $this->commands = [];
+
+        try {
+            $manager->setDomains($this->name, [new Domain('jane.example'), new Domain('kim.example')], 'cli', 'darko', static fn (): null => null);
+            self::fail('Kim\'s domain was taken.');
+        } catch (\DomainException $e) {
+            self::assertStringContainsString('"kim.example" belongs to the site "'.$kim->value.'"', $e->getMessage());
+        }
+
+        self::assertSame(['jane.example', 'www.jane.example'], array_map(static fn (Domain $domain): string => $domain->value, $this->registry->get($this->name)->domains ?? []));
+        self::assertSame($override, file_get_contents($this->paths->site($this->name).'/compose.server.yaml'));
+        self::assertSame(['config', 'up'], array_map(static fn (array $command): string => $command[8], $this->commands()), 'Only started again as it was.');
+        self::assertSame('failed', $this->operations->latest()[0]['status']);
+    }
+
+    public function testASiteThatDoesntStartWithItsNewDomainsIsPutBack(): void
+    {
+        $manager = $this->manager();
+        $manager->add($this->request(), 'cli', 'darko', static fn (): null => null);
+        $directory = $this->paths->site($this->name);
+        $before = [(string) file_get_contents($directory.'/compose.server.yaml'), (string) file_get_contents($directory.'/prod.env')];
+        $started = 0;
+        $this->script['docker compose up'] = static function (array $command) use (&$started): ProcessResult {
+            return 1 === ++$started
+                ? new ProcessResult(self::strings($command), 1, '', "container php-1 is unhealthy\n")
+                : self::ok($command, "Started\n");
+        };
+
+        try {
+            $manager->setDomains($this->name, [new Domain('jane.test')], 'cli', 'darko', static fn (): null => null);
+            self::fail('It didn\'t fail.');
+        } catch (\RuntimeException $e) {
+            self::assertStringContainsString('unhealthy', $e->getMessage());
+        }
+
+        self::assertSame(2, $started, 'Started again as it was.');
+        self::assertSame($before, [(string) file_get_contents($directory.'/compose.server.yaml'), (string) file_get_contents($directory.'/prod.env')]);
+        self::assertSame(['jane.example', 'www.jane.example'], array_map(static fn (Domain $domain): string => $domain->value, $this->registry->get($this->name)->domains ?? []));
+        self::assertSame([$this->name->value, $this->name->value], array_values($this->frontDoor->all()), 'Its domains stay open, the new one isn\'t.');
+        self::assertArrayNotHasKey('jane.test', $this->frontDoor->all());
+        self::assertSame('failed', $this->operations->latest()[0]['status']);
     }
 
     public function testARemovedSiteComesBackWithItsDataAndDomains(): void
@@ -784,6 +888,7 @@ final class SiteManagerTest extends RegistryTestCase
         self::assertSame(Site::REMOVED, $this->registry->get($this->name)?->status, 'Not a site of the server: it can be adopted again.');
         self::assertSame('failed', $this->operations->latest()[0]['status']);
         self::assertFileExists($directory.'/compose.yaml', 'Its folder stays where it is.');
+        self::assertArrayNotHasKey('quire-buildkit-'.$this->name->value, $this->builders, 'The builder made for it goes.');
     }
 
     public function testAHostileSiteIsNeverStartedBehindTheFrontDoor(): void
@@ -883,6 +988,8 @@ final class SiteManagerTest extends RegistryTestCase
         self::assertSame([], $this->frontDoor->all(), 'Nothing opened.');
         self::assertFalse($this->databases->exists($this->name), 'Its database dropped.');
         self::assertFileDoesNotExist($this->paths->site($this->name));
+        self::assertArrayNotHasKey('quire-buildkit-'.$this->name->value, $this->builders, 'Its builder and its cache gone.');
+        self::assertFileDoesNotExist($this->root.'/gate/scopes/'.$this->name->value.'.json', 'Its socket on the gate too.');
     }
 
     private function manager(bool $checksCode = false): SiteManager
@@ -1013,6 +1120,18 @@ final class SiteManagerTest extends RegistryTestCase
         };
     }
 
+    /**
+     * @return list<string> The names the override gives the site on its link, as Compose would merge them
+     */
+    private function aliases(): array
+    {
+        $override = $this->paths->site($this->name).'/compose.server.yaml';
+        /** @var array{services?: array{php?: array{networks?: array<string, array{aliases?: list<string>}|null>}}} $written */
+        $written = is_file($override) ? Yaml::parse((string) file_get_contents($override), Yaml::PARSE_CUSTOM_TAGS) : [];
+
+        return $written['services']['php']['networks']['quire-link-'.$this->name->value]['aliases'] ?? ['jane.example.quire.internal', 'www.jane.example.quire.internal'];
+    }
+
     private function request(): SiteRequest
     {
         return new SiteRequest($this->name, [new Domain('jane.example'), new Domain('www.jane.example')], 'Jane\'s notes', 'jane@example.com', false, '^0.1');
@@ -1030,7 +1149,7 @@ final class SiteManagerTest extends RegistryTestCase
         // Its addresses, as SiteLinks gave them
         $subnet = (string) (new SiteNetworks($this->connection, $this->schema)->find($this->name)->project ?? '10.72.0.32/27');
         $networks = ['default' => ['name' => $project.'_default', 'ipam' => ['config' => [['subnet' => $subnet]]]], $link => ['name' => $link, 'external' => true]];
-        $php = ['image' => 'quire-sites/'.$project.'/php-prod', 'build' => $build, 'cap_drop' => ['ALL'], 'security_opt' => ['no-new-privileges:true'], 'mem_limit' => '536870912', 'pids_limit' => 256, 'networks' => ['default' => null, $link => ['aliases' => ['jane.example.quire.internal', 'www.jane.example.quire.internal']]], 'volumes' => [['type' => 'volume', 'source' => 'storage_data', 'target' => '/app/storage']]];
+        $php = ['image' => 'quire-sites/'.$project.'/php-prod', 'build' => $build, 'cap_drop' => ['ALL'], 'security_opt' => ['no-new-privileges:true'], 'mem_limit' => '536870912', 'pids_limit' => 256, 'networks' => ['default' => null, $link => ['aliases' => $this->aliases()]], 'volumes' => [['type' => 'volume', 'source' => 'storage_data', 'target' => '/app/storage']]];
 
         if ($this->ownDatabase) {
             return [

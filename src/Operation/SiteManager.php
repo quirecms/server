@@ -162,6 +162,8 @@ final readonly class SiteManager
                 $project = $this->project($request->name, $request->domains, $request->name->value, Site::SHARED_DATABASE);
 
                 $step('Checking and building it (a few minutes)');
+                // Undone after its containers (in reverse): its builder and cache, and its scope on the gate
+                $undo[] = fn () => $this->compose->forget($project->name());
                 $undo[] = fn () => $this->compose->down($project, volumes: true);
                 $this->compose->build($project, Progress::of($operation->output(...), $say));
 
@@ -286,6 +288,8 @@ final readonly class SiteManager
                 $project = $this->project($name, $domains, $name->value, Site::SHARED_DATABASE);
 
                 $step('Checking and building it (a few minutes)');
+                // Undone after its containers (in reverse): its builder and cache, and its scope on the gate
+                $undo[] = fn () => $this->compose->forget($project->name());
                 $undo[] = fn () => $this->compose->down($project, volumes: true);
                 $this->compose->build($project, Progress::of($operation->output(...), $say));
 
@@ -436,6 +440,9 @@ final readonly class SiteManager
                 // Its image gets the site's own name (two sites would share "quire-php-prod" otherwise):
                 // built while the site still runs as it was, so it's offline only while it restarts.
                 $step('Checking and building it (a few minutes; it keeps running meanwhile)');
+                // A builder of its own, made for this build: gone with it if it's put back (the scope too,
+                // as it's started as it was on the trusted socket)
+                $undo[] = fn () => $this->compose->forget($site->name());
                 $this->compose->build($site, Progress::of($operation->output(...), $say));
 
                 $step('Moving it behind the front door (a few seconds offline)');
@@ -469,6 +476,124 @@ final readonly class SiteManager
                 throw $e;
             }
         });
+    }
+
+    /**
+     * Gives a running site other domains (the first is the main one): recorded, its override written
+     * with them (the names the front door reaches it by, its SERVER_NAME and DEFAULT_URI), started
+     * again with it (a few seconds), then the front door serves the new ones and no longer the old.
+     * Visitors of a new domain get its certificate on their first visit, once its DNS points here. If
+     * anything fails, it's put back as it was.
+     *
+     * @param list<Domain>           $domains
+     * @param \Closure(string): void $say
+     */
+    public function setDomains(SiteName $name, array $domains, string $channel, string $requestedBy, \Closure $say): Site
+    {
+        return $this->lock->run($name, function () use ($name, $domains, $channel, $requestedBy, $say): Site {
+            $site = $this->registry->get($name);
+
+            if (!$site instanceof Site || Site::RUNNING !== $site->status) {
+                throw new \DomainException($site instanceof Site && Site::REMOVED !== $site->status ? \sprintf('"%s" isn\'t running (it\'s %s): its domains change only while it runs.', $name, $site->status) : \sprintf('There\'s no site named "%s".', $name));
+            }
+
+            $values = $this->values(...);
+            $new = array_values(array_unique($values($domains)));
+
+            if ([] === $new) {
+                throw new \DomainException('Give at least one domain: --domain=… (repeatable; the first is the main one).');
+            }
+
+            if ($new === $values($site->domains)) {
+                return $site;
+            }
+
+            $domains = array_map(static fn (string $value): Domain => new Domain($value), $new);
+            $operation = $this->operations->start('site.domains', $name, ['from' => $values($site->domains), 'to' => $new], $channel, $requestedBy);
+            $directory = $this->paths->site($name);
+            $override = $directory.'/'.SiteFiles::OVERRIDE;
+            $envPath = $directory.'/'.SiteFiles::ENV_FILE;
+            $undo = [];
+            $step = static function (string $what) use ($operation, $say): void {
+                $operation->line('== '.$what);
+                $say($what);
+            };
+
+            try {
+                if (!is_file($override) || is_link($override) || !is_file($envPath) || is_link($envPath)) {
+                    throw new \DomainException(\sprintf('"%s" has no %s or %s of the server\'s: its domains can\'t be changed here.', $directory, SiteFiles::OVERRIDE, SiteFiles::ENV_FILE));
+                }
+
+                $overrideBefore = (string) file_get_contents($override);
+                $envBefore = (string) file_get_contents($envPath);
+                // Undone last (in reverse): started again as it was, once its files and record are back
+                $undo[] = fn () => $this->compose->up($this->projectOf($site), $operation->output(...));
+
+                $step('Recording its domains');
+                $this->registry->setDomains($name, $domains);
+                $undo[] = fn (): Site => $this->registry->setDomains($name, $site->domains);
+
+                $step('Writing its settings');
+                $undo[] = function () use ($override, $overrideBefore, $envPath, $envBefore): void {
+                    $this->files->write($override, $overrideBefore, 0o644);
+                    $this->files->write($envPath, $envBefore, 0o600);
+                };
+                $subnets = $this->links->ensure($name, $site->project, Site::SHARED_DATABASE === $site->databaseMode);
+                $this->files->writeOverride($directory, $name, $domains, $site->databaseMode, $subnets, $site->project);
+                $env = EnvFile::parse($envBefore);
+
+                // The server's own prod.env names its main domain; an adopted site's keeps its own settings
+                if (Site::SHARED_DATABASE === $site->databaseMode && null !== $env->get('SERVER_NAME')) {
+                    $this->files->write($envPath, $env->with(['SERVER_NAME' => $domains[0]->value])->content(), 0o600);
+                }
+
+                $step('Starting it again with them (a few seconds offline)');
+                $this->compose->up($this->project($name, $domains, $site->project, $site->databaseMode), $operation->output(...));
+
+                if (false === $this->links->frontDoorReaches($domains[0]->value)) {
+                    throw new \RuntimeException(\sprintf('It runs, but the front door doesn\'t reach it by its new name (%s%s:80).', $domains[0]->value, SiteFiles::EDGE_SUFFIX));
+                }
+
+                $step('Opening its new domains to visitors');
+
+                foreach ($domains as $domain) {
+                    $this->frontDoor->allow($domain, $name);
+                }
+
+                foreach (array_values(array_diff($values($site->domains), $new)) as $old) {
+                    $this->frontDoor->revoke(new Domain($old));
+                }
+
+                $operation->succeed();
+
+                return $this->registry->get($name) ?? throw new \LogicException('The site was just changed.');
+            } catch (\Throwable $e) {
+                $operation->line('!! '.$e->getMessage());
+                $operation->line('== Putting it back as it was');
+
+                foreach (array_reverse($undo) as $revert) {
+                    try {
+                        $revert();
+                    } catch (\Throwable $failure) {
+                        $operation->line('!! Putting it back failed too: '.$failure->getMessage());
+                    }
+                }
+
+                $operation->fail($e);
+
+                throw $e;
+            }
+        });
+    }
+
+    /**
+     * @param list<Domain> $domains
+     *
+     * @return list<string>
+     */
+    private function values(array $domains): array
+    {
+        return array_map(static fn (Domain $domain): string => $domain->value, $domains);
     }
 
     /**
