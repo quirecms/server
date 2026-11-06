@@ -736,9 +736,12 @@ echo '== The machine restarts: everything comes back by itself'
 # started) stays down; the server's PostgreSQL did, after the agent reloaded its rules with a kill.
 docker restart "$dind" >/dev/null
 until inside 'docker info' >/dev/null 2>&1; do sleep 1; done
+# All three, not only the site: it can answer before the health checks of PostgreSQL and the agent
+# have run once (they're "starting" until then)
+back="inside 'quire-server ps --format \"{{.Service}} {{.Health}}\"' | grep -q 'database healthy' && inside 'quire-server ps --format \"{{.Service}} {{.Health}}\"' | grep -q 'agent healthy' && [ \"\$(inside \"curl -sk $resolve -o /dev/null -w '%{http_code}' https://jane.test/\")\" = 200 ]"
 waited=0
-until [ "$(inside "curl -sk $resolve -o /dev/null -w '%{http_code}' https://jane.test/" 2>/dev/null)" = 200 ] || [ $waited -ge 300 ]; do sleep 5; waited=$((waited + 5)); done
-check 'after the machine restarts, the server'\''s PostgreSQL, its agent and the site come back by themselves' "inside 'quire-server ps --format \"{{.Service}} {{.Health}}\"' | grep -q 'database healthy' && inside 'quire-server ps --format \"{{.Service}} {{.Health}}\"' | grep -q 'agent healthy' && [ \"\$(inside \"curl -sk $resolve -o /dev/null -w '%{http_code}' https://jane.test/\")\" = 200 ]"
+until eval "$back" >/dev/null 2>&1 || [ $waited -ge 300 ]; do sleep 5; waited=$((waited + 5)); done
+check 'after the machine restarts, the server'\''s PostgreSQL, its agent and the site come back by themselves' "$back"
 
 echo '== Removing the site'
 inside 'quire-server site:remove jane --yes 2>&1' | tee "$logs"/remove.log | sed 's/^/    /'
