@@ -17,13 +17,23 @@ use Quire\Server\Site\SiteName;
  */
 final readonly class SiteDatabases
 {
-    /** Connections a site may hold at once: with the server's max_connections (200), a few sites at their limit leave room */
-    public const int CONNECTIONS = 32;
+    /**
+     * Connections a site may hold at once: its PHP threads (SiteFiles::PHP_THREADS), its job worker and
+     * console commands, with room to spare. A runaway site takes no more from its neighbours (D-39).
+     */
+    public const int CONNECTIONS = 16;
 
-    /** A site's defaults: a runaway query or a forgotten transaction ends by itself; its temporary files are capped */
+    /**
+     * A site's defaults: a runaway query or a forgotten transaction ends by itself; its temporary files
+     * are capped. A session idle for 11 minutes ends too, so a quiet site gives its connections back
+     * (D-39): longer than the 10 minutes after which Symfony's own reset (doctrine-bundle's
+     * idle_connection_ttl, 600 s from the connection) closes it at the next request, so a site never
+     * finds its connection ended under it.
+     */
     public const array SETTINGS = [
         'statement_timeout' => '15min',
         'idle_in_transaction_session_timeout' => '10min',
+        'idle_session_timeout' => '11min',
         'temp_file_limit' => '5GB',
     ];
 

@@ -188,12 +188,15 @@ final class SiteManagerTest extends RegistryTestCase
             'link' => ['external' => true],
             'own' => ['ipam' => ['config' => [['subnet' => '10.72.0.32/27']]]],
             'proxies' => '10.72.0.2',
+            // 4 PHP threads, not FrankenPHP's 2 a CPU (D-39)
+            'threads' => 'num 4',
         ], [
             'php' => $written['services']['php']['networks'] ?? null,
             'worker' => $written['services']['worker']['networks'] ?? null,
             'link' => $written['networks'][$link] ?? null,
             'own' => $written['networks']['default'] ?? null,
             'proxies' => $written['services']['php']['environment']['SYMFONY_TRUSTED_PROXIES'] ?? null,
+            'threads' => $written['services']['php']['environment']['FRANKENPHP_WORKER_CONFIG'] ?? null,
         ]);
         self::assertDoesNotMatchRegularExpression('/\bquire-(edge|data)\b/', $override, 'None of the networks all sites shared.');
         self::assertStringNotContainsString('private_ranges', $override);
