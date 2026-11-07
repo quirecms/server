@@ -30,7 +30,22 @@ failures=0
 
 pass() { printf '  \033[32mok\033[0m   %s\n' "$1"; }
 fail() { printf '  \033[31mFAIL\033[0m %s\n' "$1"; failures=$((failures + 1)); }
-check() { if eval "$2" >/dev/null 2>&1; then pass "$1"; else fail "$1"; fi; }
+check() {
+	if output=$(eval "$2" 2>&1); then pass "$1"; else fail "$1"; explain "$2" "$output"; fi
+}
+# Why a check failed, in the run's own output (CI's log is all there is afterwards): what it said, and
+# the end of each of this run's logs it reads. Only the run's own throwaway secrets can be in them.
+explain() {
+	if [ -n "$2" ]; then
+		echo '         what it said (its last 20 lines):'
+		printf '%s\n' "$2" | tail -n 20 | sed 's/^/         | /'
+	fi
+	for file in $(printf '%s\n' "$1" | grep -oE "$logs/[A-Za-z0-9._-]+" | sort -u); do
+		[ -f "$file" ] || continue
+		echo "         ${file#"$logs"/} (its last 40 lines):"
+		tail -n 40 "$file" | sed 's/^/         | /'
+	done
+}
 inside() { docker exec "$dind" sh -c "$1"; }
 
 # This run's logs (runs may go side by side: E2E_ONLY)
@@ -379,7 +394,8 @@ server_env=$(inside 'sha256sum /srv/quire/server/server.env')
 check 'a wrong password for the repository saves nothing' "inside 'QUIRE_SERVER_BACKUP_SETUP_SECRET_KEY=e2e-secret QUIRE_SERVER_BACKUP_SETUP_PASSWORD=not-the-password-at-all quire-server backups:setup $repository --existing --yes 2>&1' | grep -q 'doesn.t open with this password' && [ \"\$(inside 'sha256sum /srv/quire/server/server.env')\" = \"$server_env\" ]"
 # As a server that replaces this one would: the repository, its keys and its password
 inside "QUIRE_SERVER_BACKUP_SETUP_SECRET_KEY=e2e-secret QUIRE_SERVER_BACKUP_SETUP_PASSWORD='$password' quire-server backups:setup $repository --existing --yes 2>&1" > "$logs"/setup-existing.log || true
-check 'another server connects to the repository with its password' "grep -q 'are set up' $logs/setup-existing.log && [ \"\$(inside 'quire-server backups jane' | grep -cE '^ +[0-9a-f]{8} ')\" -ge 1 ]"
+inside 'quire-server backups jane 2>&1' > "$logs"/backups-existing.log || true
+check 'another server connects to the repository with its password' "grep -q 'are set up' $logs/setup-existing.log && [ \"\$(grep -cE '^ +[0-9a-f]{8} ' $logs/backups-existing.log)\" -ge 1 ]"
 
 echo '== A site from a backup, as a new site: a copy here, and moved from another server'
 inside 'quire-server backups:restore jane --as=jane-copy --domain=copy.test --yes 2>&1' | tee "$logs"/copy.log | sed 's/^/    /'
