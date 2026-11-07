@@ -60,7 +60,7 @@ final class ContainerRunnerTest extends TestCase
         $flags = implode(' ', $run['command']);
         self::assertStringContainsString('--network quire-sandbox', $flags);
         self::assertSame(1, substr_count($flags, '--network'), 'One network: its own.');
-        self::assertStringContainsString('--cap-drop ALL --security-opt no-new-privileges:true --read-only', $flags);
+        self::assertStringContainsString('--cap-drop ALL --security-opt no-new-privileges=true --read-only', $flags);
         self::assertStringContainsString('--user '.$this->uid().':'.$this->uid(), $flags);
         self::assertSame(1, substr_count($flags, '--volume'), 'Only the copy of the folder.');
         self::assertStringStartsWith($this->tmp.'/work/quire-sandbox-', $this->after($run['command'], '--volume'));
