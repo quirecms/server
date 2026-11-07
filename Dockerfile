@@ -81,6 +81,10 @@ COPY --from=yorvogate /usr/local/bin/yorvogate /usr/local/bin/yorvogate
 # Coverage, for the tests' floor and mutation testing (STATIC-10): in development only
 COPY --from=php_extension_installer /usr/bin/install-php-extensions /usr/local/bin/
 RUN install-php-extensions pcov && rm /usr/local/bin/install-php-extensions
+# PostgreSQL's tools, for the tests that run the server's own restore script on a real PostgreSQL
+# (the dev database's major): in development only
+# hadolint ignore=DL3018
+RUN apk add --no-cache postgresql18-client
 WORKDIR /app
 ENTRYPOINT []
 CMD ["composer", "qa"]

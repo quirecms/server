@@ -156,7 +156,7 @@ final class ServerUpdaterTest extends RegistryTestCase
                 \in_array('server:version', $command, true) => null === $this->agent ? ScriptedRunner::failed($command, 'service "agent" is not running') : ScriptedRunner::ok($command, \sprintf("Quire Server %s\nAgent: %s\n", $this->releases[$this->agent], $this->agent)),
                 \in_array('pg_dump', $command, true) => ScriptedRunner::ok($command, 'dump:'.implode(',', $this->migrationVersions())),
                 \in_array('psql', $command, true) => ScriptedRunner::ok($command, $this->postgres."0006\n"),
-                \in_array('pg_restore', $command, true) => $this->restore($command, (string) $inputFile),
+                \in_array('restore-registry', $command, true) => $this->restore($command, (string) $inputFile),
                 default => throw new \LogicException('Unexpected: '.implode(' ', $command)),
             },
         ]);
@@ -346,7 +346,7 @@ final class ServerUpdaterTest extends RegistryTestCase
         self::assertFileDoesNotExist($this->server.'/only-in-0.2.0.txt');
         self::assertSame(self::OLD, $this->image());
         self::assertSame(0o600, fileperms($this->server.'/server.env') & 0o777);
-        self::assertNotContains('pg_restore', array_merge(...array_map(static fn (array $run): array => $run['command'], $this->runner->runs)), 'Its migrations didn\'t run: the database stays.');
+        self::assertNotContains('restore-registry', array_merge(...array_map(static fn (array $run): array => $run['command'], $this->runner->runs)), 'Its migrations didn\'t run: the database stays.');
         self::assertSame('failed', $this->operations->latest()[0]['status']);
         self::assertContains('It runs as it was (0.1.1)', $this->operations->lines($this->operations->latest()[0]['id']));
         $other = $this->otherConnection();
@@ -528,6 +528,7 @@ final class ServerUpdaterTest extends RegistryTestCase
     private function restore(array $command, string $dump): ProcessResult
     {
         self::assertNull($this->agent, 'The agent is stopped while its database is restored.');
+        self::assertSame(['database', 'sh', '-c', ServerStack::RESTORE, 'restore-registry', 'quire_server'], \array_slice($command, -6), 'The registry is restored whole, by the script RegistryRestoreTest runs on a real PostgreSQL.');
 
         if ($this->restoreFails) {
             return ScriptedRunner::failed($command, 'pg_restore: error: could not connect');
