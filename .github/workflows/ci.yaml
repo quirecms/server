@@ -34,7 +34,11 @@ jobs:
       - name: Build the dev image
         run: docker compose -f compose.dev.yaml build php
       - name: Install dependencies
-        run: docker compose -f compose.dev.yaml run --rm php composer install --no-interaction --no-progress
+        # Tried once more 60 s later, as the agent's image build does: GitHub, where the packages are
+        # downloaded from, answers 5xx now and then for a minute.
+        run: |
+          install() { docker compose -f compose.dev.yaml run --rm php composer install --no-interaction --no-progress; }
+          install || { echo 'Composer could not install the packages: trying once more in 60 s.'; sleep 60; install; }
       - name: Code style, Rector, PHPStan
         run: docker compose -f compose.dev.yaml run --rm php sh -c 'composer cs && composer rector && composer phpstan'
       - name: Tests, and the coverage they may not fall below
