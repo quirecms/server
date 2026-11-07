@@ -13,6 +13,7 @@ use Quire\Server\FrontDoor\DomainDirectory;
 use Quire\Server\Git\DeployKeys;
 use Quire\Server\Git\Git;
 use Quire\Server\Git\Repository;
+use Quire\Server\Host\Memory;
 use Quire\Server\Network\SiteLinks;
 use Quire\Server\Process\Durable;
 use Quire\Server\Registry\SiteGit;
@@ -56,6 +57,7 @@ final readonly class SiteManager
         private Filesystem $filesystem = new Filesystem(),
         private ?\Quire\Server\Update\CodeCheck $code = null,
         private ?\Quire\Server\Update\Composer $composer = null,
+        private ?Memory $memory = null,
     ) {
     }
 
@@ -91,6 +93,8 @@ final readonly class SiteManager
     public function add(SiteRequest $request, string $channel, string $requestedBy, \Closure $say): AddedSite
     {
         return $this->lock->run($request->name, function () use ($request, $channel, $requestedBy, $say): AddedSite {
+            // Not built on a machine without room for it: refused before anything is made
+            $this->memory?->ensureRoomToBuild();
             $operation = $this->operations->start('site.add', $request->name, [
                 'domains' => array_map(static fn (Domain $domain): string => $domain->value, $request->domains),
                 'title' => $request->title,
@@ -213,6 +217,7 @@ final readonly class SiteManager
     public function restoreAsNew(SiteName $name, array $domains, string|Repository $code, string $backup, array $from, string $channel, string $requestedBy, \Closure $say, bool $poll = false): Site
     {
         return $this->lock->run($name, function () use ($name, $domains, $code, $backup, $from, $channel, $requestedBy, $say, $poll): Site {
+            $this->memory?->ensureRoomToBuild();
             $operation = $this->operations->start('site.restore_as_new', $name, ['domains' => array_map(static fn (Domain $domain): string => $domain->value, $domains), ...$from], $channel, $requestedBy);
             $directory = $this->paths->site($name);
             $undo = [];
@@ -365,6 +370,7 @@ final readonly class SiteManager
     public function adopt(SiteName $name, array $domains, string $channel, string $requestedBy, \Closure $say): Site
     {
         return $this->lock->run($name, function () use ($name, $domains, $channel, $requestedBy, $say): Site {
+            $this->memory?->ensureRoomToBuild();
             $directory = $this->paths->site($name);
             $envPath = $directory.'/'.SiteFiles::ENV_FILE;
             $before = $envPath.'.before-server';

@@ -7,6 +7,7 @@ namespace Quire\Server\Notify;
 use Doctrine\DBAL\Connection;
 use Quire\Server\Backup\BackupSettings;
 use Quire\Server\Backup\OffsiteBackups;
+use Quire\Server\Host\Memory;
 use Quire\Server\Registry\Schema;
 use Quire\Server\Site\ServerPaths;
 
@@ -15,7 +16,8 @@ use Quire\Server\Site\ServerPaths;
  * by each job: every job records its operation, so a failure the owner didn't see (the agent's own,
  * at night) is the latest operation of its kind having failed; a later one that succeeds, whoever ran
  * it, ends it. Also: nightly backups that stopped running, certificates that don't come or aren't
- * renewed, a disk filling up, and what the nightly checks of the backups found (Checks).
+ * renewed, a disk filling up, memory running out, and what the nightly checks of the backups found
+ * (Checks).
  */
 final readonly class Watch
 {
@@ -46,6 +48,10 @@ final readonly class Watch
     private const float DISK_SHARE = 0.10;
     private const int DISK_BYTES = 5 * 1024 ** 3;
 
+    /** Available memory under which it's running out: a share of it, or a size, whichever is more */
+    private const float MEMORY_SHARE = 0.10;
+    private const int MEMORY_BYTES = 512 * 1024 ** 2;
+
     /**
      * @param \Closure(): \DateTimeImmutable                          $now
      * @param \Closure(string): array{free: float, total: float}|null $disk
@@ -59,6 +65,7 @@ final readonly class Watch
         private string $schema = Schema::NAME,
         private ?\Closure $now = null,
         private ?\Closure $disk = null,
+        private ?Memory $memory = null,
     ) {
     }
 
@@ -67,7 +74,7 @@ final readonly class Watch
      */
     public function problems(): array
     {
-        return [...$this->failures(), ...$this->lateBackups(), ...$this->certificatesProblems(), ...$this->diskProblems(), ...($this->backups->configured() ? $this->checks->problems() : [])];
+        return [...$this->failures(), ...$this->lateBackups(), ...$this->certificatesProblems(), ...$this->diskProblems(), ...$this->memoryProblems(), ...($this->backups->configured() ? $this->checks->problems() : [])];
     }
 
     /**
@@ -178,6 +185,23 @@ final readonly class Watch
         }
 
         return [new Problem('disk', \sprintf('The disk is almost full: %s free of %s.', $this->size($space['free']), $this->size($space['total'])), 'Updates, builds and backups need room, and fail without it. Old local backups are in '.$this->paths->root.'/backups; "docker system df" says what Docker\'s images and build caches take.')];
+    }
+
+    /**
+     * Told only once it has lasted 10 minutes (Problems::DELAYED): a build's peak passes by itself.
+     *
+     * @return list<Problem>
+     */
+    private function memoryProblems(): array
+    {
+        $available = $this->memory?->available();
+        $total = $this->memory?->total();
+
+        if (null === $available || null === $total || $available >= max($total * self::MEMORY_SHARE, self::MEMORY_BYTES)) {
+            return [];
+        }
+
+        return [new Problem('memory', \sprintf('Memory is running out: %s free of %s.', Memory::size($available), Memory::size($total)), 'When it runs out, the kernel stops a program to free some: a site\'s container, which starts again by itself (the server\'s own come last). "docker stats" says what takes it. Add memory, or remove a site; new sites aren\'t built while too little is free.')];
     }
 
     private function now(): \DateTimeImmutable

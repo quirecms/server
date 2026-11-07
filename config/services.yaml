@@ -1,6 +1,8 @@
 parameters:
     quire_server.root: '%env(QUIRE_SERVER_ROOT)%'
     quire_server.agent_image: quire-server-agent
+    # What building a site takes, in MB (QUIRE_SERVER_BUILD_MEMORY_MB): none is built with less free
+    quire_server.build_memory: 1536
 
 services:
     _defaults:
@@ -28,6 +30,10 @@ services:
             - '../src/ServerDatabase/{DatabaseUpgrade,DatabaseUpgradeFailed,DatabaseCheck,PostgresImages}.php'
 
     Quire\Server\Process\ProcessRunner: '@Quire\Server\Process\SymfonyProcessRunner'
+
+    Quire\Server\Host\Memory:
+        arguments:
+            $buildMegabytes: '%env(int:default:quire_server.build_memory:QUIRE_SERVER_BUILD_MEMORY_MB)%'
 
     Quire\Server\Site\ServerPaths:
         arguments: ['%quire_server.root%']

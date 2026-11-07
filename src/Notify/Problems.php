@@ -90,6 +90,12 @@ final readonly class Problems
     }
 
     /**
+     * Problems told only once they've lasted this long: one that's over sooner is forgotten untold
+     * (memory: a build's peak passes by itself).
+     */
+    public const array DELAYED = ['memory' => '10 minutes'];
+
+    /**
      * What to tell the owner now: problems that started and weren't told, those still there a week
      * after they last were, and those over since they were told.
      *
@@ -98,7 +104,7 @@ final readonly class Problems
     public function due(): array
     {
         return [
-            'started' => $this->rows('resolved_at IS NULL AND NOT dismissed AND notified_at IS NULL'),
+            'started' => $this->rows('resolved_at IS NULL AND NOT dismissed AND notified_at IS NULL'.$this->notYet()),
             'reminded' => $this->rows(\sprintf("resolved_at IS NULL AND NOT dismissed AND notified_at < now() - interval '%s'", self::REMIND_AFTER)),
             'over' => $this->rows('resolved_at IS NOT NULL AND notified_at IS NOT NULL'),
         ];
@@ -130,6 +136,17 @@ final readonly class Problems
     public function forgetUntold(): void
     {
         $this->connection->executeStatement(\sprintf('DELETE FROM %s.problem WHERE resolved_at IS NOT NULL AND (notified_at IS NULL OR dismissed)', $this->schema()));
+    }
+
+    private function notYet(): string
+    {
+        $clauses = '';
+
+        foreach (self::DELAYED as $key => $interval) {
+            $clauses .= \sprintf(' AND NOT (key = %s AND since > now() - interval %s)', $this->connection->quote($key), $this->connection->quote($interval));
+        }
+
+        return $clauses;
     }
 
     private function keep(Problem $problem): void
