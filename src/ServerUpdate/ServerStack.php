@@ -15,6 +15,29 @@ final readonly class ServerStack
 {
     private const string PROJECT = 'quire-server';
 
+    /**
+     * Restores a database whole from a dump (PostgreSQL's custom format) on standard input: "sh -c
+     * RESTORE restore-registry <database>", as its superuser.
+     *
+     * Whole: everything the database holds is dropped first, also what the dump doesn't know. An undo,
+     * or the rollback of a failed update, restores an older release's registry over a newer one, and
+     * "pg_restore --clean" drops only the dump's own objects: a table a newer migration added, with a key
+     * on an older one (0.4.0's site_network on site), stopped it dropping that one, and nothing could go
+     * back. Every schema but PostgreSQL's own is dropped, and public made again as PostgreSQL makes it.
+     *
+     * In one transaction: a restore that fails at any point, a dump that can't be read whole included,
+     * changes nothing.
+     */
+    public const string RESTORE = <<<'SH'
+        {
+            printf '%s\n' 'SET client_min_messages = warning;' \
+                "DO \$\$DECLARE s name; BEGIN FOR s IN SELECT nspname FROM pg_namespace WHERE nspname !~ '^pg_' AND nspname <> 'information_schema' LOOP EXECUTE format('DROP SCHEMA %I CASCADE', s); END LOOP; END\$\$;" \
+                'CREATE SCHEMA public AUTHORIZATION pg_database_owner;' \
+                'GRANT USAGE ON SCHEMA public TO PUBLIC;'
+            pg_restore --file=- || printf '%s\n' "DO \$\$BEGIN RAISE EXCEPTION 'The dump could not be read whole: nothing was restored.'; END\$\$;"
+        } | psql --no-psqlrc --quiet --single-transaction --set=ON_ERROR_STOP=1 --username=postgres --dbname="$1" >/dev/null
+        SH;
+
     public function __construct(
         private ProcessRunner $runner,
         private string $dockerHost,
@@ -127,7 +150,7 @@ final readonly class ServerStack
      */
     public function restoreDatabase(ServerFolder $folder, string $file): void
     {
-        $this->in($folder, ['exec', '-T', '-e', 'PGPASSWORD', 'database', 'pg_restore', '-U', 'postgres', '--clean', '--if-exists', '--single-transaction', '--dbname=quire_server'], 600, inputFile: $file)->orFail('Restoring the server\'s database');
+        $this->in($folder, ['exec', '-T', '-e', 'PGPASSWORD', 'database', 'sh', '-c', self::RESTORE, 'restore-registry', 'quire_server'], 600, inputFile: $file)->orFail('Restoring the server\'s database');
     }
 
     /**

@@ -55,6 +55,7 @@ Then:
 ### Fixed
 
 - **Sites come back after a reboot:** every container of a site gets `restart: unless-stopped`, its own PostgreSQL too, and the server's PostgreSQL reloads its logins without Docker counting it as stopped by hand.
+- **`quire-server update --undo`, and the rollback of a failed update, restore the server's registry whole,** in one transaction: an older release's registry over a newer one failed when a newer migration had added a table with a key on an older one (0.4.0's `site_network`), and the server stayed on the newer release. A restore that fails at any point changes nothing.
 - A failed add, restore as a new site or adoption no longer leaves its builder, its cache and its gate scope behind.
 - A deploy that would delete files edited in the site's folder is refused, naming them.
 - Operation logs are scrubbed of secrets also when encoded (base64, JSON), and of passwords in addresses.
