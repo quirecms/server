@@ -47,6 +47,12 @@ explain() {
 	done
 }
 inside() { docker exec "$dind" sh -c "$1"; }
+# A site's files from quire/skeleton, with Composer in the machine (its folder $1, mounted from $2): tried
+# once more 30 s later, as the server itself does, when GitHub fails for a moment (HTTP 504s, 2026-11-07)
+skeleton() {
+	create="docker run --rm -v $2:$2 composer:2.10.3 create-project quire/skeleton $1 '^0.1' --no-install --no-scripts --no-plugins --no-interaction --no-progress -q"
+	inside "$create" || { echo '    (getting the skeleton failed: once more in 30 s)'; sleep 30; inside "rm -rf $1 && $create"; }
+}
 
 # This run's logs (runs may go side by side: E2E_ONLY)
 logs=$(mktemp -d)
@@ -95,7 +101,8 @@ if ! release; then inside 'apk add -q --no-cache iproute2'; fi
 
 if want adopt; then
 echo '== A site installed by hand before the server (docs/docker.md): it holds ports 80 and 443'
-inside 'mkdir -p /srv/quire/sites && docker run --rm -v /srv/quire/sites:/srv/quire/sites composer:2.10.3 create-project quire/skeleton /srv/quire/sites/demo "^0.1" --no-install --no-scripts --no-plugins --no-interaction --no-progress -q'
+inside 'mkdir -p /srv/quire/sites'
+skeleton /srv/quire/sites/demo /srv/quire/sites
 inside 'cd /srv/quire/sites/demo && umask 077 && printf "# By hand\nCOMPOSE_FILE=compose.yaml:compose.prod.yaml\nSERVER_NAME=demo.test\nAPP_SECRET=%s\nPOSTGRES_PASSWORD=%s\n" "$(openssl rand -hex 32)" "$(openssl rand -hex 24)" > prod.env'
 inside 'cd /srv/quire/sites/demo && docker compose --env-file prod.env up --detach --wait --build >/dev/null 2>&1 && docker compose --env-file prod.env exec -T php bin/console quire:install --no-interaction --title="Made by hand" --admin-email=demo@example.com >/dev/null'
 check 'it holds port 443 itself' "inside 'docker port demo-php-1' | grep -q '443/tcp'"
@@ -697,7 +704,7 @@ if want git; then
 echo '== A site in Git mode (a repository on an SSH Git server, deployed from it)'
 # A Git server only the agent's network reaches, accepting nothing but the keys added to it.
 inside 'docker run -d --name git-server --network quire-data --network-alias git.e2e.test alpine:3.22 sh -c "apk add -q --no-cache openssh git && ssh-keygen -A && adduser -D -s /usr/bin/git-shell git && sed -i \"s/^git:!:/git:*:/\" /etc/shadow && mkdir -p /home/git/.ssh && touch /home/git/.ssh/authorized_keys && chown -R git:git /home/git && chmod 700 /home/git/.ssh && exec /usr/sbin/sshd -D -e" >/dev/null'
-inside 'docker run --rm -v /root/blog:/root/blog composer:2.10.3 create-project quire/skeleton /root/blog/w "^0.1" --no-install --no-scripts --no-plugins --no-interaction --no-progress -q'
+skeleton /root/blog/w /root/blog
 until inside 'docker exec git-server sh -c "id git && pgrep sshd"' >/dev/null 2>&1; do sleep 2; done
 commit() { inside "docker exec git-server sh -c 'cd /tmp/w && $1 && git add -A && git -c user.email=dev@example.com -c user.name=Dev commit -qm \"$2\" && git push -q /home/git/blog.git main && chown -R git:git /home/git/blog.git'"; }
 inside 'tar -C /root/blog/w -cf - . | docker exec -i git-server sh -c "mkdir -p /tmp/w && tar -C /tmp/w -xf - && cd /tmp/w && git init -q -b main && git init -q --bare -b main /home/git/blog.git && git config --global --add safe.directory /home/git/blog.git"'
