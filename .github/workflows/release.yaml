@@ -4,7 +4,7 @@ name: Release
 # A version tag (v1.2.3) on main makes a release: the agent's image for x86_64 and arm64 on
 # ghcr.io/quirecms/server, with its SBOM and build provenance, and a GitHub release with the server's
 # files (quire-server-<version>.tar.gz), install.sh, and release.env, which names the image by digest
-# and the archive by checksum. The image and release.env are signed with Sigstore (keyless: the
+# and the archive by checksum, with the changelog's section for the version as its notes. The image and release.env are signed with Sigstore (keyless: the
 # signature says this workflow made them, for this tag); install.sh checks both before running
 # anything.
 on:
@@ -46,7 +46,12 @@ jobs:
           version=${GITHUB_REF_NAME#v}
           echo "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$' || { echo "::error::$GITHUB_REF_NAME isn't a version."; exit 1; }
           git merge-base --is-ancestor "$GITHUB_SHA" origin/main || { echo "::error::$GITHUB_REF_NAME isn't on main."; exit 1; }
+          # Its notes: the changelog's section for it (a pre-release, 0.4.0-rc.1, may use 0.4.0's)
+          section=$version
+          grep -qF "## [$section] - " CHANGELOG.md || section=${version%%-*}
+          grep -qF "## [$section] - " CHANGELOG.md || { echo "::error::CHANGELOG.md has no section for $version."; exit 1; }
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "section=$section" >> "$GITHUB_OUTPUT"
 
       - name: CI passed on it
         # A tag alone makes no release: the commit must have passed CI's checks (on main, after its pull
@@ -130,7 +135,13 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ steps.version.outputs.version }}
+          SECTION: ${{ steps.version.outputs.section }}
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
         run: |
+          # The changelog's section for the version, and the image by digest
+          awk -v heading="## [$SECTION] - " 'index($0, "## [") == 1 || /^\[[^]]+\]: / { if (found) exit; if (index($0, heading) == 1) { found = 1; next } } found' CHANGELOG.md > notes.md
+          [ -s notes.md ] || { echo "::error::CHANGELOG.md's section for $SECTION is empty."; exit 1; }
+          printf '\n**Image:** `%s@%s`\n' "$IMAGE" "$IMAGE_DIGEST" >> notes.md
           prerelease=()
           if [[ "$VERSION" == *-* ]]; then prerelease=(--prerelease); fi
-          gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --title "Quire Server $VERSION" --generate-notes "${prerelease[@]}"
+          gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --title "Quire Server $VERSION" --notes-file notes.md "${prerelease[@]}"
