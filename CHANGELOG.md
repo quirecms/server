@@ -4,6 +4,10 @@ All notable changes to Quire Server. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+### Fixed
+
+- **`quire-server update`, `backups:setup` and `database:upgrade` right after another one** no longer refuse with "An update runs already": the container of the one before, which Docker removes a moment after it ends, was taken for a running one. A running one is still refused, now named ("quire-server database:upgrade runs already").
+
 ## [0.4.0] - 2026-11-07
 
 Docker behind a gate, each site on a network link of its own, problems told to the owner, backups that prove where they come from, Quire's code checked against its signed feed, and a server that holds hundreds of sites. Also every Low and Info of the server audit of 2026-10-29.
