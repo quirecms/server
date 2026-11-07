@@ -30,6 +30,7 @@ docker run --rm -v "$PWD:/m:ro" koalaman/shellcheck-alpine:v0.11.0 sh -c 'shellc
 - **The end-to-end part it touches**, when it touches what Docker, Compose or PostgreSQL do (`E2E_ONLY=<part>`); a check of your own there when unit tests can only script the outside world.
 - **Least privilege:** a program the agent runs gets only what it's given (`ProcessRunner`), a site only what it's allowed (`ComposePolicy`).
 - **The README** when a command, a setting or what an owner sees changes.
+- **An entry in [CHANGELOG.md](CHANGELOG.md),** under "Unreleased", when what an owner sees or does changes; under "Updating from …" when they have to do something after updating. A release's notes are its section there.
 
 Pull requests are reviewed for the above, and for messages: what an owner reads when something fails says what happened, whether their data is safe, and what to do next.
 

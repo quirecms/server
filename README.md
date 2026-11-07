@@ -2,7 +2,7 @@
 
 Many Quire sites on one machine, each with its own Quire version, database and domains, behind one front door that holds their certificates. Add a site with one command; nothing else on the server restarts.
 
-> **Status: early.** The front door, the agent and its commands, the installer, adopting sites installed before, updating sites, sites deployed from a Git repository, signed releases and the server's own updates, and backups off the server. Still to come: the web console with passkeys, and one-click images.
+> **Status: early.** The front door, the agent and its commands, the installer, adopting sites installed before, updating sites, sites deployed from a Git repository, signed releases and the server's own updates, backups off the server, Docker behind a gate, a network link per site, problems told to the owner, and room for hundreds of sites. Still to come: the web console with passkeys, and one-click images. What changed in each release: [CHANGELOG.md](CHANGELOG.md).
 
 ## How it works
 
@@ -33,7 +33,7 @@ sh install.sh --email=you@example.com
 To check the installer itself first (with [cosign](https://docs.sigstore.dev/cosign/system_config/installation/)):
 
 ```bash
-version=0.3.0   # the release you install (its tag, without the "v")
+version=0.4.0   # the release you install (its tag, without the "v")
 curl -fsSLO https://github.com/quirecms/server/releases/download/v$version/install.sh
 curl -fsSLO https://github.com/quirecms/server/releases/download/v$version/install.sh.sigstore.json
 cosign verify-blob install.sh --bundle install.sh.sigstore.json \
@@ -89,7 +89,7 @@ Quire Server is tested on **Ubuntu 26.04 LTS**, and runs on it and on later LTS 
 
 ### Releases
 
-Each release ([GitHub releases](https://github.com/quirecms/server/releases)) has:
+Each release ([GitHub releases](https://github.com/quirecms/server/releases)) has its notes, its version's section of [CHANGELOG.md](CHANGELOG.md) (what changed, and what to do when updating), and:
 
 - **the agent's image,** `ghcr.io/quirecms/server:<version>`, for x86_64 and arm64, with its SBOM and build provenance, signed with Sigstore by the release workflow (keyless: no key to steal; the signature is in a public transparency log);
 - **`release.env`,** naming the image by digest and the files by checksum, signed the same way, with `release.env.sigstore.json`;
@@ -216,7 +216,7 @@ A site's versions are recorded in its folder's `composer.lock`. A new site's fir
 
 ## Updating the server
 
-`quire-server update` moves the server itself (its agent, front door, Docker gate and PostgreSQL's settings) to the latest release; `--to=0.2.0` to another one, `--check` only says whether there's a newer one. It runs in the **updater**, a container of the release that runs now: the new release is checked before any of it is used, and the agent isn't asked to replace itself.
+`quire-server update` moves the server itself (its agent, front door, Docker gate and PostgreSQL's settings) to the latest release; `--to=0.2.0` to another one, `--check` only says whether there's a newer one. Read the release's notes first ([CHANGELOG.md](CHANGELOG.md)): some say what to do after it. It runs in the **updater**, a container of the release that runs now: the new release is checked before any of it is used, and the agent isn't asked to replace itself.
 
 1. **Gets the release and checks it as the installer does:** `release.env` signed by Quire Server's release workflow for exactly that version's tag (Sigstore), the archive's checksum, the image by digest. Its Compose files must work with this server's settings, and its Docker gate must accept every site's scope (`yorvogate check`: a newer gate may refuse what an older one took). Its image is pulled. Nothing has changed yet.
 2. **Waits for operations on sites to finish** (none starts meanwhile), and stops the agent. Sites keep running.
