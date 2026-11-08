@@ -6,6 +6,7 @@ All notable changes to Quire Server. The format follows [Keep a Changelog](https
 
 ### Fixed
 
+- **Getting a site's files from the skeleton** (`site:add`, an update's plan, `restore --as`) is tried once more, 30 s later, when a download fails on the way (a host's 5xx or 429, a connection cut), as a site's build is since 0.4.0: GitHub answered 504 to every download for a minute at a time on 2026-11-07, and adding a site failed.
 - **`quire-server update`, `backups:setup` and `database:upgrade` right after another one** no longer refuse with "An update runs already": the container of the one before, which Docker removes a moment after it ends, was taken for a running one. A running one is still refused, now named ("quire-server database:upgrade runs already").
 
 ## [0.4.0] - 2026-11-07
