@@ -13,8 +13,8 @@
 #   E2E_ONLY=backups tests/e2e/run.sh … backups off the server (restic, on an S3 service of its own)
 #   E2E_ONLY=database tests/e2e/run.sh … the server's PostgreSQL upgraded to the next major
 #                                             (E2E_POSTGRES_NEXT, else 19rc1-alpine), undone, cleaned
-#   E2E_ONLY=links tests/e2e/run.sh …  sites' links (D-34): the latest release installed with a site on the
-#                                             shared networks, moved to this checkout (its files and agent),
+#   E2E_ONLY=links tests/e2e/run.sh …  sites' links (D-34): the last release before them (0.3.1) installed with
+#                                             a site on the shared networks, moved to this checkout (its files and agent),
 #                                             a second site added; what each reaches of the other and the server
 #   E2E_CACHE=1 tests/e2e/run.sh …     keeps the machine's images and build cache between runs
 #                                             (in the volume quire-server-e2e-cache; one run at a time)
@@ -30,7 +30,22 @@ failures=0
 
 pass() { printf '  \033[32mok\033[0m   %s\n' "$1"; }
 fail() { printf '  \033[31mFAIL\033[0m %s\n' "$1"; failures=$((failures + 1)); }
-check() { if eval "$2" >/dev/null 2>&1; then pass "$1"; else fail "$1"; fi; }
+check() {
+	if output=$(eval "$2" 2>&1); then pass "$1"; else fail "$1"; explain "$2" "$output"; fi
+}
+# Why a check failed, in the run's own output (CI's log is all there is afterwards): what it said, and
+# the end of each of this run's logs it reads. Only the run's own throwaway secrets can be in them.
+explain() {
+	if [ -n "$2" ]; then
+		echo '         what it said (its last 20 lines):'
+		printf '%s\n' "$2" | tail -n 20 | sed 's/^/         | /'
+	fi
+	for file in $(printf '%s\n' "$1" | grep -oE "$logs/[A-Za-z0-9._-]+" | sort -u); do
+		[ -f "$file" ] || continue
+		echo "         ${file#"$logs"/} (its last 40 lines):"
+		tail -n 40 "$file" | sed 's/^/         | /'
+	done
+}
 inside() { docker exec "$dind" sh -c "$1"; }
 
 # This run's logs (runs may go side by side: E2E_ONLY)
@@ -51,7 +66,7 @@ updating() { [ "${E2E_ONLY:-}" = update ]; }
 backingup() { [ "${E2E_ONLY:-}" = backups ]; }
 upgrading() { [ "${E2E_ONLY:-}" = database ]; }
 linking() { [ "${E2E_ONLY:-}" = links ]; }
-# Installed from the latest release (its signatures checked), not from this checkout
+# Installed from a published release (its signatures checked: the latest, or for links 0.3.1), not from this checkout
 from_release() { release || linking; }
 cache=''
 if [ "${E2E_CACHE:-}" = 1 ]; then cache='-v quire-server-e2e-cache:/var/lib/docker'; fi
@@ -96,6 +111,8 @@ if from_release; then
 	# The latest release, as a user gets it, but checked by this checkout's install.sh; with root's
 	# umask as strict as it gets (cosign runs as a user of its own and must still read the files).
 	install='umask 077; sh /root/quire-server/install.sh --yes --test-certificates --no-os-updates --unsupported-os 2>&1'
+	# Links: the last release before them (0.4.0 has them), whatever the latest is
+	if linking; then install="${install% 2>&1} --version=0.3.1 2>&1"; fi
 	check 'a release that doesn'\''t exist, or a version that isn'\''t one, installs nothing' "! inside 'sh /root/quire-server/install.sh --version=0.0.0 --yes --no-os-updates --unsupported-os' && ! inside 'sh /root/quire-server/install.sh \"--version=0.1.0/../..\" --yes --no-os-updates --unsupported-os' && ! inside 'test -e /srv/quire/server'"
 else
 	install='sh /root/quire-server/install.sh --source=/root/quire-server --yes --test-certificates --no-os-updates --unsupported-os 2>&1'
@@ -379,7 +396,8 @@ server_env=$(inside 'sha256sum /srv/quire/server/server.env')
 check 'a wrong password for the repository saves nothing' "inside 'QUIRE_SERVER_BACKUP_SETUP_SECRET_KEY=e2e-secret QUIRE_SERVER_BACKUP_SETUP_PASSWORD=not-the-password-at-all quire-server backups:setup $repository --existing --yes 2>&1' | grep -q 'doesn.t open with this password' && [ \"\$(inside 'sha256sum /srv/quire/server/server.env')\" = \"$server_env\" ]"
 # As a server that replaces this one would: the repository, its keys and its password
 inside "QUIRE_SERVER_BACKUP_SETUP_SECRET_KEY=e2e-secret QUIRE_SERVER_BACKUP_SETUP_PASSWORD='$password' quire-server backups:setup $repository --existing --yes 2>&1" > "$logs"/setup-existing.log || true
-check 'another server connects to the repository with its password' "grep -q 'are set up' $logs/setup-existing.log && [ \"\$(inside 'quire-server backups jane' | grep -cE '^ +[0-9a-f]{8} ')\" -ge 1 ]"
+inside 'quire-server backups jane 2>&1' > "$logs"/backups-existing.log || true
+check 'another server connects to the repository with its password' "grep -q 'are set up' $logs/setup-existing.log && [ \"\$(grep -cE '^ +[0-9a-f]{8} ' $logs/backups-existing.log)\" -ge 1 ]"
 
 echo '== A site from a backup, as a new site: a copy here, and moved from another server'
 inside 'quire-server backups:restore jane --as=jane-copy --domain=copy.test --yes 2>&1' | tee "$logs"/copy.log | sed 's/^/    /'
