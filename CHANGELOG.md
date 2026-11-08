@@ -14,6 +14,8 @@ All notable changes to Quire Server. The format follows [Keep a Changelog](https
 
   Sites on today's Quire never exit 3, so nothing changes for them until a Quire release with this fix.
 
+- **The server keeps server contract 2**, which Quire releases with that fix require: this server updates sites to them, where an older one refuses and says to update the server first.
+
 - **The installer and `quire-server update` download a release's files for a minute** when GitHub fails for a moment (HTTP 408, 429, 500, 502, 503, 504 or no answer in time): tried 6 more times, 10 s apart, where curl's 3 quick tries gave up after 7 s. GitHub answered 504 for a minute at a time on 2026-11-07, and an install stopped at "Couldn't download release.env". Finding the latest release is tried again the same way, and so is Docker's signing key when the installer installs Docker.
 - **Getting a site's files from the skeleton** (`site:add`, an update's plan, `restore --as`) is tried once more, 30 s later, when a download fails on the way (a host's 5xx or 429, a connection cut), as a site's build is since 0.4.0: GitHub answered 504 to every download for a minute at a time on 2026-11-07, and adding a site failed.
 - **`quire-server update`, `backups:setup` and `database:upgrade` right after another one** no longer refuse with "An update runs already": the container of the one before, which Docker removes a moment after it ends, was taken for a running one. A running one is still refused, now named ("quire-server database:upgrade runs already").

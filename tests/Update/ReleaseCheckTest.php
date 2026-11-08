@@ -48,13 +48,21 @@ final class ReleaseCheckTest extends RegistryTestCase
         self::assertSame(['Quire 0.1.2 fixes GHSA-2c3f-4g5h-6j7m (high, quire/core): Drafts could be read.'], $check['security']);
     }
 
+    public function testAReleaseThatExitsWith3ForAnIncompleteBackupIsRun(): void
+    {
+        // Contract 2: this server tells an incomplete backup (exit 3) from none.
+        $this->releases = [$this->release('0.2.0', contract: 2), $this->release('0.1.1')];
+
+        self::assertSame([true, []], array_values(array_intersect_key($this->check('v0.1.1', 'v0.2.0'), ['vouched' => 0, 'blocked' => 0])));
+    }
+
     public function testANewerServerContractIsRefused(): void
     {
-        $this->releases = [$this->release('0.2.0', contract: 2), $this->release('0.1.1')];
-        $check = $this->check('v0.1.1', 'v0.2.0');
+        $this->releases = [$this->release('0.3.0', contract: 3), $this->release('0.1.1')];
+        $check = $this->check('v0.1.1', 'v0.3.0');
 
         self::assertFalse($check['vouched']);
-        self::assertStringContainsString('server contract 2', $check['blocked'][0] ?? '');
+        self::assertStringContainsString('server contract 3', $check['blocked'][0] ?? '');
         self::assertStringContainsString('quire-server update', $check['blocked'][0] ?? '');
     }
 
