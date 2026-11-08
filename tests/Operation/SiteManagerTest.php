@@ -789,6 +789,55 @@ final class SiteManagerTest extends RegistryTestCase
         self::assertTrue($this->databases->exists($this->name));
     }
 
+    public function testAnIncompleteBackupIsMarkedBeforeItIsThere(): void
+    {
+        $manager = $this->manager();
+        $manager->add($this->request(), 'cli', 'darko', static fn (): null => null);
+        $marked = null;
+        $this->script['docker compose exec'] = static fn (array $command): ProcessResult => match (true) {
+            'quire:backup' === ($command[12] ?? '') => new ProcessResult(self::strings($command), 3, " [WARNING] 1 stored file(s) were missing:\n           media:ab/cd.jpg\n", ''),
+            // The step after the backup, stopped: as the server dying there would
+            \in_array('pg_dump', $command, true) => new ProcessResult(self::strings($command), 137, '', 'Killed'),
+            default => self::ok($command, ''),
+        };
+        $copy = $this->script['docker compose cp'];
+        $this->script['docker compose cp'] = function (array $command) use ($copy, &$marked): ProcessResult {
+            $marked = glob($this->paths->backups($this->name).'/*.incomplete');
+
+            return $copy(self::strings($command));
+        };
+
+        try {
+            $manager->remove($this->name, true, 'cli', 'darko', static fn (): null => null);
+            self::fail('It was removed.');
+        } catch (\RuntimeException) {
+        }
+
+        self::assertNotEmpty($marked, 'Marked before the backup was copied out.');
+        $backups = glob($this->paths->backups($this->name).'/final-*.tar');
+        self::assertCount(1, false === $backups ? [] : $backups);
+        self::assertFileExists(\Quire\Server\Backup\SiteBackup::marker($backups[0] ?? ''), 'What\'s left is marked incomplete: never taken for a complete one.');
+    }
+
+    public function testABackupThatCantBeCopiedOutLeavesNoMark(): void
+    {
+        $manager = $this->manager();
+        $manager->add($this->request(), 'cli', 'darko', static fn (): null => null);
+        $this->script['docker compose exec'] = static fn (array $command): ProcessResult => 'quire:backup' === ($command[12] ?? '')
+            ? new ProcessResult(self::strings($command), 3, " [WARNING] 1 stored file(s) were missing:\n           media:ab/cd.jpg\n", '')
+            : self::ok($command, '');
+        $this->script['docker compose cp'] = static fn (array $command): ProcessResult => new ProcessResult(self::strings($command), 1, '', 'No space left on device');
+
+        try {
+            $manager->remove($this->name, true, 'cli', 'darko', static fn (): null => null);
+            self::fail('It was removed.');
+        } catch (\RuntimeException) {
+        }
+
+        $left = glob($this->paths->backups($this->name).'/*');
+        self::assertSame([], false === $left ? [] : $left, 'No mark of a backup that isn\'t there.');
+    }
+
     public function testABackupThatIsALinkIsntTaken(): void
     {
         $manager = $this->manager();
