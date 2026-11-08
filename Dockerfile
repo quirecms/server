@@ -52,7 +52,12 @@ LABEL org.opencontainers.image.title="Quire Server" \
       org.opencontainers.image.version="${QUIRE_SERVER_VERSION}"
 
 COPY --link composer.json composer.lock ./
+# Tried once more 60 s later: GitHub, where the packages are downloaded from, answers 5xx now and then
+# for a minute (every download of a release's arm64 build got 504, 2026-11-07). The lock decides the
+# versions, so a second try installs exactly the same.
 RUN composer install --no-dev --no-scripts --no-autoloader --no-progress --no-interaction \
+    || { echo 'Composer could not install the packages: trying once more in 60 s.'; sleep 60; \
+         composer install --no-dev --no-scripts --no-autoloader --no-progress --no-interaction; } \
     && composer clear-cache
 
 COPY --link bin bin/
