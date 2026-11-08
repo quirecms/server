@@ -17,8 +17,11 @@ use Quire\Server\Site\Site;
  */
 final readonly class ReleaseCheck
 {
-    /** The newest server contract this server keeps (Quire\Runtime\ServerContract::VERSION) */
-    public const int CONTRACT = 1;
+    /**
+     * The newest server contract this server keeps (Quire\Runtime\ServerContract::VERSION). 2:
+     * quire:backup exits with 3 for a backup that's written but incomplete (SiteBackup).
+     */
+    public const int CONTRACT = 2;
 
     public function __construct(
         private QuireFeed $feed,
