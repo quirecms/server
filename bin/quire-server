@@ -40,6 +40,38 @@ quiet() {
 	fi
 }
 
+# The updater runs one command at a time (update, backups:setup, database:upgrade), in a container of
+# that name: refused while one runs. One that has ended is removed by "compose run --rm" a moment
+# after it exits, longer on a busy machine: it was taken for a running one, and the next command
+# refused. A finished one is waited for, then removed if it's still there.
+updater_state() {
+	# A container that isn't there: docker inspect fails, and still prints an empty line
+	state=$(docker inspect --format '{{.State.Status}}' quire-server-updater 2>/dev/null) || state=none
+	echo "${state:-none}"
+}
+updater_free() {
+	waited=0
+	while :; do
+		case "$(updater_state)" in
+			none) return 0 ;;
+			running | restarting | paused)
+				running=$(docker inspect --format '{{range .Config.Cmd}}{{.}} {{end}}' quire-server-updater 2>/dev/null | sed -n 's/.*server:\([a-z:-]*\).*/\1/p')
+				echo "quire-server ${running:-update} runs already (\"docker logs -f quire-server-updater\" follows it). Try again when it's finished." >&2
+				exit 1
+				;;
+		esac
+		# Ended (or made and never started): on its way out
+		if [ "$waited" -ge 30 ]; then
+			docker rm --force quire-server-updater >/dev/null 2>&1 || true
+			[ "$(updater_state)" = none ] && return 0
+			echo 'The updater of an earlier command is still there and can'\''t be removed: "docker rm --force quire-server-updater", then try again.' >&2
+			exit 1
+		fi
+		sleep 1
+		waited=$((waited + 1))
+	done
+}
+
 # Whether the front door publishes ports 80 and 443
 front_ports() {
 	compose port front 80 >/dev/null 2>&1 && compose port front 443 >/dev/null 2>&1
@@ -108,10 +140,7 @@ case "${1:-help}" in
 		if [ "$command" = update ]; then site_range_warn "$root/server"; fi
 		tty=-T
 		if [ -t 0 ] && [ -t 1 ]; then tty=; fi
-		if docker ps -a --format '{{.Names}}' | grep -qx quire-server-updater; then
-			echo 'An update runs already ("docker logs -f quire-server-updater" follows it).' >&2
-			exit 1
-		fi
+		updater_free
 		exec docker compose --project-directory "$root/server" --env-file "$root/server/server.env" --profile update \
 			run --rm --no-deps --name quire-server-updater $tty -e "QUIRE_SERVER_REQUESTED_BY=${SUDO_USER:-$(id -un)}" \
 			-e QUIRE_SERVER_BACKUP_SETUP_SECRET_KEY -e QUIRE_SERVER_BACKUP_SETUP_PASSWORD \
