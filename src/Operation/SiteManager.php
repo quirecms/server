@@ -897,6 +897,8 @@ final readonly class SiteManager
         // file) never stops the next.
         $inside = '/tmp/quire-'.$kind.'-backup-'.bin2hex(random_bytes(6)).'.tar';
 
+        $backup = null;
+
         try {
             $result = $this->compose->exec($project, self::PHP, ['bin/console', 'quire:backup', $inside, '--no-interaction'], timeout: 3600);
 
@@ -904,7 +906,23 @@ final readonly class SiteManager
                 $result->orFail('Backing up the site');
             }
 
+            $backup = new SiteBackup($file, SiteBackup::INCOMPLETE_EXIT === $result->exitCode ? $this->absent($result) : null);
+
+            // Marked, on the disk, before the backup is there: whatever stops the server from here on
+            // leaves it marked or not there, never taken for a complete one (that pruning would keep
+            // in place of one that is).
+            if (!$backup->complete()) {
+                $this->files->write(SiteBackup::marker($file), $backup->absent."\n", 0o600);
+            }
+
             $this->compose->copyFrom($project, self::PHP, $inside, $file);
+        } catch (\Throwable $e) {
+            if (!is_file($file)) {
+                // A mark of nothing
+                $this->filesystem->remove(SiteBackup::marker($file));
+            }
+
+            throw $e;
         } finally {
             $this->compose->exec($project, self::PHP, ['rm', '-f', $inside], timeout: 60);
         }
@@ -912,12 +930,6 @@ final readonly class SiteManager
         chmod($file, 0o600);
         Durable::sync($file);
         $this->dumps->dump($project, $this->registry->get($name)->databaseMode ?? Site::SHARED_DATABASE, SiteDatabaseDumps::of($file));
-
-        $backup = new SiteBackup($file, SiteBackup::INCOMPLETE_EXIT === $result->exitCode ? $this->absent($result) : null);
-
-        if (!$backup->complete()) {
-            $this->files->write(SiteBackup::marker($file), $backup->absent."\n", 0o600);
-        }
 
         return $backup;
     }
