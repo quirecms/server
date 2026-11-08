@@ -913,7 +913,13 @@ final readonly class SiteManager
         Durable::sync($file);
         $this->dumps->dump($project, $this->registry->get($name)->databaseMode ?? Site::SHARED_DATABASE, SiteDatabaseDumps::of($file));
 
-        return new SiteBackup($file, SiteBackup::INCOMPLETE_EXIT === $result->exitCode ? $this->absent($result) : null);
+        $backup = new SiteBackup($file, SiteBackup::INCOMPLETE_EXIT === $result->exitCode ? $this->absent($result) : null);
+
+        if (!$backup->complete()) {
+            $this->files->write(SiteBackup::marker($file), $backup->absent."\n", 0o600);
+        }
+
+        return $backup;
     }
 
     /**

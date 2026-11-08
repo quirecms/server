@@ -10,16 +10,17 @@ use Symfony\Component\Filesystem\Filesystem;
 /**
  * The backups the server makes of each site on itself before anything risky (an update, a deploy, a
  * restore…), in /srv/quire/backups/<site>/: kept for a while, so they can be undone, then removed, or
- * a site that's deployed often fills the disk. A site's newest backup is always kept, and so is the
- * final one of a site that was removed. Off-server backups have rules of their own (restic's).
+ * a site that's deployed often fills the disk. A site's newest backup is always kept, and its newest
+ * complete one (when the newest lacks some stored files: SiteBackup::marker()), and so is the final one
+ * of a site that was removed. Off-server backups have rules of their own (restic's).
  */
 final readonly class LocalBackups
 {
     /** How long a backup is kept: longer than an update can be undone (a week) */
     public const int KEEP_DAYS = 14;
 
-    /** A backup, a dump beside it, or the files an update or undo kept: "<kind>-<time>…" */
-    private const string ENTRY = '/^([a-z-]+)-(\d{8}-\d{6})(\.tar|\.database\.dump)?\z/';
+    /** A backup, a dump or a mark of incomplete beside it, or the files an update or undo kept: "<kind>-<time>…" */
+    private const string ENTRY = '/^([a-z-]+)-(\d{8}-\d{6})(\.tar|\.database\.dump|\.incomplete)?\z/';
 
     private const string ACTION = 'backups.expire';
 
@@ -67,17 +68,34 @@ final readonly class LocalBackups
                 }
             }
 
-            $newest = null;
+            $newest = $newestComplete = null;
 
             foreach ($entries as $entry => $at) {
-                if (str_ends_with($entry, '.tar') && $at instanceof \DateTimeImmutable && (null === $newest || $at > $entries[$newest])) {
+                if (!str_ends_with($entry, '.tar') || !$at instanceof \DateTimeImmutable) {
+                    continue;
+                }
+
+                if (null === $newest || $at > $entries[$newest]) {
                     $newest = $entry;
+                }
+
+                if (!isset($entries[basename(SiteBackup::marker($entry))]) && (null === $newestComplete || $at > $entries[$newestComplete])) {
+                    $newestComplete = $entry;
                 }
             }
 
+            $kept = [];
+
+            // The newest backup stays, and the newest complete one: each with what lies beside it.
+            foreach (array_filter([$newest, $newestComplete]) as $backup) {
+                $kept[] = $backup;
+                $kept[] = substr($backup, 0, -4);
+                $kept[] = SiteDatabaseDumps::of($backup);
+                $kept[] = basename(SiteBackup::marker($backup));
+            }
+
             foreach ($entries as $entry => $at) {
-                // The newest backup stays, with its dump.
-                if (null !== $newest && (substr($newest, 0, -4) === $entry || $newest === $entry || SiteDatabaseDumps::of($newest) === $entry)) {
+                if (\in_array($entry, $kept, true)) {
                     continue;
                 }
 
@@ -98,7 +116,7 @@ final readonly class LocalBackups
      * A site's backups on the server, newest first: what can bring it back as it was before an
      * operation ("final": before it was removed; "before-restore", "before-undo", "before-update"…).
      *
-     * @return list<array{file: string, kind: string, made: \DateTimeImmutable, size: int}>
+     * @return list<array{file: string, kind: string, made: \DateTimeImmutable, size: int, complete: bool}>
      */
     public function of(\Quire\Server\Site\SiteName $site): array
     {
@@ -110,7 +128,7 @@ final readonly class LocalBackups
                 $made = \DateTimeImmutable::createFromFormat('Ymd-His', $match[2], new \DateTimeZone('UTC'));
 
                 if (false !== $made) {
-                    $backups[] = ['file' => $entry, 'kind' => $match[1], 'made' => $made, 'size' => (int) filesize($folder.'/'.$entry)];
+                    $backups[] = ['file' => $entry, 'kind' => $match[1], 'made' => $made, 'size' => (int) filesize($folder.'/'.$entry), 'complete' => !is_file(SiteBackup::marker($folder.'/'.$entry))];
                 }
             }
         }

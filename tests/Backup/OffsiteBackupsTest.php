@@ -9,10 +9,12 @@ use Quire\Server\Backup\BackupLedger;
 use Quire\Server\Backup\BackupSettings;
 use Quire\Server\Backup\BackupSigning;
 use Quire\Server\Backup\IncompleteBackup;
+use Quire\Server\Backup\LocalBackups;
 use Quire\Server\Backup\OffsiteBackups;
 use Quire\Server\Backup\Provenance;
 use Quire\Server\Backup\Restic;
 use Quire\Server\Backup\SiteDatabaseDumps;
+use Quire\Server\Console\BackupsCommand;
 use Quire\Server\Database\SiteDatabases;
 use Quire\Server\Docker\Compose;
 use Quire\Server\Docker\ComposeFiles;
@@ -43,6 +45,8 @@ use Quire\Server\Tests\GateFixture;
 use Quire\Server\Tests\Registry\RegistryTestCase;
 use Quire\Server\Tests\ScriptedRunner;
 use Quire\Server\Update\SiteUpdater;
+use Symfony\Component\Console\Application;
+use Symfony\Component\Console\Tester\CommandTester;
 use Symfony\Component\Filesystem\Filesystem;
 
 /**
@@ -324,6 +328,8 @@ final class OffsiteBackupsTest extends RegistryTestCase
 
         // Sent all the same, as the best copy there is, and kept apart by retention (grouped by tags)
         self::assertSame([['quire-site', 'site:jane', 'incomplete']], $this->sent);
+        $left = glob($this->paths->backups(new SiteName('jane')).'/off-server-*');
+        self::assertSame([], false === $left ? [] : $left, 'Nothing of it left here: not even its mark.');
         self::assertSame(['site.backup', 'failed'], [$this->operations()->latest()[0]['action'], $this->operations()->latest()[0]['status']]);
     }
 
@@ -369,6 +375,34 @@ final class OffsiteBackupsTest extends RegistryTestCase
         $group = array_search('--group-by', $forget, true);
         self::assertIsInt($group);
         self::assertSame('host,tags', $forget[$group + 1]);
+    }
+
+    public function testTheListsMarkIncompleteBackups(): void
+    {
+        $this->snapshot($this->id('abcd1234ef'), ['quire-site', 'site:jane'], ['/srv/quire/backups/jane/off-server-1.tar'], time: '2026-10-28T02:00:00Z');
+        $this->snapshot($this->id('bcde2345fa'), ['quire-site', 'site:jane', 'incomplete'], ['/srv/quire/backups/jane/off-server-2.tar'], time: '2026-10-29T02:00:00Z');
+        new Filesystem()->dumpFile($this->paths->backups(new SiteName('jane')).'/update-20261029-120000.tar', 'x');
+        new Filesystem()->dumpFile($this->paths->backups(new SiteName('jane')).'/update-20261029-120000.incomplete', 'media:ab/cd.jpg');
+        new Filesystem()->dumpFile($this->paths->backups(new SiteName('jane')).'/update-20261028-120000.tar', 'x');
+        $application = new Application();
+        $application->addCommand(new BackupsCommand($this->subject(), new LocalBackups(new OperationLog($this->connection, $this->schema), $this->paths->root.'/backups')));
+        $tester = new CommandTester($application->find('server:backups'));
+
+        $tester->execute(['name' => 'jane']);
+
+        $rows = array_values(array_filter(explode("\n", $tester->getDisplay()), static fn (string $line): bool => 1 === preg_match('/^\s*(abcd1234|bcde2345)/', $line)));
+        self::assertCount(2, $rows);
+        self::assertStringContainsString('INCOMPLETE: some stored files aren\'t in it', $rows[0], 'The newest, which lacks some.');
+        self::assertStringStartsWith('bcde2345', trim($rows[0]));
+        self::assertStringNotContainsString('INCOMPLETE', $rows[1]);
+
+        $tester->execute(['name' => 'jane', '--local' => true]);
+
+        $rows = array_values(array_filter(explode("\n", $tester->getDisplay()), static fn (string $line): bool => str_contains($line, '.tar')));
+        self::assertCount(2, $rows);
+        self::assertStringContainsString('update-20261029-120000.tar', $rows[0]);
+        self::assertStringContainsString('INCOMPLETE: some stored files aren\'t in it', $rows[0]);
+        self::assertStringNotContainsString('INCOMPLETE', $rows[1]);
     }
 
     public function testARestoreThatWouldFillTheDiskIsRefused(): void

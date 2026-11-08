@@ -19,12 +19,23 @@ final readonly class SiteBackup
 
     /**
      * @param string      $file   Where it is
-     * @param string|null $absent What quire:backup said is missing from it; null when it's complete
+     * @param string|null $absent What quire:backup said is missing from it, for people to read only:
+     *                            its wording isn't part of the server contract, so nothing decides on
+     *                            it (the exit code decides); null when it's complete
      */
     public function __construct(
         public string $file,
         public ?string $absent = null,
     ) {
+    }
+
+    /**
+     * The file beside an incomplete backup that says so, and what quire:backup said is absent: so
+     * pruning and listings tell it apart without opening it.
+     */
+    public static function marker(string $backup): string
+    {
+        return (str_ends_with($backup, '.tar') ? substr($backup, 0, -4) : $backup).'.incomplete';
     }
 
     public function complete(): bool

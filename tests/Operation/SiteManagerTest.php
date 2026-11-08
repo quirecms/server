@@ -780,6 +780,8 @@ final class SiteManagerTest extends RegistryTestCase
             self::assertStringContainsString('a site is removed only with all of its data kept (--skip-backup removes it anyway, and this backup stays)', $e->getMessage());
             self::assertStringContainsString('media:ab/cd.jpg', $e->getMessage());
             self::assertFileExists($e->backup->file, 'Kept, as it said.');
+            self::assertStringContainsString('media:ab/cd.jpg', (string) file_get_contents(\Quire\Server\Backup\SiteBackup::marker($e->backup->file)), 'Marked beside it, for pruning and listings.');
+            self::assertSame('0600', substr(\sprintf('%o', fileperms(\Quire\Server\Backup\SiteBackup::marker($e->backup->file))), -4));
         }
 
         self::assertSame(Site::RUNNING, $this->registry->get($this->name)?->status);

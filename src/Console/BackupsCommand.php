@@ -23,6 +23,8 @@ use Symfony\Component\Console\Style\SymfonyStyle;
 )]
 final readonly class BackupsCommand
 {
+    private const string INCOMPLETE = 'INCOMPLETE: some stored files aren\'t in it';
+
     public function __construct(
         private OffsiteBackups $backups,
         private \Quire\Server\Backup\LocalBackups $local,
@@ -55,7 +57,7 @@ final readonly class BackupsCommand
                 return Command::SUCCESS;
             }
 
-            $io->table(['File', 'Before', 'Made (UTC)', 'Size'], array_map(static fn (array $backup): array => [$backup['file'], $backup['kind'], $backup['made']->format('Y-m-d H:i:s'), \sprintf('%.1f MB', $backup['size'] / 1024 ** 2)], $backups));
+            $io->table(['File', 'Before', 'Made (UTC)', 'Size', 'Files'], array_map(static fn (array $backup): array => [$backup['file'], $backup['kind'], $backup['made']->format('Y-m-d H:i:s'), \sprintf('%.1f MB', $backup['size'] / 1024 ** 2), $backup['complete'] ? '' : self::INCOMPLETE], $backups));
             $io->writeln(\sprintf('"quire-server backups:restore %s --file=<file>" puts it back as one has it.', $site));
 
             return Command::SUCCESS;
@@ -84,7 +86,7 @@ final readonly class BackupsCommand
         $io->table(['ID', 'Made', 'Files'], array_map(static fn (array $snapshot): array => [
             substr($snapshot['id'], 0, 8),
             Time::utc($snapshot['time']),
-            \in_array(OffsiteBackups::INCOMPLETE_TAG, $snapshot['tags'], true) ? 'INCOMPLETE: some stored files aren\'t in it' : '',
+            \in_array(OffsiteBackups::INCOMPLETE_TAG, $snapshot['tags'], true) ? self::INCOMPLETE : '',
         ], $snapshots));
 
         return Command::SUCCESS;

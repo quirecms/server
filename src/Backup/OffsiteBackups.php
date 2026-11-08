@@ -710,7 +710,7 @@ final readonly class OffsiteBackups
 
             return $snapshot;
         } finally {
-            $this->filesystem->remove([$file, $dump]);
+            $this->filesystem->remove([$file, $dump, SiteBackup::marker($file)]);
         }
     }
 

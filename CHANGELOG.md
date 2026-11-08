@@ -9,7 +9,8 @@ All notable changes to Quire Server. The format follows [Keep a Changelog](https
 - **A site's backup that lacks some stored files is no longer taken for a good one.** Quire's `quire:backup` is to exit 3 when it wrote a backup without some stored files (missing, damaged, or on a disk the site no longer declares): until now it exited 0 with a warning, and the server went on. From now on:
   - an update, taking a site over and removing a site stop, since the backup is the way back; the backup is kept, and the message names the files;
   - restoring a backup and undoing an update go on, and say the backup of the site as it is is incomplete;
-  - off the server, it's sent all the same, tagged `incomplete`, and the night fails; `backups` marks it, and retention keeps it apart, so incomplete nights never push out the last complete backup.
+  - off the server, it's sent all the same, tagged `incomplete`, and the night fails; `backups` marks it, and retention keeps it apart, so incomplete nights never push out the last complete backup;
+  - on the server, it's marked (`<kind>-<time>.incomplete` beside it), `backups --local` says so, and a site's newest complete backup is kept as well as its newest, however old.
 
   Sites on today's Quire never exit 3, so nothing changes for them until a Quire release with this fix.
 
