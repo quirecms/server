@@ -92,10 +92,13 @@ final class ReleasesTest extends TestCase
         self::assertSame($this->work.'/release.env', end($cosign));
         self::assertSame($this->work.'/release.env.sigstore.json', $this->after($cosign, '--bundle'), 'Its own signature\'s bundle.');
 
-        // Only HTTPS, for every download
+        // Only HTTPS, for every download, tried again for a minute when GitHub fails for a moment (504s
+        // to every download on 2026-11-07)
         foreach ($this->runner->runs as $run) {
             if ('curl' === $run['command'][0]) {
                 self::assertSame('=https', $this->after($run['command'], '--proto'));
+                self::assertSame('6', $this->after($run['command'], '--retry'));
+                self::assertSame('10', $this->after($run['command'], '--retry-delay'));
             }
         }
     }
@@ -190,6 +193,10 @@ final class ReleasesTest extends TestCase
     public function testTheLatestRelease(): void
     {
         self::assertSame('0.2.0', new Releases(new GitHubReleases($this->runner), $this->runner)->latest()?->value);
+        // Asked again for a minute when GitHub fails for a moment
+        $curl = $this->command('curl -fsSL');
+        self::assertSame('6', $this->after($curl, '--retry'));
+        self::assertSame('10', $this->after($curl, '--retry-delay'));
 
         // No release yet: GitHub's "latest" leads to the list of releases.
         $this->latest = 'https://github.com/quirecms/server/releases';

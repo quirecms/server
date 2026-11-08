@@ -53,6 +53,10 @@ say() { printf '\033[1m==> %s\033[0m\n' "$*"; }
 note() { printf '    %s\n' "$*"; }
 warn() { printf '\033[33mWarning:\033[0m %s\n' "$*" >&2; }
 die() { printf '\033[31mError:\033[0m %s\n' "$*" >&2; exit 1; }
+# Over HTTPS only. GitHub answers 5xx now and then for a minute at a time (504s to every download on
+# 2026-11-07): what curl takes for passing (a timeout, HTTP 408, 429, 500, 502, 503, 504) is tried 6 more
+# times, 10 s apart.
+get() { curl -fsSL --proto '=https' --tlsv1.2 --retry 6 --retry-delay 10 "$@"; }
 
 # A yes/no question on the terminal (also when this script comes through a pipe); "yes" with --yes.
 # Without --yes and without a terminal, the answer is no: nothing is done unasked, and it says so.
@@ -154,7 +158,7 @@ install_docker() {
 	apt-get install -qq -y ca-certificates curl gnupg >/dev/null
 	install -m 0755 -d /etc/apt/keyrings
 	key=$(mktemp)
-	curl -fsSL --proto '=https' --tlsv1.2 "https://download.docker.com/linux/$ID/gpg" -o "$key"
+	get "https://download.docker.com/linux/$ID/gpg" -o "$key"
 	# The key must be Docker's: its fingerprint, not just a download over HTTPS.
 	gpg --show-keys --with-colons "$key" 2>/dev/null | grep -q "^fpr:*$docker_key_fingerprint:" || { rm -f "$key"; die "Docker's signing key didn't match its known fingerprint: not installing."; }
 	install -m 0644 "$key" /etc/apt/keyrings/docker.asc
@@ -190,7 +194,7 @@ fetch() {
 	fi
 
 	if [ -z "$version" ]; then
-		latest=$(curl -fsSL --proto '=https' --tlsv1.2 -o /dev/null -w '%{url_effective}' "https://github.com/$repository/releases/latest") || die "Couldn't reach github.com/$repository."
+		latest=$(get -o /dev/null -w '%{url_effective}' "https://github.com/$repository/releases/latest") || die "Couldn't reach github.com/$repository."
 		case "$latest" in
 			*/releases/tag/v*) version=${latest##*/releases/tag/v} ;;
 			*) die 'There is no release of Quire Server yet: install from a checkout of quirecms/server with --source=<its folder>.' ;;
@@ -205,7 +209,7 @@ fetch() {
 	# only root may change), whatever root's umask.
 	chmod 755 "$work"
 	download() {
-		curl -fsSL --proto '=https' --tlsv1.2 --retry 3 -o "$work/$1" "https://github.com/$repository/releases/download/v$version/$1" || die "Couldn't download $1 of Quire Server $version."
+		get -o "$work/$1" "https://github.com/$repository/releases/download/v$version/$1" || die "Couldn't download $1 of Quire Server $version."
 		chmod 644 "$work/$1"
 	}
 	# Signed by this repository's release workflow, for this very tag, through GitHub's identity provider

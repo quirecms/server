@@ -97,6 +97,8 @@ Each release ([GitHub releases](https://github.com/quirecms/server/releases)) ha
 
 Every image Quire Server runs, and every GitHub Action that builds it, is pinned by digest or commit; Dependabot proposes updates. `quire-server version` says which release a server runs.
 
+The installer and `quire-server update` download a release's files from GitHub over HTTPS only. When GitHub answers 429, 500, 502, 503 or 504, or doesn't answer in time, a download is tried 6 more times, 10 s apart: GitHub answers 504 now and then for a minute at a time.
+
 ### A site installed before the server
 
 A site installed from the skeleton on its own (as in [the production docs](https://github.com/quirecms/framework/blob/main/docs/docker.md#production)) holds ports 80 and 443 itself. To run it behind the server, its folder must be in `/srv/quire/sites/<name>` (stop it, move the folder, start it again). The installer then finds it and offers to adopt it, or later: `quire-server site:adopt <name>`. Adopting it:

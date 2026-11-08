@@ -28,7 +28,7 @@ final readonly class GitHubReleases
      */
     public function latest(string $repository): ?Version
     {
-        $result = $this->runner->run([...$this->curl(), '-o', '/dev/null', '-w', '%{url_effective}', \sprintf('https://github.com/%s/releases/latest', $repository)], timeout: 60);
+        $result = $this->runner->run([...$this->curl(), '-o', '/dev/null', '-w', '%{url_effective}', \sprintf('https://github.com/%s/releases/latest', $repository)], timeout: 180);
 
         if (!$result->successful()) {
             throw new ReleaseVerificationFailed(\sprintf('GitHub couldn\'t be reached for %s\'s latest release: %s', $repository, trim($result->errorOutput)));
@@ -50,7 +50,7 @@ final readonly class GitHubReleases
     public function download(string $repository, Version $version, string $file, string $work): string
     {
         $path = $work.'/'.$file;
-        $result = $this->runner->run([...$this->curl(), '--retry', '3', '-o', $path, \sprintf('https://github.com/%s/releases/download/v%s/%s', $repository, $version, $file)], timeout: 300);
+        $result = $this->runner->run([...$this->curl(), '-o', $path, \sprintf('https://github.com/%s/releases/download/v%s/%s', $repository, $version, $file)], timeout: 300);
 
         if (!$result->successful()) {
             throw new ReleaseVerificationFailed(\sprintf('%s of %s %s couldn\'t be downloaded (is there such a release?).', $file, $repository, $version));
@@ -93,10 +93,14 @@ final readonly class GitHubReleases
     }
 
     /**
+     * Over HTTPS only, limited in size. GitHub answers 5xx now and then for a minute at a time (504s to
+     * every download on 2026-11-07): what curl takes for passing (a timeout, HTTP 408, 429, 500, 502,
+     * 503, 504) is tried 6 more times, 10 s apart, as install.sh does.
+     *
      * @return list<string>
      */
     private function curl(): array
     {
-        return ['curl', '-fsSL', '--proto', '=https', '--tlsv1.2', '--max-filesize', '104857600'];
+        return ['curl', '-fsSL', '--proto', '=https', '--tlsv1.2', '--max-filesize', '104857600', '--retry', '6', '--retry-delay', '10'];
     }
 }
