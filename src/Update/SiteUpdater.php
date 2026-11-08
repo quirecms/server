@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Quire\Server\Update;
 
+use Quire\Server\Backup\SiteBackup;
 use Quire\Server\Docker\Compose;
 use Quire\Server\Docker\Images;
 use Quire\Server\Docker\SiteProject;
@@ -285,8 +286,7 @@ final readonly class SiteUpdater
 
             try {
                 $step('Backing it up, as it is');
-                $current = $this->sites->backup($name, $project, 'before-restore');
-                $operation->line('Backed up to '.$current);
+                $current = $this->kept($this->sites->backup($name, $project, 'before-restore'), $operation, $say);
 
                 $step('Restoring the backup');
                 $this->restore($site, $project, $backup, $operation);
@@ -365,8 +365,7 @@ final readonly class SiteUpdater
 
             try {
                 $step('Backing it up, as it is');
-                $current = $this->sites->backup($name, $project, 'before-undo');
-                $operation->line('Backed up to '.$current);
+                $current = $this->kept($this->sites->backup($name, $project, 'before-undo'), $operation, $say);
 
                 $step(\sprintf('Putting back its files and image from before the %s', $what));
                 $back();
@@ -558,7 +557,7 @@ final readonly class SiteUpdater
         try {
             try {
                 $step('Backing it up');
-                $backup = $this->sites->backup($site->name, $project, $what);
+                $backup = $this->sites->backup($site->name, $project, $what)->orStop('an update needs one to go back to');
                 $operation->line('Backed up to '.$backup);
                 $this->writeIntent($site->name, ['backup' => $backup] + $intent);
                 $migrationsBefore = $this->executedMigrations($project);
@@ -768,6 +767,26 @@ final readonly class SiteUpdater
         }
 
         return $site;
+    }
+
+    /**
+     * The backup made before putting an older one back: kept even when some stored files aren't in it,
+     * since it's still all there is of the site as it is now, and stopping would keep the owner from the
+     * older backup they chose. Said, so they know.
+     *
+     * @param \Closure(string): void $say
+     */
+    private function kept(SiteBackup $backup, Operation $operation, \Closure $say): string
+    {
+        $operation->line('Backed up to '.$backup->file);
+
+        if (!$backup->complete()) {
+            $warning = 'That backup is incomplete: some stored files aren\'t in it. '.$backup->absent;
+            $operation->line('!! '.$warning);
+            $say($warning);
+        }
+
+        return $backup->file;
     }
 
     /**

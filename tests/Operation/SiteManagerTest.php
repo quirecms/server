@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Quire\Server\Tests\Operation;
 
+use Quire\Server\Backup\IncompleteBackup;
 use Quire\Server\Backup\SiteDatabaseDumps;
 use Quire\Server\Database\SiteDatabases;
 use Quire\Server\Docker\Builders;
@@ -761,6 +762,29 @@ final class SiteManagerTest extends RegistryTestCase
         self::assertCount(2, $this->frontDoor->all(), 'Still open.');
         self::assertTrue($this->databases->exists($this->name));
         self::assertFileExists($this->paths->site($this->name).'/prod.env');
+    }
+
+    public function testASiteWhoseBackupIsIncompleteIsntRemoved(): void
+    {
+        $manager = $this->manager();
+        $manager->add($this->request(), 'cli', 'darko', static fn (): null => null);
+        // Written, without a stored file it couldn't copy (quire:backup's exit 3)
+        $this->script['docker compose exec'] = static fn (array $command): ProcessResult => 'quire:backup' === ($command[12] ?? '')
+            ? new ProcessResult(self::strings($command), 3, " [WARNING] 1 stored file(s) were missing, so the backup has no good copy of them:\n           media:ab/cd.jpg\n", '')
+            : self::ok($command, '');
+
+        try {
+            $manager->remove($this->name, true, 'cli', 'darko', static fn (): null => null);
+            self::fail('It was removed without all of its data.');
+        } catch (IncompleteBackup $e) {
+            self::assertStringContainsString('a site is removed only with all of its data kept (--skip-backup removes it anyway, and this backup stays)', $e->getMessage());
+            self::assertStringContainsString('media:ab/cd.jpg', $e->getMessage());
+            self::assertFileExists($e->backup->file, 'Kept, as it said.');
+        }
+
+        self::assertSame(Site::RUNNING, $this->registry->get($this->name)?->status);
+        self::assertCount(2, $this->frontDoor->all(), 'Still open.');
+        self::assertTrue($this->databases->exists($this->name));
     }
 
     public function testABackupThatIsALinkIsntTaken(): void

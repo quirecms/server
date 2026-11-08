@@ -81,7 +81,11 @@ final readonly class BackupsCommand
             return Command::SUCCESS;
         }
 
-        $io->table(['ID', 'Made'], array_map(static fn (array $snapshot): array => [substr($snapshot['id'], 0, 8), Time::utc($snapshot['time'])], $snapshots));
+        $io->table(['ID', 'Made', 'Files'], array_map(static fn (array $snapshot): array => [
+            substr($snapshot['id'], 0, 8),
+            Time::utc($snapshot['time']),
+            \in_array(OffsiteBackups::INCOMPLETE_TAG, $snapshot['tags'], true) ? 'INCOMPLETE: some stored files aren\'t in it' : '',
+        ], $snapshots));
 
         return Command::SUCCESS;
     }
