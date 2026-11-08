@@ -88,6 +88,9 @@ final class SiteUpdaterTest extends RegistryTestCase
     private int $executed = 19;
     private bool $buildFails = false;
 
+    /** quire:backup's exit code: 3 when some stored files aren't in its backup */
+    private int $backupExit = 0;
+
     /** @var list<string> Images that answer the smoke check */
     private array $healthy = [self::OLD, self::NEW];
 
@@ -162,6 +165,7 @@ final class SiteUpdaterTest extends RegistryTestCase
                 'bin/console' => match ($command[12] ?? '') {
                     'quire:about' => ScriptedRunner::ok($command, (string) json_encode(['contract' => 1, 'migrations' => ['executed' => $this->executed, 'pending' => 0]])),
                     'quire:restore' => $this->restore($command, $inputFile),
+                    'quire:backup' => new ProcessResult($command, $this->backupExit, 0 === $this->backupExit ? '' : " [WARNING] 1 stored file(s) were missing, so the backup has no good copy of them:\n           media:ab/cd.jpg\n", ''),
                     default => ScriptedRunner::ok($command),
                 },
                 default => ScriptedRunner::ok($command),
@@ -469,6 +473,50 @@ final class SiteUpdaterTest extends RegistryTestCase
         self::assertSame('docker compose exec', array_last($keys), 'Checked after it started again.');
         self::assertNull($this->updates->undoable($this->name), 'Undone once.');
         self::assertSame(['site.undo', 'succeeded'], [$this->operations->latest()[0]['action'], $this->operations->latest()[0]['status']]);
+    }
+
+    public function testAnIncompleteBackupStopsTheUpdate(): void
+    {
+        // quire:backup wrote it, without a file it couldn't copy (exit 3): no way back to all of it
+        $this->backupExit = 3;
+
+        try {
+            $this->updater()->update($this->plan(), false, 'cli', 'darko', static fn (): null => null);
+            self::fail('It was updated without a complete backup.');
+        } catch (UpdateFailed $e) {
+            self::assertTrue($e->restored);
+            self::assertStringContainsString('The backup is incomplete: some stored files aren\'t in it, and an update needs one to go back to.', $e->getMessage());
+            self::assertStringContainsString('media:ab/cd.jpg', $e->getMessage(), 'Which files.');
+        }
+
+        self::assertSame(self::OLD, $this->running, 'The new version never ran.');
+        self::assertSame(self::OLD, $this->tags['quire-sites/jane/php-prod']);
+        self::assertNull($this->updates->undoable($this->name));
+        self::assertSame(Site::RUNNING, $this->registry->get($this->name)?->status);
+        $kept = glob($this->paths->backups($this->name).'/update-*.tar');
+        self::assertCount(1, false === $kept ? [] : $kept, 'The backup is kept: it\'s the best copy there is.');
+    }
+
+    public function testUndoingGoesOnWithAnIncompleteBackupOfTheSiteAsItIs(): void
+    {
+        $this->migrations[self::NEW] = 21;
+        $updater = $this->updater();
+        $updater->update($this->plan(), false, 'cli', 'darko', static fn (): null => null);
+        // Files lost since: stopping would keep the owner from the backup that has them
+        $this->backupExit = 3;
+        $said = [];
+
+        $updater->undo($this->name, true, 'cli', 'darko', static function (string $step) use (&$said): void {
+            $said[] = $step;
+        });
+
+        self::assertSame(self::OLD, $this->running);
+        self::assertCount(1, $this->restored);
+        self::assertStringContainsString('/backups/jane/update-', $this->restored[0]);
+        self::assertContains("That backup is incomplete: some stored files aren't in it. [WARNING] 1 stored file(s) were missing, so the backup has no good copy of them:\nmedia:ab/cd.jpg", $said);
+        $undo = $this->operations->latest()[0];
+        self::assertSame(['site.undo', 'succeeded'], [$undo['action'], $undo['status']]);
+        self::assertNotEmpty(array_filter($this->operations->lines($undo['id']), static fn (string $line): bool => str_starts_with($line, '!! That backup is incomplete')), 'In its log too.');
     }
 
     public function testUndoingAnUpdateThatChangedTheDatabaseRestoresItsBackupOnlyWhenAllowed(): void

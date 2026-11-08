@@ -8,10 +8,13 @@ use Quire\Server\Backup\BackupFailed;
 use Quire\Server\Backup\BackupLedger;
 use Quire\Server\Backup\BackupSettings;
 use Quire\Server\Backup\BackupSigning;
+use Quire\Server\Backup\IncompleteBackup;
+use Quire\Server\Backup\LocalBackups;
 use Quire\Server\Backup\OffsiteBackups;
 use Quire\Server\Backup\Provenance;
 use Quire\Server\Backup\Restic;
 use Quire\Server\Backup\SiteDatabaseDumps;
+use Quire\Server\Console\BackupsCommand;
 use Quire\Server\Database\SiteDatabases;
 use Quire\Server\Docker\Compose;
 use Quire\Server\Docker\ComposeFiles;
@@ -42,6 +45,8 @@ use Quire\Server\Tests\GateFixture;
 use Quire\Server\Tests\Registry\RegistryTestCase;
 use Quire\Server\Tests\ScriptedRunner;
 use Quire\Server\Update\SiteUpdater;
+use Symfony\Component\Console\Application;
+use Symfony\Component\Console\Tester\CommandTester;
 use Symfony\Component\Filesystem\Filesystem;
 
 /**
@@ -72,6 +77,9 @@ final class OffsiteBackupsTest extends RegistryTestCase
     /** The size restic gives a restore's files */
     private int $size = 0;
 
+    /** @var list<list<string>> The tags of each site's snapshot sent off the server */
+    private array $sent = [];
+
     private BackupLedger $ledger;
     private BackupSigning $oldServer;
 
@@ -91,6 +99,7 @@ final class OffsiteBackupsTest extends RegistryTestCase
                 'snapshots' => $this->snapshots($command),
                 'restore' => $this->restore($command),
                 'ls' => ScriptedRunner::ok($command, (string) json_encode(['type' => 'file', 'path' => '/x', 'size' => $this->size])),
+                'backup' => $this->resticBackup($command),
                 default => ScriptedRunner::failed($command, 'not scripted'),
             },
         ]);
@@ -304,6 +313,98 @@ final class OffsiteBackupsTest extends RegistryTestCase
         $this->subject()->manifest(self::OLD_SERVER, 'ed25519:not-a-key');
     }
 
+    public function testAnIncompleteBackupGoesOffTheServerTaggedAndFails(): void
+    {
+        $this->runningSite(3);
+
+        try {
+            $this->subject()->backUpNow(new SiteName('jane'), 'cli', 'darko', static function (): void {});
+            self::fail('An incomplete backup passed for a good one.');
+        } catch (IncompleteBackup $e) {
+            self::assertStringContainsString('some stored files aren\'t in it, and it went off the server as 5174e000, tagged "incomplete".', $e->getMessage());
+            self::assertStringContainsString('media:ab/cd.jpg', $e->getMessage(), 'Which files.');
+            self::assertStringNotContainsString('It\'s kept at', $e->getMessage(), 'Its copy here is gone: it\'s off the server.');
+        }
+
+        // Sent all the same, as the best copy there is, and kept apart by retention (grouped by tags)
+        self::assertSame([['quire-site', 'site:jane', 'incomplete']], $this->sent);
+        $left = glob($this->paths->backups(new SiteName('jane')).'/off-server-*');
+        self::assertSame([], false === $left ? [] : $left, 'Nothing of it left here: not even its mark.');
+        self::assertSame(['site.backup', 'failed'], [$this->operations()->latest()[0]['action'], $this->operations()->latest()[0]['status']]);
+    }
+
+    public function testACompleteBackupIsntTagged(): void
+    {
+        $this->runningSite(0);
+
+        $this->subject()->backUpNow(new SiteName('jane'), 'cli', 'darko', static function (): void {});
+
+        self::assertSame([['quire-site', 'site:jane']], $this->sent);
+    }
+
+    public function testABackupThatFailedIsntSent(): void
+    {
+        $this->runningSite(1);
+
+        try {
+            $this->subject()->backUpNow(new SiteName('jane'), 'cli', 'darko', static function (): void {});
+            self::fail('It passed.');
+        } catch (\RuntimeException $e) {
+            self::assertNotInstanceOf(IncompleteBackup::class, $e);
+            self::assertStringContainsString('Backing up the site failed', $e->getMessage());
+        }
+
+        self::assertSame([], $this->sent, 'No backup, nothing sent.');
+    }
+
+    public function testRetentionKeepsIncompleteSnapshotsApart(): void
+    {
+        $forget = [];
+        $this->runner = new ScriptedRunner([
+            'restic --quiet' => static function (array $command) use (&$forget): ProcessResult {
+                $forget = $command;
+
+                return ScriptedRunner::ok($command, '[]');
+            },
+        ]);
+        $settings = new BackupSettings('s3:https://host/bucket', 'the-key', 'the-secret', 'a-long-random-password-0123456789');
+
+        new Restic($this->runner, $settings, $this->root.'/backups/.restic-cache')->forget(prune: false);
+
+        // Each set of tags is its own group: a week of incomplete nights leaves the complete ones as they were
+        $group = array_search('--group-by', $forget, true);
+        self::assertIsInt($group);
+        self::assertSame('host,tags', $forget[$group + 1]);
+    }
+
+    public function testTheListsMarkIncompleteBackups(): void
+    {
+        $this->snapshot($this->id('abcd1234ef'), ['quire-site', 'site:jane'], ['/srv/quire/backups/jane/off-server-1.tar'], time: '2026-10-28T02:00:00Z');
+        $this->snapshot($this->id('bcde2345fa'), ['quire-site', 'site:jane', 'incomplete'], ['/srv/quire/backups/jane/off-server-2.tar'], time: '2026-10-29T02:00:00Z');
+        new Filesystem()->dumpFile($this->paths->backups(new SiteName('jane')).'/update-20261029-120000.tar', 'x');
+        new Filesystem()->dumpFile($this->paths->backups(new SiteName('jane')).'/update-20261029-120000.incomplete', 'media:ab/cd.jpg');
+        new Filesystem()->dumpFile($this->paths->backups(new SiteName('jane')).'/update-20261028-120000.tar', 'x');
+        $application = new Application();
+        $application->addCommand(new BackupsCommand($this->subject(), new LocalBackups(new OperationLog($this->connection, $this->schema), $this->paths->root.'/backups')));
+        $tester = new CommandTester($application->find('server:backups'));
+
+        $tester->execute(['name' => 'jane']);
+
+        $rows = array_values(array_filter(explode("\n", $tester->getDisplay()), static fn (string $line): bool => 1 === preg_match('/^\s*(abcd1234|bcde2345)/', $line)));
+        self::assertCount(2, $rows);
+        self::assertStringContainsString('INCOMPLETE: some stored files aren\'t in it', $rows[0], 'The newest, which lacks some.');
+        self::assertStringStartsWith('bcde2345', trim($rows[0]));
+        self::assertStringNotContainsString('INCOMPLETE', $rows[1]);
+
+        $tester->execute(['name' => 'jane', '--local' => true]);
+
+        $rows = array_values(array_filter(explode("\n", $tester->getDisplay()), static fn (string $line): bool => str_contains($line, '.tar')));
+        self::assertCount(2, $rows);
+        self::assertStringContainsString('update-20261029-120000.tar', $rows[0]);
+        self::assertStringContainsString('INCOMPLETE: some stored files aren\'t in it', $rows[0]);
+        self::assertStringNotContainsString('INCOMPLETE', $rows[1]);
+    }
+
     public function testARestoreThatWouldFillTheDiskIsRefused(): void
     {
         $this->snapshot($this->id('abcd1234ef'), ['quire-site', 'site:jane'], ['/srv/quire/backups/jane/off-server-1.tar']);
@@ -311,6 +412,56 @@ final class OffsiteBackupsTest extends RegistryTestCase
 
         $this->expectExceptionMessageIsOrContains('make room first');
         $this->subject()->restore(new SiteName('jane'), 'latest', 'cli', 'darko', static function (): void {});
+    }
+
+    /**
+     * The site "jane", running with a database of its own; quire:backup exits with the code given (3:
+     * written, without some stored files).
+     */
+    private function runningSite(int $backupExit): void
+    {
+        $this->registry->add(new SiteName('jane'), [new Domain('jane.example')], Site::OWN_DATABASE, 'jane');
+        new SiteNetworks($this->connection, $this->schema)->allocate(new SiteName('jane'), new \Quire\Server\Network\SiteNetworkRange(\Quire\Server\Network\SiteNetworkRange::DEFAULT), []);
+        $this->registry->setStatus(new SiteName('jane'), Site::RUNNING);
+        new Filesystem()->dumpFile($this->paths->site(new SiteName('jane')).'/'.SiteFiles::ENV_FILE, "COMPOSE_PROJECT_NAME='jane'\n");
+        $this->runner = new ScriptedRunner([
+            ...$this->runner->script,
+            'docker compose exec' => static fn (array $command): ProcessResult => 'quire:backup' === ($command[12] ?? '')
+                ? new ProcessResult($command, $backupExit, 3 === $backupExit ? " [WARNING] 1 stored file(s) were missing, so the backup has no good copy of them:\n           media:ab/cd.jpg\n" : '', 1 === $backupExit ? 'No space left on device' : '')
+                : ScriptedRunner::ok($command),
+            'docker compose cp' => static function (array $command): ProcessResult {
+                file_put_contents((string) end($command), 'backup');
+
+                return ScriptedRunner::ok($command);
+            },
+        ]);
+    }
+
+    /**
+     * restic's backup, as it says what it made: the tags of each site's, as sent.
+     *
+     * @param list<string> $command
+     */
+    private function resticBackup(array $command): ProcessResult
+    {
+        $tags = [];
+
+        foreach ($command as $i => $argument) {
+            if ('--tag' === $argument) {
+                $tags[] = $command[$i + 1];
+            }
+        }
+
+        if (\in_array(OffsiteBackups::SITE_TAG, $tags, true)) {
+            $this->sent[] = $tags;
+        }
+
+        return ScriptedRunner::ok($command, (string) json_encode(['message_type' => 'summary', 'snapshot_id' => $this->id('5174e000aa')]));
+    }
+
+    private function operations(): OperationLog
+    {
+        return new OperationLog($this->connection, $this->schema);
     }
 
     private function subject(): OffsiteBackups

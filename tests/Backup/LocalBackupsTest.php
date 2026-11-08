@@ -59,6 +59,32 @@ final class LocalBackupsTest extends RegistryTestCase
         self::assertFalse($this->subject()->due(), 'Once a day.');
     }
 
+    public function testTheNewestCompleteBackupStaysWhenNewerOnesAreIncomplete(): void
+    {
+        // Two weeks and more of nights without some stored files (quire:backup's exit 3)
+        $files = [
+            'jane/update-20261001-120000.tar', 'jane/update-20261001-120000.database.dump',
+            'jane/deploy-20261005-120000.tar', 'jane/deploy-20261005-120000.incomplete',
+            'jane/deploy-20261010-120000.tar', 'jane/deploy-20261010-120000.database.dump', 'jane/deploy-20261010-120000.incomplete',
+        ];
+
+        foreach ($files as $file) {
+            new Filesystem()->dumpFile($this->root.'/'.$file, 'x');
+        }
+
+        $removed = $this->subject()->expire('cli', 'darko');
+
+        sort($removed);
+        self::assertSame(['jane/deploy-20261005-120000.incomplete', 'jane/deploy-20261005-120000.tar'], $removed, 'With its mark.');
+        self::assertFileExists($this->root.'/jane/update-20261001-120000.tar', 'The newest complete one: kept, however old.');
+        self::assertFileExists($this->root.'/jane/update-20261001-120000.database.dump');
+        self::assertFileExists($this->root.'/jane/deploy-20261010-120000.tar', 'The newest, incomplete or not.');
+        self::assertFileExists($this->root.'/jane/deploy-20261010-120000.incomplete');
+
+        $listed = $this->subject()->of(new \Quire\Server\Site\SiteName('jane'));
+        self::assertSame([['deploy-20261010-120000.tar', false], ['update-20261001-120000.tar', true]], array_map(static fn (array $backup): array => [$backup['file'], $backup['complete']], $listed));
+    }
+
     public function testASitesBackupsNewestFirstAndOnlyItsOwnFound(): void
     {
         foreach (['jane/final-20261030-120000.tar', 'jane/before-restore-20261031-090000.tar', 'jane/before-restore-20261031-090000.database.dump', 'jane/update-20261029-120000/files/composer.lock', 'jane/notes.txt', 'kim/final-20261031-120000.tar'] as $file) {

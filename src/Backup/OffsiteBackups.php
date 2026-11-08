@@ -41,6 +41,13 @@ final readonly class OffsiteBackups
     /** Everything the night does, asked for now ("backups:now" without a site) */
     public const string ALL = 'backups.all';
     public const string SITE_TAG = 'quire-site';
+
+    /**
+     * A site's snapshot whose quire:backup lacks some stored files. Retention groups snapshots by host
+     * and tags, so these are kept apart: a run of incomplete nights never pushes out the last complete one.
+     */
+    public const string INCOMPLETE_TAG = 'incomplete';
+
     public const string SERVER_TAG = 'quire-server';
     /** A Git mode site's: its code is its repository's, so it isn't in its backup */
     public const string GIT_TAG = 'git';
@@ -280,6 +287,7 @@ final readonly class OffsiteBackups
 
         try {
             $say(\sprintf('Getting its backup of %s from off the server', $chosen['time']));
+            $this->sayIfIncomplete($chosen, $say);
             // With the rest of its database, when the backup has it (made by Quire Server 0.3.1 and later)
             $this->restic->restorePaths($chosen['id'], [$file, ...$this->dumpOf($chosen['paths'], $file)], $into);
             $file = is_file($into.$file) ? $into.$file : throw new BackupFailed('The snapshot doesn\'t have its backup file.');
@@ -615,11 +623,23 @@ final readonly class OffsiteBackups
 
         try {
             $say(\sprintf('Getting the backup of "%s" of %s from off the server', $source, $chosen['time']));
+            $this->sayIfIncomplete($chosen, $say);
             $this->restic->restorePaths($chosen['id'], [$file, ...$this->dumpOf($chosen['paths'], $file), ...($repository instanceof Repository ? [] : [$folder])], $into);
             $from = ['snapshot' => $chosen['id'], 'from_site' => $source->value, 'from_server' => $server ?? $this->settings->host];
             $this->sites->restoreAsNew($name, $domains, $repository ?? $into.$folder, $into.$file, $from, $channel, $requestedBy, $say, $poll);
         } finally {
             $this->filesystem->remove($into);
+        }
+    }
+
+    /**
+     * @param Snapshot               $chosen
+     * @param \Closure(string): void $say
+     */
+    private function sayIfIncomplete(array $chosen, \Closure $say): void
+    {
+        if (\in_array(self::INCOMPLETE_TAG, $chosen['tags'], true)) {
+            $say('That backup is incomplete: some stored files weren\'t in it when it was made (the restore lists them)');
         }
     }
 
@@ -671,7 +691,8 @@ final readonly class OffsiteBackups
      */
     private function backUpSite(Site $site): string
     {
-        $file = $this->sites->backup($site->name, $this->sites->projectOf($site), 'off-server');
+        $backup = $this->sites->backup($site->name, $this->sites->projectOf($site), 'off-server');
+        $file = $backup->file;
         $dump = SiteDatabaseDumps::of($file);
         $folder = $this->paths->site($site->name);
         $git = null !== $this->repositories->of($site->name);
@@ -679,14 +700,17 @@ final readonly class OffsiteBackups
         try {
             $snapshot = $this->restic->backup(
                 $git ? [$file, $dump] : [$file, $dump, $folder],
-                [self::SITE_TAG, 'site:'.$site->name->value, ...($git ? [self::GIT_TAG] : [])],
+                [self::SITE_TAG, 'site:'.$site->name->value, ...($git ? [self::GIT_TAG] : []), ...($backup->complete() ? [] : [self::INCOMPLETE_TAG])],
                 array_map(static fn (string $built): string => $folder.'/'.$built, self::BUILT),
             );
             $this->ledger->record($this->settings->repository, $snapshot, $this->settings->host, BackupLedger::SITE, $site->name->value, $this->now());
 
+            // Sent all the same, as the best copy there is: then the night is a failure, to be seen.
+            $backup->orStop(\sprintf('it went off the server as %s, tagged "%s"', substr($snapshot, 0, 8), self::INCOMPLETE_TAG), kept: false);
+
             return $snapshot;
         } finally {
-            $this->filesystem->remove([$file, $dump]);
+            $this->filesystem->remove([$file, $dump, SiteBackup::marker($file)]);
         }
     }
 

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Quire\Server\Operation;
 
+use Quire\Server\Backup\SiteBackup;
 use Quire\Server\Backup\SiteDatabaseDumps;
 use Quire\Server\Database\SiteDatabases;
 use Quire\Server\Docker\Compose;
@@ -16,6 +17,7 @@ use Quire\Server\Git\Repository;
 use Quire\Server\Host\Memory;
 use Quire\Server\Network\SiteLinks;
 use Quire\Server\Process\Durable;
+use Quire\Server\Process\ProcessResult;
 use Quire\Server\Registry\SiteGit;
 use Quire\Server\Registry\SiteLock;
 use Quire\Server\Registry\SiteNetworks;
@@ -421,7 +423,7 @@ final readonly class SiteManager
                 $undo[] = fn () => $this->registry->setStatus($name, Site::REMOVED);
 
                 $step('Backing it up, as it is');
-                $operation->line('Backed up to '.$this->backup($name, $site, 'before-server'));
+                $operation->line('Backed up to '.$this->backup($name, $site, 'before-server')->orStop('taking the site over needs one to go back to'));
 
                 $step('Changing its settings (a copy of them is kept)');
                 $this->files->write($before, $env->content(), 0o600);
@@ -655,7 +657,7 @@ final readonly class SiteManager
 
                 if ($backup && $project instanceof SiteProject) {
                     $step('Backing it up');
-                    $file = $this->backup($name, $project, 'final');
+                    $file = $this->backup($name, $project, 'final')->orStop('a site is removed only with all of its data kept (--skip-backup removes it anyway, and this backup stays)');
                     $operation->line('Backed up to '.$file);
                 } elseif ($backup) {
                     $operation->line('Its folder isn\'t there: nothing to back up');
@@ -882,8 +884,11 @@ final readonly class SiteManager
      * A backup of the site with quire:backup (Quire's data and files), to
      * /srv/quire/backups/<site>/<kind>-<time>.tar, and the rest of its database beside it
      * (SiteDatabaseDumps), readable by root only.
+     *
+     * One quire:backup wrote without some stored files (exit 3) is kept too, and says so: the caller
+     * decides whether that's enough.
      */
-    public function backup(SiteName $name, SiteProject $project, string $kind): string
+    public function backup(SiteName $name, SiteProject $project, string $kind): SiteBackup
     {
         $directory = $this->paths->backups($name);
         $this->filesystem->mkdir($directory, 0o700);
@@ -893,7 +898,12 @@ final readonly class SiteManager
         $inside = '/tmp/quire-'.$kind.'-backup-'.bin2hex(random_bytes(6)).'.tar';
 
         try {
-            $this->compose->exec($project, self::PHP, ['bin/console', 'quire:backup', $inside, '--no-interaction'], timeout: 3600)->orFail('Backing up the site');
+            $result = $this->compose->exec($project, self::PHP, ['bin/console', 'quire:backup', $inside, '--no-interaction'], timeout: 3600);
+
+            if (SiteBackup::INCOMPLETE_EXIT !== $result->exitCode) {
+                $result->orFail('Backing up the site');
+            }
+
             $this->compose->copyFrom($project, self::PHP, $inside, $file);
         } finally {
             $this->compose->exec($project, self::PHP, ['rm', '-f', $inside], timeout: 60);
@@ -903,7 +913,24 @@ final readonly class SiteManager
         Durable::sync($file);
         $this->dumps->dump($project, $this->registry->get($name)->databaseMode ?? Site::SHARED_DATABASE, SiteDatabaseDumps::of($file));
 
-        return $file;
+        $backup = new SiteBackup($file, SiteBackup::INCOMPLETE_EXIT === $result->exitCode ? $this->absent($result) : null);
+
+        if (!$backup->complete()) {
+            $this->files->write(SiteBackup::marker($file), $backup->absent."\n", 0o600);
+        }
+
+        return $backup;
+    }
+
+    /**
+     * What quire:backup said it couldn't copy: its warnings, at most 25 lines.
+     */
+    private function absent(ProcessResult $result): string
+    {
+        $said = trim($result->output."\n".$result->errorOutput);
+        $lines = array_values(array_filter(array_map(trim(...), explode("\n", $said)), static fn (string $line): bool => '' !== $line && !str_starts_with($line, '[OK]')));
+
+        return [] === $lines ? 'quire:backup didn\'t say which.' : implode("\n", \array_slice($lines, 0, 25));
     }
 
     /**
