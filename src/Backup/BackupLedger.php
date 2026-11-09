@@ -92,6 +92,26 @@ final readonly class BackupLedger
         ];
     }
 
+    /**
+     * The public key this server signs its backups with, once it made (or first used) one.
+     */
+    public function signingKey(): ?string
+    {
+        $key = $this->connection->fetchOne(\sprintf('SELECT public_key FROM %s.signing_key', $this->schema()));
+
+        return \is_string($key) ? $key : null;
+    }
+
+    public function recordSigningKey(string $publicKey): void
+    {
+        $this->connection->executeStatement(\sprintf('INSERT INTO %s.signing_key (public_key) VALUES (?) ON CONFLICT (one) DO UPDATE SET public_key = excluded.public_key, recorded_at = now()', $this->schema()), [$publicKey]);
+    }
+
+    public function forgetSigningKey(): void
+    {
+        $this->connection->executeStatement(\sprintf('DELETE FROM %s.signing_key', $this->schema()));
+    }
+
     private function schema(): string
     {
         return $this->connection->quoteSingleIdentifier($this->schema);

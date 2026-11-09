@@ -129,8 +129,15 @@ final readonly class OffsiteBackups
         $this->settings->validate();
         $operation = $this->operations->start(self::ALL === $action ? self::ALL : self::NIGHTLY, null, [], $channel, $requestedBy);
 
-        if ($this->signing->ensure()) {
-            $operation->line('The server\'s key for its backups was made: "quire-server status" shows its public key, to keep with the backups\' password.');
+        try {
+            if ($this->signing->ensure()) {
+                $operation->line('The server\'s key for its backups was made: "quire-server status" shows its public key, to keep with the backups\' password.');
+            }
+        } catch (\Throwable $e) {
+            // Nothing is backed up unsigned, or signed with another key
+            $operation->fail($e);
+
+            throw $e;
         }
 
         $this->secrets($operation);

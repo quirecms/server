@@ -179,7 +179,14 @@ services:
 
     # The server's own key for its backups (D-36): not in server.env, not in anything it backs up
     Quire\Server\Backup\BackupSigning:
-        arguments: ['%quire_server.root%/server/signing/backups.key']
+        arguments:
+            $file: '%quire_server.root%/server/signing/backups.key'
+
+    # What 0.4.0's updates removed (its swap took signing/ for a release's file): put back at the agent's start
+    Quire\Server\Backup\SigningKeyRecovery:
+        arguments:
+            $file: '%quire_server.root%/server/signing/backups.key'
+            $serverBackups: '%quire_server.root%/backups/server'
 
     Quire\Server\Backup\OffsiteBackups:
         arguments:

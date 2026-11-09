@@ -309,4 +309,25 @@ final class Schema
                 SQL,
         ];
     }
+
+    /**
+     * This server's own key for its backups (D-36), its public half: what it signs with, so a key that
+     * went missing is told and never silently made anew (other servers trust that one).
+     *
+     * @return list<string>
+     */
+    public static function version12(string $schema = self::NAME): array
+    {
+        $s = '"'.str_replace('"', '""', $schema).'"';
+
+        return [
+            <<<SQL
+                CREATE TABLE {$s}.signing_key (
+                    one boolean PRIMARY KEY DEFAULT true CHECK (one),
+                    public_key text NOT NULL,
+                    recorded_at timestamptz NOT NULL DEFAULT now()
+                )
+                SQL,
+        ];
+    }
 }

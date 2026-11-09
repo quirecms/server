@@ -165,7 +165,10 @@ services:
     user: "0:0"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - ./gate/yorvogate.yaml:/etc/yorvogate/yorvogate.yaml:ro
+      # The server's own settings, by their path on the host: an updater of 0.4.0 checks a release
+      # against them, from a folder Docker doesn't see. From 0.5.0 on, the updater checks the
+      # release's own (QUIRE_SERVER_GATE_CONFIG, never in server.env).
+      - ${QUIRE_SERVER_GATE_CONFIG:-${QUIRE_SERVER_ROOT:-/srv/quire}/server/gate/yorvogate.yaml}:/etc/yorvogate/yorvogate.yaml:ro
       - gate_scopes:/etc/yorvogate/sites:ro
       - gate_trusted:/run/yorvogate/trusted
       - gate_sites:/run/yorvogate/sites

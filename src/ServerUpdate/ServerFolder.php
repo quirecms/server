@@ -19,9 +19,13 @@ final readonly class ServerFolder
     /**
      * The machine's own: never replaced by a release, nor taken from one. The updater's seal key too
      * (Seal): removed with a release's files, every update would leave the updater trusting what it
-     * didn't seal.
+     * didn't seal. And the agent's: the key that signs its backups (signing/, D-36: removed, the next
+     * night made another, and other servers stopped trusting this one's backups), and its work folder.
      */
-    public const array KEPT = ['server.env', 'domains', 'keys', '.updater-key'];
+    public const array KEPT = ['server.env', 'domains', 'keys', '.updater-key', 'signing', 'work'];
+
+    /** An update's own folder, while it checks a release (ServerUpdater): no release's, never kept */
+    public const string UPDATE_PREFIX = '.update-';
 
     /** Each of the release's files and its SHA-256, as sha256sum writes them: what install.sh checks when run again */
     public const string MANIFEST = '.installed-files';
@@ -142,7 +146,19 @@ final readonly class ServerFolder
      */
     private function releaseEntries(): array
     {
-        return array_values(array_filter($this->entries($this->path), static fn (string $entry): bool => !\in_array($entry, self::KEPT, true) && !str_starts_with($entry, 'server.env.')));
+        return array_values(array_filter($this->entries($this->path), static fn (string $entry): bool => !\in_array($entry, self::KEPT, true) && !str_starts_with($entry, 'server.env.') && !str_starts_with($entry, self::UPDATE_PREFIX)));
+    }
+
+    /**
+     * Removes what updates cut short left (their folders hold a copy of server.env).
+     */
+    public function clearUpdates(): void
+    {
+        foreach ($this->entries($this->path) as $entry) {
+            if (str_starts_with($entry, self::UPDATE_PREFIX)) {
+                $this->filesystem->remove($this->path.'/'.$entry);
+            }
+        }
     }
 
     private function removeReleaseEntries(): void
