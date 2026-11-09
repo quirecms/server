@@ -33,7 +33,7 @@ sh install.sh --email=you@example.com
 To check the installer itself first (with [cosign](https://docs.sigstore.dev/cosign/system_config/installation/)):
 
 ```bash
-version=0.4.0   # the release you install (its tag, without the "v")
+version=0.5.0   # the release you install (its tag, without the "v")
 curl -fsSLO https://github.com/quirecms/server/releases/download/v$version/install.sh
 curl -fsSLO https://github.com/quirecms/server/releases/download/v$version/install.sh.sigstore.json
 cosign verify-blob install.sh --bundle install.sh.sigstore.json \

@@ -4,7 +4,26 @@ All notable changes to Quire Server. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
-### Fixed
+## [0.5.0] - 2026-11-09
+
+Quire 0.2.0's sites: server contract 2, backups that say when they lack a stored file, and every way a site's code comes in held to the contract. Also downloads that ride out GitHub's short outages.
+
+### Updating from 0.4.0
+
+`quire-server update` moves a server to 0.5.0, checked by 0.4.0's own updater. There is nothing to do after it: no migrations, and no site is started again.
+
+Nothing changes for sites on Quire 0.1, which never report an incomplete backup. Once a site is on Quire 0.2.0 (`quire-server site:update <site> --to=0.2.0`, by hand: automatic updates stay on its minor version), a backup of it that lacks some stored files **stops** an update, a take-over and a removal, where 0.4.0 went on (`--skip-backup` still removes a site anyway), and fails the night's backups. Fix what it names (the backup says which files and why), and run it again.
+
+### Added
+
+- **The server keeps server contract 2**, which Quire 0.2.0 and later require (their backups exit with 3 when incomplete, see Changed): this server updates sites to them, where an older one refuses and says to update the server first.
+- **Every way a site's code comes in checks the server contract it keeps, not only updates.** Before, only `site:update` refused a Quire release needing a newer server, and only when the release feed listed it. Now `site:add` (with `--quire-version` or not), Git sites (added and each deploy), taking a site over (`adopt`) and adding one from a backup (`restore --as`, bringing back a removed site) refuse it too, in two places:
+  - before the build, when the release feed says the locked Quire release needs a newer server: nothing is built;
+  - once the new code runs, from its own `quire:about` (code the feed doesn't list, such as a Git site's branch): a new site is undone before it's installed or restored, a site being taken over is put back as it ran, and an update or a deploy is rolled back.
+
+  The message says to update the server first. The `com.quirecms.contract` label isn't used for this: it comes from the site's own `compose.yaml`, which may be out of date.
+
+### Changed
 
 - **A site's backup that lacks some stored files is no longer taken for a good one.** Quire's `quire:backup` is to exit 3 when it wrote a backup without some stored files (missing, damaged, or on a disk the site no longer declares): until now it exited 0 with a warning, and the server went on. From now on:
   - an update, taking a site over and removing a site stop, since the backup is the way back; the backup is kept, and the message names the files;
@@ -13,14 +32,9 @@ All notable changes to Quire Server. The format follows [Keep a Changelog](https
   - on the server, it's marked (`<kind>-<time>.incomplete` beside it), `backups --local` says so, and a site's newest complete backup is kept as well as its newest, however old.
 
   Sites on today's Quire never exit 3, so nothing changes for them until a Quire release with this fix.
-
-- **The server keeps server contract 2**, which Quire releases with that fix require: this server updates sites to them, where an older one refuses and says to update the server first.
-- **Every way a site's code comes in checks the server contract it keeps, not only updates.** Before, only `site:update` refused a Quire release needing a newer server, and only when the release feed listed it. Now `site:add` (with `--quire-version` or not), Git sites (added and each deploy), taking a site over (`adopt`) and adding one from a backup (`restore --as`, bringing back a removed site) refuse it too, in two places:
-  - before the build, when the release feed says the locked Quire release needs a newer server: nothing is built;
-  - once the new code runs, from its own `quire:about` (code the feed doesn't list, such as a Git site's branch): a new site is undone before it's installed or restored, a site being taken over is put back as it ran, and an update or a deploy is rolled back.
-
-  The message says to update the server first. The `com.quirecms.contract` label isn't used for this: it comes from the site's own `compose.yaml`, which may be out of date.
 - **Which stored files an incomplete backup lacks comes from its manifest**, as server contract 2 defines it (each file with why: `missing`, `damaged`, `unknown_disk`), not from what `quire:backup` prints, whose wording is for people. A backup whose manifest says it's incomplete is taken for one even when `quire:backup` exited 0. When the manifest can't be read, the exit code decides, and what `quire:backup` printed is shown instead. What the manifest names is shown without control characters and cut short: it comes from the site.
+
+### Fixed
 
 - **The installer and `quire-server update` download a release's files for a minute** when GitHub fails for a moment (HTTP 408, 429, 500, 502, 503, 504 or no answer in time): tried 6 more times, 10 s apart, where curl's 3 quick tries gave up after 7 s. GitHub answered 504 for a minute at a time on 2026-11-07, and an install stopped at "Couldn't download release.env". Finding the latest release is tried again the same way, and so is Docker's signing key when the installer installs Docker.
 - **Getting a site's files from the skeleton** (`site:add`, an update's plan, `restore --as`) is tried once more, 30 s later, when a download fails on the way (a host's 5xx or 429, a connection cut), as a site's build is since 0.4.0: GitHub answered 504 to every download for a minute at a time on 2026-11-07, and adding a site failed.
@@ -137,7 +151,8 @@ The first release.
 - Sites deployed from a Git repository.
 - Signed releases: images and files checked before installing.
 
-[Unreleased]: https://github.com/quirecms/server/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/quirecms/server/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/quirecms/server/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/quirecms/server/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/quirecms/server/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/quirecms/server/compare/v0.2.0...v0.3.0
