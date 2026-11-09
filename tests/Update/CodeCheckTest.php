@@ -11,6 +11,8 @@ use Quire\Server\Release\QuireFeed;
 use Quire\Server\Tests\ScriptedRunner;
 use Quire\Server\Update\CodeCheck;
 use Quire\Server\Update\CodeNotReleased;
+use Quire\Server\Update\ContractNotKept;
+use Quire\Server\Update\ReleaseCheck;
 use Symfony\Component\Filesystem\Filesystem;
 
 /**
@@ -76,6 +78,23 @@ final class CodeCheckTest extends TestCase
 
         $this->expectExceptionMessageIsOrContains('its source is https://github.com/someone/core.git');
         $this->check()->lock($this->lock([$package]));
+    }
+
+    public function testAReleaseThatKeepsANewerServerContractIsNeverBuilt(): void
+    {
+        array_unshift($this->releases, $this->release('0.2.0', ['quire/core' => self::CORE], null, ReleaseCheck::CONTRACT + 1));
+
+        $this->expectException(ContractNotKept::class);
+        $this->expectExceptionMessageIsOrContains(\sprintf('quire/core 0.2.0 keeps server contract %d; this server knows up to %d: update the server first ("quire-server update"). Nothing was built.', ReleaseCheck::CONTRACT + 1, ReleaseCheck::CONTRACT));
+        // Its commit is the one the feed names: the contract alone stops it.
+        $this->check()->lock($this->lock([$this->package('quire/core', '0.2.0', self::CORE)]));
+    }
+
+    public function testAReleaseThatKeepsTheServersContractIsBuilt(): void
+    {
+        array_unshift($this->releases, $this->release('0.2.0', ['quire/core' => self::CORE], null, ReleaseCheck::CONTRACT));
+
+        self::assertSame([], $this->check()->lock($this->lock([$this->package('quire/core', '0.2.0', self::CORE)])));
     }
 
     public function testWhatTheFeedDoesntVouchForIsBuiltAndSaid(): void
@@ -196,11 +215,11 @@ final class CodeCheckTest extends TestCase
      *
      * @return array<string, mixed>
      */
-    private function release(string $version, ?array $packages, ?array $files): array
+    private function release(string $version, ?array $packages, ?array $files, int $contract = 1): array
     {
         return [
             'version' => $version, 'date' => '2026-11-04', 'security' => [], 'notes' => 'Notes.', 'upgrade' => null,
-            'requires' => ['php' => '>=8.5.11', 'postgresql' => 18, 'server_contract' => 1],
+            'requires' => ['php' => '>=8.5.11', 'postgresql' => 18, 'server_contract' => $contract],
             ...(null === $files ? [] : ['skeleton' => ['files' => $files, 'changed' => null]]),
             ...(null === $packages ? [] : ['packages' => $packages]),
         ];
@@ -215,7 +234,11 @@ final class CodeCheckTest extends TestCase
                 }
 
                 if (\in_array('%{url_effective}', $command, true)) {
-                    return ScriptedRunner::ok($command, 'https://github.com/quirecms/framework/releases/tag/v0.1.3');
+                    // The latest release is the feed's newest
+                    $latest = $this->releases[0]['version'] ?? null;
+                    \assert(\is_string($latest));
+
+                    return ScriptedRunner::ok($command, 'https://github.com/quirecms/framework/releases/tag/v'.$latest);
                 }
 
                 $at = array_search('-o', $command, true);

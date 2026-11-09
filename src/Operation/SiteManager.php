@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Quire\Server\Operation;
 
+use Quire\Server\Backup\BackupManifest;
 use Quire\Server\Backup\SiteBackup;
 use Quire\Server\Backup\SiteDatabaseDumps;
 use Quire\Server\Database\SiteDatabases;
@@ -28,6 +29,8 @@ use Quire\Server\Site\ServerPaths;
 use Quire\Server\Site\Site;
 use Quire\Server\Site\SiteFiles;
 use Quire\Server\Site\SiteName;
+use Quire\Server\Update\ContractNotKept;
+use Quire\Server\Update\SiteContract;
 use Symfony\Component\Filesystem\Filesystem;
 
 /**
@@ -175,9 +178,11 @@ final readonly class SiteManager
 
                 $step('Starting it');
                 $this->compose->up($project, $operation->output(...));
+                // Before anything is done with it: not opened, it's undone (its feed entry was checked before the build)
+                $contract = $this->ensureContractKept($project);
 
                 $step('Installing it');
-                $adminPassword = $this->install($project, $request, $operation);
+                $adminPassword = $this->install($project, $request, $operation, $contract);
 
                 if ($request->repository instanceof Repository) {
                     // What it runs of its branch; a site in Git mode keeps its repository's lock.
@@ -302,6 +307,7 @@ final readonly class SiteManager
 
                 $step('Starting it');
                 $this->compose->up($project, $operation->output(...));
+                $this->ensureContractKept($project);
 
                 $step('Restoring its database and files from the backup');
                 $this->compose->exec($project, self::PHP, ['bin/console', 'quire:restore', '-', '--force', '--no-interaction'], $operation->output(...), 3600, $backup)->orFail('Restoring the backup');
@@ -455,6 +461,8 @@ final readonly class SiteManager
 
                 $step('Moving it behind the front door (a few seconds offline)');
                 $this->compose->up($site, $operation->output(...));
+                // Not opened to visitors otherwise: it's put back as it was
+                $this->ensureContractKept($site);
                 $this->pinComposerLock($name, $site);
 
                 $step('Opening it to visitors');
@@ -843,18 +851,32 @@ final readonly class SiteManager
     }
 
     /**
+     * Refuses a site whose running code keeps a newer server contract than this server, as its
+     * quire:about says: whatever its release feed entry, branch or labels say (a Git site's code may
+     * be a version the feed doesn't list).
+     *
+     * @return int The contract it keeps (0: none, Quire before 0.1.1)
+     *
+     * @throws ContractNotKept
+     */
+    public function ensureContractKept(SiteProject $project): int
+    {
+        $contract = SiteContract::of($this->compose->exec($project, self::PHP, ['bin/console', 'quire:about', '--format=json'], timeout: 120));
+        SiteContract::ensureKept($contract);
+
+        return $contract;
+    }
+
+    /**
      * Installs the site: its first admin invited by email when asked and the site can, otherwise with
      * a password that's shown once and never logged.
      *
      * @return string|null The admin's password, when one was made
      */
-    private function install(SiteProject $project, SiteRequest $request, Operation $operation): ?string
+    private function install(SiteProject $project, SiteRequest $request, Operation $operation, int $contract): ?string
     {
         // Sites that keep the server contract (Quire 0.1.1 and later) can invite.
-        $about = $this->compose->exec($project, self::PHP, ['bin/console', 'quire:about', '--format=json'], timeout: 120);
-        $report = $about->successful() ? json_decode($about->output, true) : null;
-        $contract = \is_array($report) ? ($report['contract'] ?? null) : null;
-        $invite = $request->invite && \is_int($contract) && $contract >= 1 && '' !== $this->mailerDsn;
+        $invite = $request->invite && $contract >= 1 && '' !== $this->mailerDsn;
 
         if ($request->invite && !$invite) {
             $operation->line('This site can\'t invite (it needs Quire 0.1.1 or later, and an email server): a password is made instead.');
@@ -906,7 +928,11 @@ final readonly class SiteManager
                 $result->orFail('Backing up the site');
             }
 
-            $backup = new SiteBackup($file, SiteBackup::INCOMPLETE_EXIT === $result->exitCode ? $this->absent($result) : null);
+            // What it has is the manifest's to say (server contract 2), not what quire:backup prints:
+            // incomplete by its exit code, or by its manifest even when it exited with 0.
+            [$manifest, $unread] = $this->manifest($project, $inside);
+            $incomplete = SiteBackup::INCOMPLETE_EXIT === $result->exitCode || false === $manifest?->complete;
+            $backup = new SiteBackup($file, $incomplete ? $this->absent($manifest, $unread, $result) : null);
 
             // Marked, on the disk, before the backup is there: whatever stops the server from here on
             // leaves it marked or not there, never taken for a complete one (that pruning would keep
@@ -935,14 +961,40 @@ final readonly class SiteManager
     }
 
     /**
-     * What quire:backup said it couldn't copy: its warnings, at most 25 lines.
+     * The backup's manifest, read from the file in the site's container (a site of server contract 1
+     * has one without "complete").
+     *
+     * @return array{?BackupManifest, ?string} The manifest, or why it couldn't be read
      */
-    private function absent(ProcessResult $result): string
+    private function manifest(SiteProject $project, string $inside): array
     {
-        $said = trim($result->output."\n".$result->errorOutput);
-        $lines = array_values(array_filter(array_map(trim(...), explode("\n", $said)), static fn (string $line): bool => '' !== $line && !str_starts_with($line, '[OK]')));
+        $read = $this->compose->exec($project, self::PHP, ['tar', '-xOf', $inside, BackupManifest::ENTRY], timeout: 300);
 
-        return [] === $lines ? 'quire:backup didn\'t say which.' : implode("\n", \array_slice($lines, 0, 25));
+        if (!$read->successful()) {
+            return [null, 'it couldn\'t be read from the backup'];
+        }
+
+        try {
+            return [BackupManifest::parse($read->output), null];
+        } catch (\UnexpectedValueException $e) {
+            return [null, $e->getMessage()];
+        }
+    }
+
+    /**
+     * What's absent from an incomplete backup, for people: as its manifest says, or (when that can't be
+     * read) quire:backup's warnings, which say it in words.
+     */
+    private function absent(?BackupManifest $manifest, ?string $unread, ProcessResult $result): string
+    {
+        if ($manifest instanceof BackupManifest) {
+            return $manifest->describe();
+        }
+
+        $said = trim($result->output."\n".$result->errorOutput);
+        $lines = array_values(array_filter(array_map(static fn (string $line): string => BackupManifest::shown(trim($line)), explode("\n", $said)), static fn (string $line): bool => '' !== $line && !str_starts_with($line, '[OK]')));
+
+        return \sprintf("Its manifest doesn't say which files (%s); quire:backup said:\n%s", $unread ?? 'none', [] === $lines ? '(nothing)' : implode("\n", \array_slice($lines, 0, BackupManifest::LISTED)));
     }
 
     /**

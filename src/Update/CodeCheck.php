@@ -16,9 +16,10 @@ use Quire\Server\Release\QuireFeed;
  *     commit it names: a planted address would pass);
  *   - a new site's skeleton (and an update's) has exactly the files the feed gives for its version.
  *
- * A mismatch stops the build. A version the feed doesn't vouch for (a branch, a fork, a release
- * before feeds named commits) is built, and said. A feed that doesn't check out stops it too; one
- * that can't be got (an outage) is said, and the build goes on, as updates do.
+ * A mismatch stops the build, and so does a release that keeps a newer server contract than this
+ * server knows. A version the feed doesn't vouch for (a branch, a fork, a release before feeds named
+ * commits) is built, and said. A feed that doesn't check out stops it too; one that can't be got (an
+ * outage) is said, and the build goes on, as updates do.
  */
 final readonly class CodeCheck
 {
@@ -34,6 +35,7 @@ final readonly class CodeCheck
      * @return list<string> What it couldn't vouch for, to say
      *
      * @throws CodeNotReleased When a package isn't the code Quire released
+     * @throws ContractNotKept When its release keeps a newer server contract than this server
      */
     public function lock(string $file): array
     {
@@ -62,6 +64,14 @@ final readonly class CodeCheck
             $name = $package['name'];
             $version = \is_string($package['version'] ?? null) ? ltrim($package['version'], 'v') : '';
             $release = $feed->release($version);
+            $contract = $release['requires']['server_contract'] ?? null;
+
+            // Before it's built: this server would read its backups wrongly (SiteContract checks the code
+            // itself once it runs, for versions the feed doesn't list).
+            if (null !== $contract && $contract > ReleaseCheck::CONTRACT) {
+                throw new ContractNotKept(\sprintf('%s %s keeps server contract %d; this server knows up to %d: update the server first ("quire-server update"). Nothing was built.', $name, $version, $contract, ReleaseCheck::CONTRACT));
+            }
+
             $expected = $release['packages'][$name] ?? null;
 
             if (null === $expected) {
