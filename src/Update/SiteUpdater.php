@@ -567,6 +567,9 @@ final readonly class SiteUpdater
 
                 $step('Checking it');
                 $this->check($project, $site);
+                // Code the feed doesn't list (a Git site's branch) is checked only once it runs:
+                // rolled back like any other check that fails.
+                $this->sites->ensureContractKept($project);
                 $migrationsAfter = $this->executedMigrations($project);
             } catch (\Throwable $e) {
                 $operation->line('!! '.$e->getMessage());

@@ -37,6 +37,7 @@ use Quire\Server\Site\SiteName;
 use Quire\Server\Tests\GateFixture;
 use Quire\Server\Tests\Registry\RegistryTestCase;
 use Quire\Server\Tests\ScriptedRunner;
+use Quire\Server\Update\ReleaseCheck;
 use Quire\Server\Update\SiteUpdater;
 use Quire\Server\Update\SkeletonFiles;
 use Quire\Server\Update\UpdateFailed;
@@ -93,6 +94,9 @@ final class SiteUpdaterTest extends RegistryTestCase
 
     /** @var list<string> Images that answer the smoke check */
     private array $healthy = [self::OLD, self::NEW];
+
+    /** @var array<string, int> The server contract each image's code keeps, by its image (1 otherwise) */
+    private array $contracts = [];
 
     /** How many "up" may still succeed (null: all) */
     private ?int $ups = null;
@@ -163,11 +167,13 @@ final class SiteUpdaterTest extends RegistryTestCase
             'docker compose exec' => fn (array $command, ?string $directory, ?string $inputFile): ProcessResult => match ($command[11] ?? '') {
                 'php' => \in_array($this->running, $this->healthy, true) ? ScriptedRunner::ok($command) : ScriptedRunner::failed($command, "/_quire/health: 500\n"),
                 'bin/console' => match ($command[12] ?? '') {
-                    'quire:about' => ScriptedRunner::ok($command, (string) json_encode(['contract' => 1, 'migrations' => ['executed' => $this->executed, 'pending' => 0]])),
+                    'quire:about' => ScriptedRunner::ok($command, (string) json_encode(['contract' => $this->contracts[$this->running] ?? 1, 'migrations' => ['executed' => $this->executed, 'pending' => 0]])),
                     'quire:restore' => $this->restore($command, $inputFile),
                     'quire:backup' => new ProcessResult($command, $this->backupExit, 0 === $this->backupExit ? '' : " [WARNING] 1 stored file(s) were missing, so the backup has no good copy of them:\n           media:ab/cd.jpg\n", ''),
                     default => ScriptedRunner::ok($command),
                 },
+                // The backup's manifest (server contract 2)
+                'tar' => ScriptedRunner::ok($command, (string) json_encode(0 === $this->backupExit ? ['complete' => true, 'absent' => []] : ['complete' => false, 'absent' => [['file' => 'media:ab/cd.jpg', 'reason' => 'missing']]])),
                 default => ScriptedRunner::ok($command),
             },
             'docker compose cp' => static function (array $command): ProcessResult {
@@ -322,6 +328,26 @@ final class SiteUpdaterTest extends RegistryTestCase
         $operation = $this->operations->latest()[0];
         self::assertSame('failed', $operation['status']);
         self::assertStringStartsWith('The update failed and was rolled back', (string) $operation['error']);
+    }
+
+    public function testAVersionThatKeepsANewerServerContractIsRolledBack(): void
+    {
+        // Code the feed doesn't list: only once it runs does it say which contract it keeps.
+        $this->contracts[self::NEW] = ReleaseCheck::CONTRACT + 1;
+        $this->migrations[self::NEW] = 21;
+
+        try {
+            $this->updater()->update($this->plan(), false, 'cli', 'darko', static fn (): null => null);
+            self::fail('It didn\'t fail.');
+        } catch (UpdateFailed $e) {
+            self::assertTrue($e->restored, 'Rolled back.');
+            self::assertStringContainsString(\sprintf('keeps server contract %d; this server knows up to %d', ReleaseCheck::CONTRACT + 1, ReleaseCheck::CONTRACT), $e->getMessage());
+        }
+
+        self::assertSame(self::OLD, $this->running, 'The image it had runs again.');
+        self::assertCount(1, $this->restored, 'Its database as before: the new version\'s migrations ran.');
+        self::assertSame('FROM 0.1.0', file_get_contents($this->paths->site($this->name).'/Dockerfile'));
+        self::assertSame(Site::RUNNING, $this->registry->get($this->name)?->status);
     }
 
     public function testWithoutNewMigrationsTheRollBackKeepsTheDatabase(): void
@@ -513,7 +539,7 @@ final class SiteUpdaterTest extends RegistryTestCase
         self::assertSame(self::OLD, $this->running);
         self::assertCount(1, $this->restored);
         self::assertStringContainsString('/backups/jane/update-', $this->restored[0]);
-        self::assertContains("That backup is incomplete: some stored files aren't in it. [WARNING] 1 stored file(s) were missing, so the backup has no good copy of them:\nmedia:ab/cd.jpg", $said);
+        self::assertContains("That backup is incomplete: some stored files aren't in it. media:ab/cd.jpg (missing)", $said, 'As its manifest says.');
         $undo = $this->operations->latest()[0];
         self::assertSame(['site.undo', 'succeeded'], [$undo['action'], $undo['status']]);
         self::assertNotEmpty(array_filter($this->operations->lines($undo['id']), static fn (string $line): bool => str_starts_with($line, '!! That backup is incomplete')), 'In its log too.');
@@ -639,6 +665,23 @@ final class SiteUpdaterTest extends RegistryTestCase
         $git = $this->repositories->of($this->name);
         self::assertSame([self::COMMIT_1, self::COMMIT_2], [$git['deployed'] ?? null, $git['failed'] ?? null]);
         self::assertSame(Site::RUNNING, $this->registry->get($this->name)?->status);
+    }
+
+    public function testACommitWhoseQuireKeepsANewerServerContractIsRolledBack(): void
+    {
+        $this->followRepository();
+        $this->contracts[self::NEW] = ReleaseCheck::CONTRACT + 1;
+
+        try {
+            $this->updater()->deploy($this->name, null, 'cli', 'darko', static fn (): null => null);
+            self::fail('It was deployed.');
+        } catch (UpdateFailed $e) {
+            self::assertTrue($e->restored);
+            self::assertStringContainsString('update the server first', $e->getMessage());
+        }
+
+        self::assertSame([self::COMMIT_1, self::OLD], [$this->checkedOut, $this->running], 'The commit and image it had.');
+        self::assertSame(self::COMMIT_2, $this->repositories->of($this->name)['failed'] ?? null, 'Not tried again by itself.');
     }
 
     public function testACommitItRunsIsntDeployedAgain(): void

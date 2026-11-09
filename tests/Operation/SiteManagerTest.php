@@ -35,6 +35,8 @@ use Quire\Server\Site\Site;
 use Quire\Server\Site\SiteName;
 use Quire\Server\Tests\GateFixture;
 use Quire\Server\Tests\Registry\RegistryTestCase;
+use Quire\Server\Update\ContractNotKept;
+use Quire\Server\Update\ReleaseCheck;
 use Symfony\Component\Filesystem\Filesystem;
 use Symfony\Component\Yaml\Yaml;
 
@@ -211,6 +213,40 @@ final class SiteManagerTest extends RegistryTestCase
         self::assertStringContainsString('[secret]', $log);
         self::assertStringNotContainsString($this->envValue($env, 'QUIRE_DATABASE_PASSWORD'), $log);
         self::assertStringNotContainsString($this->envValue($env, 'APP_SECRET'), $log);
+    }
+
+    public function testASiteWhoseQuireKeepsANewerServerContractIsntAdded(): void
+    {
+        // Code the feed doesn't list (e.g. a branch): its own quire:about says so once it runs.
+        $this->script['docker compose exec'] = static fn (array $command): ProcessResult => match ($command[12] ?? '') {
+            'quire:about' => self::ok($command, (string) json_encode(['contract' => ReleaseCheck::CONTRACT + 1])),
+            default => self::ok($command, ''),
+        };
+
+        try {
+            $this->manager()->add($this->request(), 'cli', 'darko', static fn (): null => null);
+            self::fail('It was added.');
+        } catch (ContractNotKept $e) {
+            self::assertStringContainsString(\sprintf('keeps server contract %d; this server knows up to %d: update the server first', ReleaseCheck::CONTRACT + 1, ReleaseCheck::CONTRACT), $e->getMessage());
+        }
+
+        self::assertNotContains('quire:install', array_map(static fn (array $command): string => $command[12] ?? '', $this->commands), 'Nothing is done with it.');
+        self::assertSame(Site::REMOVED, $this->registry->get($this->name)?->status, 'Undone: its name is free again.');
+        self::assertFalse($this->databases->exists($this->name));
+        self::assertSame([], $this->frontDoor->all(), 'Never opened.');
+        self::assertSame('failed', $this->operations->latest()[0]['status']);
+    }
+
+    public function testASiteWhoseReportIsntOneIsntAdded(): void
+    {
+        $this->script['docker compose exec'] = static fn (array $command): ProcessResult => match ($command[12] ?? '') {
+            'quire:about' => self::ok($command, '{"contract": "2"}'),
+            default => self::ok($command, ''),
+        };
+
+        $this->expectException(ContractNotKept::class);
+        $this->expectExceptionMessageIsOrContains('which it keeps can\'t be told');
+        $this->manager()->add($this->request(), 'cli', 'darko', static fn (): null => null);
     }
 
     public function testANewSiteIsntBuiltOnAMachineWithoutRoomForIt(): void
@@ -415,9 +451,11 @@ final class SiteManagerTest extends RegistryTestCase
     public function testARestoreAsANewSiteThatFailsUndoesEverything(): void
     {
         [$code, $backup] = $this->backedUpSite();
-        $this->script['docker compose exec'] = static fn (array $command): ProcessResult => 'quire:restore' === ($command[12] ?? '')
-            ? new ProcessResult(self::strings($command), 1, '', "The backup is of another version of Quire.\n")
-            : self::ok($command, '');
+        $this->script['docker compose exec'] = static fn (array $command): ProcessResult => match ($command[12] ?? '') {
+            'quire:restore' => new ProcessResult(self::strings($command), 1, '', "The backup is of another version of Quire.\n"),
+            'quire:about' => self::ok($command, '{"contract": 1}'),
+            default => self::ok($command, ''),
+        };
 
         try {
             $this->manager()->restoreAsNew($this->name, $this->request()->domains, $code, $backup, [], 'cli', 'darko', static fn (): null => null);
@@ -727,7 +765,8 @@ final class SiteManagerTest extends RegistryTestCase
         self::assertStringStartsWith($this->paths->backups($this->name).'/final-', $backup);
         self::assertSame('0600', substr(\sprintf('%o', fileperms($backup)), -4));
         $commands = $this->commands();
-        self::assertSame(['exec', 'cp', 'exec', 'down'], array_map(static fn (array $command): string => $command[8] ?? '', $commands), 'Backed up before anything is stopped.');
+        // quire:backup, its manifest read, copied out, removed in the site: before anything is stopped
+        self::assertSame(['exec', 'exec', 'cp', 'exec', 'down'], array_map(static fn (array $command): string => $command[8] ?? '', $commands), 'Backed up before anything is stopped.');
         // The rest of its database too, as its own role, beside its backup
         $dump = array_first(array_filter($this->dockerCommands(), static fn (array $command): bool => \in_array('pg_dump', $command, true))) ?? [];
         self::assertContains('--username='.$this->name->databaseIdentifier(), $dump, 'As the site\'s own role.');
@@ -736,7 +775,7 @@ final class SiteManagerTest extends RegistryTestCase
         $kept = substr($backup, 0, -4).'.database.dump';
         self::assertSame('the site\'s own tables', file_get_contents($kept));
         self::assertSame('0600', substr(\sprintf('%o', fileperms($kept)), -4));
-        self::assertContains('--volumes', $commands[3] ?? []);
+        self::assertContains('--volumes', $commands[4] ?? []);
         self::assertSame([], $this->frontDoor->all());
         self::assertFalse($this->databases->exists($this->name));
         self::assertFileDoesNotExist($this->paths->site($this->name));
@@ -819,6 +858,79 @@ final class SiteManagerTest extends RegistryTestCase
         self::assertFileExists(\Quire\Server\Backup\SiteBackup::marker($backups[0] ?? ''), 'What\'s left is marked incomplete: never taken for a complete one.');
     }
 
+    public function testAnIncompleteBackupSaysWhatItsManifestSays(): void
+    {
+        $manager = $this->manager();
+        $manager->add($this->request(), 'cli', 'darko', static fn (): null => null);
+        $read = [];
+        $this->script['docker compose exec'] = static function (array $command) use (&$read): ProcessResult {
+            if ('tar' === ($command[11] ?? '')) {
+                $read[] = \array_slice($command, 11);
+
+                return self::ok($command, (string) json_encode(['complete' => false, 'absent' => [['file' => 'media:ab/cd.jpg', 'reason' => 'missing'], ['file' => "media:ef/\e[2J01.pdf", 'reason' => 'damaged']]]));
+            }
+
+            // Its wording changed: what it prints is for people, not the server.
+            return 'quire:backup' === ($command[12] ?? '') ? new ProcessResult(self::strings($command), 3, "Some words.\n", '') : self::ok($command, '');
+        };
+
+        try {
+            $manager->remove($this->name, true, 'cli', 'darko', static fn (): null => null);
+            self::fail('It was removed.');
+        } catch (IncompleteBackup $e) {
+            self::assertSame("media:ab/cd.jpg (missing)\nmedia:ef/?[2J01.pdf (damaged)", $e->backup->absent);
+            self::assertSame("media:ab/cd.jpg (missing)\nmedia:ef/?[2J01.pdf (damaged)\n", file_get_contents(\Quire\Server\Backup\SiteBackup::marker($e->backup->file)));
+        }
+
+        self::assertCount(1, $read);
+        self::assertSame(['tar', '-xOf'], \array_slice($read[0], 0, 2));
+        self::assertSame('manifest.json', $read[0][3], 'Only its manifest is read, in the site\'s container.');
+    }
+
+    public function testABackupItsManifestCallsIncompleteIsIncompleteThoughItExitedWith0(): void
+    {
+        $manager = $this->manager();
+        $manager->add($this->request(), 'cli', 'darko', static fn (): null => null);
+        $this->script['docker compose exec'] = static fn (array $command): ProcessResult => 'tar' === ($command[11] ?? '')
+            ? self::ok($command, '{"complete": false, "absent": [{"file": "media:ab/cd.jpg", "reason": "missing"}]}')
+            : self::ok($command, '');
+
+        $this->expectException(IncompleteBackup::class);
+        $this->expectExceptionMessageIsOrContains('media:ab/cd.jpg (missing)');
+        $manager->remove($this->name, true, 'cli', 'darko', static fn (): null => null);
+    }
+
+    public function testAnIncompleteBackupWhoseManifestCantBeReadSaysWhatQuireBackupSaid(): void
+    {
+        $manager = $this->manager();
+        $manager->add($this->request(), 'cli', 'darko', static fn (): null => null);
+        $this->script['docker compose exec'] = static fn (array $command): ProcessResult => match (true) {
+            'tar' === ($command[11] ?? '') => new ProcessResult(self::strings($command), 2, '', 'tar: manifest.json: Not found in archive'),
+            'quire:backup' === ($command[12] ?? '') => new ProcessResult(self::strings($command), 3, " [WARNING] media:ab/cd.jpg\e]0;x\n", ''),
+            default => self::ok($command, ''),
+        };
+
+        try {
+            $manager->remove($this->name, true, 'cli', 'darko', static fn (): null => null);
+            self::fail('It was removed.');
+        } catch (IncompleteBackup $e) {
+            self::assertSame("Its manifest doesn't say which files (it couldn't be read from the backup); quire:backup said:\n[WARNING] media:ab/cd.jpg?]0;x", $e->backup->absent, 'Still incomplete: its exit code says so.');
+        }
+    }
+
+    public function testACompleteBackupWhoseManifestCantBeReadIsComplete(): void
+    {
+        // Server contract 1 (Quire before 0.3): exit 0 means complete, its manifest says nothing.
+        $manager = $this->manager();
+        $manager->add($this->request(), 'cli', 'darko', static fn (): null => null);
+        $this->script['docker compose exec'] = static fn (array $command): ProcessResult => 'tar' === ($command[11] ?? '')
+            ? self::ok($command, '{"format": 1}')
+            : self::ok($command, '');
+
+        self::assertNotNull($manager->remove($this->name, true, 'cli', 'darko', static fn (): null => null));
+        self::assertSame(Site::REMOVED, $this->registry->get($this->name)?->status);
+    }
+
     public function testABackupThatCantBeCopiedOutLeavesNoMark(): void
     {
         $manager = $this->manager();
@@ -897,6 +1009,26 @@ final class SiteManagerTest extends RegistryTestCase
         self::assertSame([], $this->commands(), 'Nothing to stop.');
     }
 
+    public function testABackupWhoseQuireKeepsANewerServerContractIsntRestoredAsANewSite(): void
+    {
+        [$code, $backup] = $this->backedUpSite();
+        $this->script['docker compose exec'] = static fn (array $command): ProcessResult => match ($command[12] ?? '') {
+            'quire:about' => self::ok($command, (string) json_encode(['contract' => ReleaseCheck::CONTRACT + 1])),
+            default => self::ok($command, ''),
+        };
+
+        try {
+            $this->manager()->restoreAsNew($this->name, $this->request()->domains, $code, $backup, [], 'cli', 'darko', static fn (): null => null);
+            self::fail('It was restored.');
+        } catch (ContractNotKept) {
+        }
+
+        self::assertNotContains('quire:restore', array_map(static fn (array $command): string => $command[12] ?? '', $this->commands), 'Its backup is never read by a server that doesn\'t know it.');
+        self::assertFalse($this->databases->exists($this->name));
+        self::assertSame([], $this->frontDoor->all());
+        self::assertSame(Site::REMOVED, $this->registry->get($this->name)?->status);
+    }
+
     public function testSitesLeftBeingCreatedAreRemovedAtTheAgentsStart(): void
     {
         $manager = $this->manager();
@@ -921,8 +1053,9 @@ final class SiteManagerTest extends RegistryTestCase
         self::assertSame([Site::RUNNING, Site::OWN_DATABASE, $this->name->value], [$site->status, $site->databaseMode, $site->project]);
         self::assertSame(['jane.example', 'www.jane.example'], array_map(static fn (Domain $domain): string => $domain->value, $site->domains), 'From its SERVER_NAME.');
         self::assertSame(['Recording the site', 'Backing it up, as it is', 'Changing its settings (a copy of them is kept)', 'Checking and building it (a few minutes; it keeps running meanwhile)', 'Moving it behind the front door (a few seconds offline)', 'Opening it to visitors'], $said);
-        // Backed up before anything changes; built before it's stopped; the policy checked before both.
-        self::assertSame(['exec', 'cp', 'exec', 'exec', 'cp', 'exec', 'config', 'build', 'config', 'up', 'cp'], array_map(static fn (array $command): string => $command[8] ?? '', $this->commands()));
+        // Backed up before anything changes (its manifest read before it's copied out); built before it's
+        // stopped; the policy checked before both; the contract its code keeps asked before it's opened.
+        self::assertSame(['exec', 'exec', 'cp', 'exec', 'exec', 'cp', 'exec', 'config', 'build', 'config', 'up', 'exec', 'cp'], array_map(static fn (array $command): string => $command[8] ?? '', $this->commands()));
         self::assertFileExists($this->paths->site($this->name).'/composer.lock', 'Its versions recorded.');
         $backups = glob($this->paths->backups($this->name).'/before-server-*.tar');
         self::assertCount(1, false === $backups ? [] : $backups, 'Backed up as it was.');
@@ -988,6 +1121,25 @@ final class SiteManagerTest extends RegistryTestCase
         self::assertSame('failed', $this->operations->latest()[0]['status']);
         self::assertFileExists($directory.'/compose.yaml', 'Its folder stays where it is.');
         self::assertArrayNotHasKey('quire-buildkit-'.$this->name->value, $this->builders, 'The builder made for it goes.');
+    }
+
+    public function testASiteWhoseQuireKeepsANewerServerContractIsntAdoptedButPutBack(): void
+    {
+        $original = $this->siteInstalledByHand();
+        $this->script['docker compose exec'] = static fn (array $command): ProcessResult => match ($command[12] ?? '') {
+            'quire:about' => self::ok($command, (string) json_encode(['contract' => ReleaseCheck::CONTRACT + 1])),
+            default => self::ok($command, ''),
+        };
+
+        try {
+            $this->manager()->adopt($this->name, [], 'cli', 'darko', static fn (): null => null);
+            self::fail('It was adopted.');
+        } catch (ContractNotKept) {
+        }
+
+        self::assertSame($original, file_get_contents($this->paths->site($this->name).'/prod.env'), 'Running as it was.');
+        self::assertSame([], $this->frontDoor->all());
+        self::assertSame(Site::REMOVED, $this->registry->get($this->name)?->status);
     }
 
     public function testAHostileSiteIsNeverStartedBehindTheFrontDoor(): void

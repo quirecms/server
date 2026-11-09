@@ -8,7 +8,8 @@ namespace Quire\Server\Backup;
  * A site's quire:backup file, and whether it has everything the site's data lists.
  *
  * quire:backup exits 3 when it wrote the backup but some stored files aren't in it (a disk it can't
- * reach, a file gone or damaged). The file is still kept: it's the best copy there is. Each use decides
+ * reach, a file gone or damaged), and its manifest says so too ({@see BackupManifest}): either makes it
+ * incomplete here. The file is still kept: it's the best copy there is. Each use decides
  * what an incomplete one means: an update stops, since its backup is the way back; restoring an older
  * backup goes on, since this one only keeps what is there now.
  */
@@ -19,9 +20,9 @@ final readonly class SiteBackup
 
     /**
      * @param string      $file   Where it is
-     * @param string|null $absent What quire:backup said is missing from it, for people to read only:
-     *                            its wording isn't part of the server contract, so nothing decides on
-     *                            it (the exit code decides); null when it's complete
+     * @param string|null $absent What's missing from it, for people to read only (its manifest's list,
+     *                            or quire:backup's warnings when that can't be read): its exit code
+     *                            and its manifest's "complete" decide; null when it's complete
      */
     public function __construct(
         public string $file,
@@ -30,7 +31,7 @@ final readonly class SiteBackup
     }
 
     /**
-     * The file beside an incomplete backup that says so, and what quire:backup said is absent: so
+     * The file beside an incomplete backup that says so, and what's absent from it: so
      * pruning and listings tell it apart without opening it.
      */
     public static function marker(string $backup): string
