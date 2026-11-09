@@ -33,6 +33,12 @@ use Symfony\Component\Filesystem\Filesystem;
  */
 final readonly class ServerUpdater
 {
+    /**
+     * Where the gate's settings are (compose.yaml), when not the server's own: the release's, as its
+     * checks run before it's installed.
+     */
+    public const string GATE_CONFIG = 'QUIRE_SERVER_GATE_CONFIG';
+
     private const int ROLLBACK_WAIT = 300;
 
     public function __construct(
@@ -93,7 +99,11 @@ final readonly class ServerUpdater
             $lines[] = $line;
             $say($line);
         };
-        $work = sys_get_temp_dir().'/quire-server-release-'.bin2hex(random_bytes(6));
+        // In the server's folder, which the updater sees where Docker does (the same path inside as on
+        // the host): the release's Compose files mount their own files (its gate's settings), which
+        // Docker reads on the host. Not where the agent sees it: the copy of server.env below is there.
+        $this->folder->clearUpdates();
+        $work = $this->folder->path.'/'.ServerFolder::UPDATE_PREFIX.bin2hex(random_bytes(6));
 
         try {
             if (DatabaseUpgrade::latest(DatabaseUpgrade::directory($this->root))?->unfinished() ?? false) {
@@ -112,7 +122,8 @@ final readonly class ServerUpdater
 
             $env = $this->folder->env()->with(['QUIRE_SERVER_IMAGE' => $release->image, 'COMPOSE_FILE' => $images->composeFile('compose.yaml', $postgres)]);
             $staged = $work.'/server.env';
-            ServerFolder::writeSecret($staged, $env->content());
+            // For the checks only, never installed: the gate's settings are the release's own
+            ServerFolder::writeSecret($staged, $env->with([self::GATE_CONFIG => $release->files.'/gate/yorvogate.yaml'])->content());
             $this->stack->validate($release->files, $staged);
             $log('Its Compose files check out with this server\'s settings');
             if ($this->stack->checkGate($release->files, $staged)) {

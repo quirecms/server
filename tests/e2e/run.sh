@@ -9,7 +9,7 @@
 #   E2E_ONLY=release tests/e2e/run.sh  this checkout's install.sh installs the latest published release
 #                                             (its signatures checked) and adds a site with its agent
 #   E2E_ONLY=update tests/e2e/run.sh … the server, installed from this checkout, updates itself to the
-#                                             published release (E2E_UPDATE_TO, else the oldest: 0.1.0)
+#                                             published release (E2E_UPDATE_TO, else 0.4.0: the first with a Docker gate)
 #   E2E_ONLY=backups tests/e2e/run.sh … backups off the server (restic, on an S3 service of its own)
 #   E2E_ONLY=database tests/e2e/run.sh … the server's PostgreSQL upgraded to the next major
 #                                             (E2E_POSTGRES_NEXT, else 19rc1-alpine), undone, cleaned
@@ -299,9 +299,13 @@ check 'jane is still served' "inside \"curl -sk $resolve https://jane.test/\" | 
 fi
 
 if updating; then
-to=${E2E_UPDATE_TO:-0.1.0}
+# A release with a Docker gate: the update checks every site's scope with it, from where it unpacked
+# the release (0.4.0's updater unpacked it where Docker doesn't see, and every update failed there)
+to=${E2E_UPDATE_TO:-0.4.0}
 echo "== The server updates itself to Quire Server $to (published, its signatures checked)"
 inside 'mkdir -p /srv/quire/server/keys && echo key > /srv/quire/server/keys/blog && chmod 600 /srv/quire/server/keys/blog'
+# The key that signs its backups: 0.4.0's updates removed it with the release's files
+inside 'mkdir -p -m 700 /srv/quire/server/signing && echo the-signing-key > /srv/quire/server/signing/backups.key && chmod 600 /srv/quire/server/signing/backups.key'
 check 'it says a release is available' "inside 'quire-server update --check' | grep -q 'is available (this server runs a build from a checkout)'"
 check 'a release that doesn'\''t exist changes nothing' "! inside 'quire-server update --to=0.0.0 --yes' >/dev/null 2>&1 && inside 'quire-server version' | grep -q 'built from a checkout'"
 check 'a version that isn'\''t one is refused' "! inside 'quire-server update \"--to=0.1.0/../x\" --yes' >/dev/null 2>&1"
@@ -329,6 +333,8 @@ check 'it runs the release'\''s files, not a build' "inside 'grep -qx COMPOSE_FI
 check 'its settings, secrets and keys are kept' "inside 'grep -q ^QUIRE_SERVER_POSTGRES_PASSWORD=. /srv/quire/server/server.env' && [ \"\$(inside 'stat -c %a /srv/quire/server/server.env')\" = 600 ] && inside 'grep -qx key /srv/quire/server/keys/blog'"
 check 'it was backed up first (root only)' "inside 'ls /srv/quire/backups/server/*/files.tar /srv/quire/backups/server/*/database.dump' && [ \"\$(inside 'stat -c %a /srv/quire/backups/server/*/database.dump')\" = 600 ]"
 check 'the update is recorded' "inside 'quire-server operations' | grep -q 'server.update.*succeeded'"
+check 'the key that signs its backups is kept, and in none of its backups' "inside 'grep -qx the-signing-key /srv/quire/server/signing/backups.key' && ! inside 'tar -tf /srv/quire/backups/server/*/files.tar' | grep -q signing/"
+check 'nothing of the update is left in the server'\''s folder' "[ -z \"\$(inside 'ls -A /srv/quire/server' | grep '^\.update-')\" ]"
 check 'its secrets never reached a command line' "! grep -q \"\$(inside 'sed -n s/^QUIRE_SERVER_POSTGRES_PASSWORD=//p /srv/quire/server/server.env' | tr -d \"'\")\" $logs/update.log"
 fi
 

@@ -13,6 +13,7 @@ use Quire\Server\Backup\LocalBackups;
 use Quire\Server\Backup\OffsiteBackups;
 use Quire\Server\Backup\Provenance;
 use Quire\Server\Backup\Restic;
+use Quire\Server\Backup\SigningKeyLost;
 use Quire\Server\Backup\SiteDatabaseDumps;
 use Quire\Server\Console\BackupsCommand;
 use Quire\Server\Database\SiteDatabases;
@@ -357,6 +358,29 @@ final class OffsiteBackupsTest extends RegistryTestCase
         self::assertSame([], $this->sent, 'No backup, nothing sent.');
     }
 
+    public function testNothingIsBackedUpOnceTheServersKeyIsGone(): void
+    {
+        $this->runningSite(0);
+        $this->subject()->backUpNow(new SiteName('jane'), 'cli', 'darko', static function (): void {});
+        $this->sent = [];
+        // Its file lost (as 0.4.0's updates removed it): never signed with another, made silently
+        unlink($this->root.'/server/signing/backups.key');
+
+        foreach (['now' => fn (): string => $this->subject()->backUpNow(new SiteName('jane'), 'cli', 'darko', static function (): void {}), 'the night' => fn (): array => $this->subject()->nightly('cli', 'darko', static function (): void {})] as $when => $backUp) {
+            try {
+                $backUp();
+                self::fail($when.': it backed up.');
+            } catch (SigningKeyLost $e) {
+                self::assertStringContainsString('is gone', $e->getMessage());
+            }
+
+            self::assertSame([], $this->sent, $when.': nothing sent.');
+            self::assertSame('failed', $this->operations()->latest()[0]['status'], $when.': said, not left running.');
+        }
+
+        self::assertFileDoesNotExist($this->root.'/server/signing/backups.key');
+    }
+
     public function testRetentionKeepsIncompleteSnapshotsApart(): void
     {
         $forget = [];
@@ -475,7 +499,7 @@ final class OffsiteBackupsTest extends RegistryTestCase
         $updater = new SiteUpdater($this->registry, new SiteUpdates($this->connection, $this->schema), $repositories, $operations, new SiteLock($this->connection, $this->schema), $sites, $compose, new Images($this->runner, GateFixture::gate($this->runner, $this->root, 'jane', 'jane-copy', 'old-site')), $git, $this->paths);
         $settings = new BackupSettings('s3:https://host/bucket', 'the-key', 'the-secret', 'a-long-random-password-0123456789');
 
-        return new OffsiteBackups($settings, new Restic($this->runner, $settings, $this->root.'/backups/.restic-cache'), $this->registry, $sites, new SiteLock($this->connection, $this->schema), $updater, $repositories, new UpdatePolicies($this->connection, $this->schema), $operations, $this->paths, $this->runner, GateFixture::TRUSTED, 'postgresql://postgres:x@quire-database:5432/postgres', $this->ledger, new BackupSigning($this->root.'/server/signing/backups.key'), new \Quire\Server\Backup\BackupWatch($settings, new Restic($this->runner, $settings, $this->root.'/backups/.restic-cache'), $this->ledger, new \Quire\Server\Notify\Checks($this->connection, $this->schema), new FakeBucket()->client()));
+        return new OffsiteBackups($settings, new Restic($this->runner, $settings, $this->root.'/backups/.restic-cache'), $this->registry, $sites, new SiteLock($this->connection, $this->schema), $updater, $repositories, new UpdatePolicies($this->connection, $this->schema), $operations, $this->paths, $this->runner, GateFixture::TRUSTED, 'postgresql://postgres:x@quire-database:5432/postgres', $this->ledger, new BackupSigning($this->root.'/server/signing/backups.key', $this->ledger), new \Quire\Server\Backup\BackupWatch($settings, new Restic($this->runner, $settings, $this->root.'/backups/.restic-cache'), $this->ledger, new \Quire\Server\Notify\Checks($this->connection, $this->schema), new FakeBucket()->client()));
     }
 
     /**

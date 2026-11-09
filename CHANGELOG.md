@@ -10,7 +10,10 @@ Quire 0.2.0's sites: server contract 2, backups that say when they lack a stored
 
 ### Updating from 0.4.0
 
-`quire-server update` moves a server to 0.5.0, checked by 0.4.0's own updater. There is nothing to do after it: no migrations, and no site is started again.
+`quire-server update` moves a server to 0.5.0, checked by 0.4.0's own updater. There is nothing to do after it, and no site is started again. Two flaws of 0.4.0's updater are dealt with on the way, by 0.5.0's files and its agent:
+
+- 0.4.0 couldn't update to any release with a Docker gate: it stopped at "Checking the sites' scopes with the release's Docker gate failed … yorvogate.yaml: is a directory", and the server ran as it was. 0.5.0's Compose files pass that check.
+- 0.4.0's updates removed the key that signs the server's backups, with the release's files (a copy stays in the update's backup of the server). 0.5.0's agent puts it back from there as it starts, before any night needs it: `quire-server logs agent` says so. The public key you kept stays the server's.
 
 Nothing changes for sites on Quire 0.1, which never report an incomplete backup. Once a site is on Quire 0.2.0 (`quire-server site:update <site> --to=0.2.0`, by hand: automatic updates stay on its minor version), a backup of it that lacks some stored files **stops** an update, a take-over and a removal, where 0.4.0 went on (`--skip-backup` still removes a site anyway), and fails the night's backups. Fix what it names (the backup says which files and why), and run it again.
 
@@ -22,6 +25,8 @@ Nothing changes for sites on Quire 0.1, which never report an incomplete backup.
   - once the new code runs, from its own `quire:about` (code the feed doesn't list, such as a Git site's branch): a new site is undone before it's installed or restored, a site being taken over is put back as it ran, and an update or a deploy is rolled back.
 
   The message says to update the server first. The `com.quirecms.contract` label isn't used for this: it comes from the site's own `compose.yaml`, which may be out of date.
+
+- **The server records the public key it signs its backups with.** A key file that went missing, or another key in its place, is refused, with how to put the server's own back: no backup is signed with a new key the owner didn't choose, which other servers wouldn't trust. **`quire-server backups:new-key`** starts a new one on purpose, and shows its public key for the servers that restore this one's backups.
 
 ### Changed
 
@@ -36,6 +41,8 @@ Nothing changes for sites on Quire 0.1, which never report an incomplete backup.
 
 ### Fixed
 
+- **Updating the server to a release with a Docker gate** works. The updater unpacked the release where only it could see it, so Docker made a folder in place of the gate's settings it mounts, and the gate's check of the sites' scopes failed: no server on 0.4.0 could update. It unpacks it in the server's folder now, and the release's gate reads the release's own settings.
+- **Updating the server keeps the key that signs its backups** (`signing/`), and the agent's work folder: they were taken for the release's files, backed up with them and removed. The next night made a new key, and servers that trusted this one's backups refused them, with nothing saying why.
 - **The installer and `quire-server update` download a release's files for a minute** when GitHub fails for a moment (HTTP 408, 429, 500, 502, 503, 504 or no answer in time): tried 6 more times, 10 s apart, where curl's 3 quick tries gave up after 7 s. GitHub answered 504 for a minute at a time on 2026-11-07, and an install stopped at "Couldn't download release.env". Finding the latest release is tried again the same way, and so is Docker's signing key when the installer installs Docker.
 - **Getting a site's files from the skeleton** (`site:add`, an update's plan, `restore --as`) is tried once more, 30 s later, when a download fails on the way (a host's 5xx or 429, a connection cut), as a site's build is since 0.4.0: GitHub answered 504 to every download for a minute at a time on 2026-11-07, and adding a site failed.
 - **`quire-server update`, `backups:setup` and `database:upgrade` right after another one** no longer refuse with "An update runs already": the container of the one before, which Docker removes a moment after it ends, was taken for a running one. A running one is still refused, now named ("quire-server database:upgrade runs already").

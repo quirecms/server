@@ -6,6 +6,7 @@ namespace Quire\Server\Console;
 
 use Quire\Server\Backup\LocalBackups;
 use Quire\Server\Backup\OffsiteBackups;
+use Quire\Server\Backup\SigningKeyRecovery;
 use Quire\Server\Docker\Builders;
 use Quire\Server\Docker\Gate;
 use Quire\Server\FrontDoor\DomainDirectory;
@@ -59,6 +60,7 @@ final class AgentCommand
         private readonly Watch $watch,
         private readonly Problems $problems,
         private readonly Notifier $notifier,
+        private readonly SigningKeyRecovery $signingKeys,
     ) {
     }
 
@@ -93,6 +95,18 @@ final class AgentCommand
         // Sites a crash or a power cut stopped in the middle of a release: as they were before it.
         foreach ($this->sites->recoverInterrupted(static fn (string $line) => $io->writeln('Recovery: '.$line)) as $site => $outcome) {
             $io->writeln(\sprintf('Recovery: "%s": %s', $site, $outcome));
+        }
+
+        // The key that signs its backups, as an update of Quire Server 0.4.0 left it (removed): put back
+        // before a night could need it. Its failure doesn't stop the agent: the night says the key is gone.
+        try {
+            $from = $this->signingKeys->recover();
+
+            if (null !== $from) {
+                $io->writeln(\sprintf('Recovery: the key that signs this server\'s backups was put back from %s (an update of Quire Server 0.4.0 had removed it)', $from));
+            }
+        } catch (\Throwable $e) {
+            $io->warning('The key that signs this server\'s backups couldn\'t be put back: '.$e->getMessage());
         }
 
         do {

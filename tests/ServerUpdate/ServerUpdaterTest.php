@@ -64,6 +64,9 @@ final class ServerUpdaterTest extends RegistryTestCase
     private bool $gateAccepts = true;
 
     private bool $releaseHasGate = true;
+
+    /** @var array{directory: string, env: string}|null Where the release's gate checked the sites' scopes, and its settings then */
+    private ?array $gateCheck = null;
     private bool $restoreFails = false;
 
     /** The PostgreSQL major the server runs */
@@ -130,10 +133,17 @@ final class ServerUpdaterTest extends RegistryTestCase
                 $this->composeValid => ScriptedRunner::ok($command),
                 default => ScriptedRunner::failed($command, 'required variable QUIRE_SERVER_NEW_SECRET is missing a value'),
             },
-            'docker compose run' => fn (array $command): ProcessResult => match (true) {
-                ['gate', 'check', '--config', '/etc/yorvogate/yorvogate.yaml'] !== \array_slice($command, -4) => throw new \LogicException('Unexpected: '.implode(' ', $command)),
-                $this->gateAccepts => ScriptedRunner::ok($command),
-                default => ScriptedRunner::failed($command, "scope /etc/yorvogate/sites/deadbeefcafe.json: prefix \"deadbeefcafe_\" starts with 12 hex digits and \"_\"\n"),
+            'docker compose run' => function (array $command): ProcessResult {
+                if (['gate', 'check', '--config', '/etc/yorvogate/yorvogate.yaml'] !== \array_slice($command, -4)) {
+                    throw new \LogicException('Unexpected: '.implode(' ', $command));
+                }
+
+                $at = static fn (string $option): string => $command[(int) array_search($option, $command, true) + 1];
+                $this->gateCheck = ['directory' => $at('--project-directory'), 'env' => (string) file_get_contents($at('--env-file'))];
+
+                return $this->gateAccepts
+                    ? ScriptedRunner::ok($command)
+                    : ScriptedRunner::failed($command, "scope /etc/yorvogate/sites/deadbeefcafe.json: prefix \"deadbeefcafe_\" starts with 12 hex digits and \"_\"\n");
             },
             'docker pull --quiet' => static fn (array $command): ProcessResult => ScriptedRunner::ok($command, (string) end($command)),
             'docker compose stop' => function (array $command): ProcessResult {
@@ -306,6 +316,41 @@ final class ServerUpdaterTest extends RegistryTestCase
         $this->update();
         self::assertNotContains('docker compose run', $this->runner->keys());
         self::assertContains('docker compose up', $this->runner->keys(), 'It updates all the same.');
+    }
+
+    public function testTheGateChecksTheReleaseWhereDockerSeesIt(): void
+    {
+        // Left by an update a crash cut short: it holds a copy of server.env
+        mkdir($this->root.'/server/'.ServerFolder::UPDATE_PREFIX.'cutshort', 0o700);
+        file_put_contents($this->root.'/server/'.ServerFolder::UPDATE_PREFIX.'cutshort/server.env', "SECRET=x\n");
+
+        $this->update();
+
+        $check = $this->gateCheck ?? self::fail('The gate checked nothing.');
+        // The same path in the updater as on the host (compose.yaml mounts the server's folder so):
+        // Docker reads the release's own files from there, where /tmp was the updater's alone.
+        self::assertStringStartsWith($this->root.'/server/'.ServerFolder::UPDATE_PREFIX, $check['directory']);
+        self::assertStringContainsString(ServerUpdater::GATE_CONFIG."='".$check['directory'].'/gate/yorvogate.yaml'."'", $check['env'], 'The release\'s own settings for its gate.');
+        self::assertStringNotContainsString(ServerUpdater::GATE_CONFIG, (string) file_get_contents($this->root.'/server/server.env'), 'Only for the check: never installed.');
+        self::assertSame([], glob($this->root.'/server/'.ServerFolder::UPDATE_PREFIX.'*'), 'Nothing of it, or of the one cut short, is left.');
+    }
+
+    public function testAnUpdateKeepsTheKeyThatSignsBackupsAndTheWorkFolder(): void
+    {
+        mkdir($this->root.'/server/signing', 0o700);
+        file_put_contents($this->root.'/server/signing/backups.key', "the-key\n");
+        mkdir($this->root.'/server/work/jane', 0o700, true);
+
+        $this->update();
+
+        self::assertSame("the-key\n", file_get_contents($this->root.'/server/signing/backups.key'), 'Updates removed it with the release\'s files (0.4.0).');
+        self::assertDirectoryExists($this->root.'/server/work/jane');
+        $archives = glob($this->root.'/backups/server/*/files.tar');
+        self::assertNotEmpty($archives);
+        $listed = (string) shell_exec('tar -tf '.escapeshellarg($archives[0]));
+        self::assertStringNotContainsString('signing/', $listed, 'Nor is it in the update\'s backup: it\'s in none of its backups (D-36).');
+        self::assertStringNotContainsString(ServerFolder::UPDATE_PREFIX, $listed);
+        self::assertStringNotContainsString('signing/', (string) file_get_contents($this->root.'/server/'.ServerFolder::MANIFEST));
     }
 
     public function testItWaitsForOperationsOnSites(): void
