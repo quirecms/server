@@ -198,6 +198,14 @@ services:
             $cache: '%quire_server.root%/backups/.restic-cache'
             $inUpdater: '%env(bool:QUIRE_SERVER_UPDATER)%'
 
+    Quire\Server\Console\SettingsCommand:
+        arguments:
+            $inUpdater: '%env(bool:QUIRE_SERVER_UPDATER)%'
+
+    Quire\Server\Console\SettingsSetCommand:
+        arguments:
+            $inUpdater: '%env(bool:QUIRE_SERVER_UPDATER)%'
+
     Quire\Server\Console\AddSiteCommand:
         arguments:
             $defaultVersion: '%env(QUIRE_SERVER_QUIRE_VERSION)%'
