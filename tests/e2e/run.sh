@@ -278,11 +278,25 @@ check 'so is the server'\''s own role' "[ \"\$(from_jane \"login quire_server qu
 check 'a control: kim'\''s role logs in from kim' "inside 'docker exec kim-php-1 php bin/console dbal:run-sql -q \"SELECT 1\"'"
 check 'PostgreSQL reads its rules without an error' "[ \"\$(pg 'SELECT count(*) FROM pg_hba_file_rules WHERE error IS NOT NULL')\" = 0 ]"
 
-echo '== The server'\''s containers made again: "quire-server up" puts them back on every link'
-inside 'cd /srv/quire/server && docker compose --env-file server.env up --detach --wait --force-recreate --no-deps front database >/dev/null 2>&1' || true
-check 'made again, they are on no link' "! attached quire-server-front-1 | grep -q quire-link- && ! attached quire-server-database-1 | grep -q quire-link-"
-inside 'quire-server up >/dev/null 2>&1' || true
-check 'after "up", the front door and PostgreSQL are back on both links, at their addresses' "attached quire-server-front-1 | grep -q 'quire-link-jane=10.72.0.2 ' && attached quire-server-front-1 | grep -q 'quire-link-kim=10.72.0.66 ' && attached quire-server-database-1 | grep -q 'quire-link-jane=10.72.0.3 ' && attached quire-server-database-1 | grep -q 'quire-link-kim=10.72.0.67 '"
+echo '== The server'\''s containers made again: the agent, or "quire-server up", puts them back on every link'
+recreate() { inside 'cd /srv/quire/server && docker compose --env-file server.env up --detach --wait --force-recreate --no-deps front database >/dev/null 2>&1' || true; }
+containers() { inside 'docker inspect --format {{.Id}} quire-server-front-1 quire-server-database-1'; }
+on_links() { attached quire-server-front-1 | grep -q 'quire-link-jane=10.72.0.2 ' && attached quire-server-front-1 | grep -q 'quire-link-kim=10.72.0.66 ' && attached quire-server-database-1 | grep -q 'quire-link-jane=10.72.0.3 ' && attached quire-server-database-1 | grep -q 'quire-link-kim=10.72.0.67 '; }
+# The agent's state and its last lines, for a check that fails (in its log, which explain prints)
+agent_log() { inside 'docker ps -a --filter name=quire-server-agent-1 --format "{{.Names}} {{.Status}}"; docker logs --tail 30 quire-server-agent-1 2>&1' > "$logs"/links-agent.log 2>&1 || true; }
+# While the agent runs: they're new containers, on no link, until its round (every minute) puts them
+# back. Whether its round came before a look at them is chance, so they're only looked at once back.
+before=$(containers)
+recreate
+check 'made again while the agent runs, the agent puts them back by itself, at its next round' "[ \"\$(containers)\" != \"$before\" ] && for i in \$(seq 24); do on_links && exit 0; sleep 5; done; agent_log; exit 1 # $logs/links-agent.log"
+# With the agent stopped (it isn't paused: one paused in its round, the database made again under it,
+# was stuck after), nothing puts them back but "quire-server up", which starts it again too.
+inside 'docker stop quire-server-agent-1 >/dev/null'
+recreate
+check 'made again with the agent stopped, they are on no link' "! attached quire-server-front-1 | grep -q quire-link- && ! attached quire-server-database-1 | grep -q quire-link-"
+inside 'quire-server up' > "$logs"/links-up.log 2>&1 || true
+agent_log
+check 'after "up", the front door and PostgreSQL are back on both links, at their addresses' "on_links # $logs/links-up.log $logs/links-agent.log"
 check 'both sites are served again' "inside \"curl -sk $resolve https://jane.test/\" | grep -q Jane && inside 'curl -sk --resolve kim.test:443:127.0.0.1 https://kim.test/' | grep -q Kim"
 
 echo '== A network the machine routes on the sites'\'' range (a VPN added later)'
