@@ -278,11 +278,21 @@ check 'so is the server'\''s own role' "[ \"\$(from_jane \"login quire_server qu
 check 'a control: kim'\''s role logs in from kim' "inside 'docker exec kim-php-1 php bin/console dbal:run-sql -q \"SELECT 1\"'"
 check 'PostgreSQL reads its rules without an error' "[ \"\$(pg 'SELECT count(*) FROM pg_hba_file_rules WHERE error IS NOT NULL')\" = 0 ]"
 
-echo '== The server'\''s containers made again: "quire-server up" puts them back on every link'
-inside 'cd /srv/quire/server && docker compose --env-file server.env up --detach --wait --force-recreate --no-deps front database >/dev/null 2>&1' || true
-check 'made again, they are on no link' "! attached quire-server-front-1 | grep -q quire-link- && ! attached quire-server-database-1 | grep -q quire-link-"
+echo '== The server'\''s containers made again: the agent, or "quire-server up", puts them back on every link'
+# Made again with the agent paused: its round, every minute, could put them back before the check
+# that they're on none (it did once, on main).
+recreate() {
+	inside 'docker pause quire-server-agent-1 >/dev/null'
+	inside 'cd /srv/quire/server && docker compose --env-file server.env up --detach --wait --force-recreate --no-deps front database >/dev/null 2>&1' || true
+	check "$1" "! attached quire-server-front-1 | grep -q quire-link- && ! attached quire-server-database-1 | grep -q quire-link-"
+	inside 'docker unpause quire-server-agent-1 >/dev/null'
+}
+on_links() { attached quire-server-front-1 | grep -q 'quire-link-jane=10.72.0.2 ' && attached quire-server-front-1 | grep -q 'quire-link-kim=10.72.0.66 ' && attached quire-server-database-1 | grep -q 'quire-link-jane=10.72.0.3 ' && attached quire-server-database-1 | grep -q 'quire-link-kim=10.72.0.67 '; }
+recreate 'made again, they are on no link'
+check 'the agent puts them back by itself, at its next round (within a minute)' 'for i in $(seq 24); do on_links && exit 0; sleep 5; done; exit 1'
+recreate 'made again once more, they are on no link'
 inside 'quire-server up >/dev/null 2>&1' || true
-check 'after "up", the front door and PostgreSQL are back on both links, at their addresses' "attached quire-server-front-1 | grep -q 'quire-link-jane=10.72.0.2 ' && attached quire-server-front-1 | grep -q 'quire-link-kim=10.72.0.66 ' && attached quire-server-database-1 | grep -q 'quire-link-jane=10.72.0.3 ' && attached quire-server-database-1 | grep -q 'quire-link-kim=10.72.0.67 '"
+check 'after "up", the front door and PostgreSQL are back on both links, at their addresses' on_links
 check 'both sites are served again' "inside \"curl -sk $resolve https://jane.test/\" | grep -q Jane && inside 'curl -sk --resolve kim.test:443:127.0.0.1 https://kim.test/' | grep -q Kim"
 
 echo '== A network the machine routes on the sites'\'' range (a VPN added later)'
