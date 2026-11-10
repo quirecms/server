@@ -110,24 +110,7 @@ final class AgentCommand
         }
 
         do {
-            $this->links($io);
-            $changes = $this->frontDoor->reconcile($this->registry->servedDomains());
-
-            foreach ($changes['added'] as $domain) {
-                $io->writeln(\sprintf('Front door: opened %s', $domain));
-            }
-
-            foreach ($changes['removed'] as $domain) {
-                $io->writeln(\sprintf('Front door: closed %s', $domain));
-            }
-
-            touch(self::HEARTBEAT);
-            $this->poller->poll($this->alive(static fn (string $line) => $io->writeln('Git: '.$line)));
-            $this->backUp($io);
-            $this->expire($io);
-            $this->updates->run(false, 'agent', $this->alive(static fn (string $line) => $io->writeln('Updates: '.$line)));
-            $this->notify($io);
-            touch(self::HEARTBEAT);
+            $this->round($io);
 
             for ($slept = 0; !$once && !$this->stopping && $slept < max(5, $interval); ++$slept) {
                 sleep(1);
@@ -179,6 +162,50 @@ final class AgentCommand
 
         foreach ($scopes['failed'] as $site => $why) {
             $io->warning(\sprintf('Docker: nothing can act as the site of project "%s" until this is fixed: %s', $site, $why));
+        }
+    }
+
+    /**
+     * One round of the agent's work. Each step's failure is said and the round goes on, so the agent
+     * never stops for one: a step that reads the registry while PostgreSQL restarts ("quire-server up"
+     * after its memory changed, an update of it) fails once, and works again at the next round (the
+     * connection is opened again). Stopped, the agent was started again by Docker, and the operations it
+     * was running were marked failed.
+     */
+    private function round(SymfonyStyle $io): void
+    {
+        $this->links($io);
+        $this->step($io, 'Front door', function () use ($io): void {
+            $changes = $this->frontDoor->reconcile($this->registry->servedDomains());
+
+            foreach ($changes['added'] as $domain) {
+                $io->writeln(\sprintf('Front door: opened %s', $domain));
+            }
+
+            foreach ($changes['removed'] as $domain) {
+                $io->writeln(\sprintf('Front door: closed %s', $domain));
+            }
+        });
+        touch(self::HEARTBEAT);
+        $this->step($io, 'Git', fn () => $this->poller->poll($this->alive(static fn (string $line) => $io->writeln('Git: '.$line))));
+        $this->backUp($io);
+        $this->expire($io);
+        $this->step($io, 'Updates', fn (): array => $this->updates->run(false, 'agent', $this->alive(static fn (string $line) => $io->writeln('Updates: '.$line))));
+        $this->notify($io);
+        touch(self::HEARTBEAT);
+    }
+
+    /**
+     * A step of the round: its failure is said, under its name, and the round goes on.
+     *
+     * @param \Closure(): mixed $work
+     */
+    private function step(SymfonyStyle $io, string $name, \Closure $work): void
+    {
+        try {
+            $work();
+        } catch (\Throwable $e) {
+            $io->writeln($name.': '.$e->getMessage());
         }
     }
 

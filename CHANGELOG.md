@@ -4,6 +4,10 @@ All notable changes to Quire Server. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+### Fixed
+
+- The agent goes on with its round when a step fails, whichever step. Before, three of them (the front door's domains, Git mode sites' polling, the nightly updates) read the registry outside the round's error handling: when PostgreSQL restarted right then ("quire-server up" after the machine's memory changed, an update), the agent stopped, Docker started it again, and the operations it was running were marked failed. Now the step says it failed, and works again at the next round.
+
 ## [0.5.0] - 2026-11-09
 
 Quire 0.2.0's sites: server contract 2, backups that say when they lack a stored file, and every way a site's code comes in held to the contract. Also downloads that ride out GitHub's short outages.
