@@ -642,6 +642,74 @@ final readonly class SiteManager
      *
      * @return string|null The final backup's path, or null when skipped
      */
+    /**
+     * The mailer a site sends with (MAILER_DSN in its prod.env): replaced, and the site started again
+     * with it; put back as it was if it doesn't start. Its value is never logged.
+     *
+     * @param string $dsn The new DSN, "" for none (the site sends no email)
+     */
+    public function setMailer(SiteName $name, string $dsn, string $source, string $channel, string $requestedBy, \Closure $say): void
+    {
+        $this->lock->run($name, function () use ($name, $dsn, $source, $channel, $requestedBy, $say): void {
+            $site = $this->registry->get($name) ?? throw new \DomainException(\sprintf('There\'s no site named "%s".', $name));
+            $envPath = $this->paths->site($name).'/'.SiteFiles::ENV_FILE;
+
+            if (!is_file($envPath) || is_link($envPath)) {
+                throw new \DomainException(\sprintf('"%s" has no %s: its mailer can\'t be changed here.', $this->paths->site($name), SiteFiles::ENV_FILE));
+            }
+
+            $envBefore = (string) file_get_contents($envPath);
+
+            if (EnvFile::parse($envBefore)->get('MAILER_DSN') === $dsn) {
+                $say('Its mailer is that one already: nothing changed.');
+
+                return;
+            }
+
+            $operation = $this->operations->start('site.mail', $name, ['mailer' => $source], $channel, $requestedBy);
+
+            try {
+                $operation->line('== Writing its mailer');
+                $say('Writing its mailer');
+                $this->files->write($envPath, EnvFile::parse($envBefore)->with(['MAILER_DSN' => $dsn])->content(), 0o600);
+                $operation->line('== Starting it again with it (a few seconds offline)');
+                $say('Starting it again with it (a few seconds offline)');
+                $this->compose->up($this->projectOf($site), $operation->output(...));
+                $operation->succeed();
+            } catch (\Throwable $e) {
+                $operation->line('!! '.$e->getMessage());
+                $operation->line('== Putting it back as it was');
+
+                try {
+                    $this->files->write($envPath, $envBefore, 0o600);
+                    $this->compose->up($this->projectOf($site), $operation->output(...));
+                } catch (\Throwable $failure) {
+                    $operation->line('!! Putting it back failed too: '.$failure->getMessage());
+                }
+
+                $operation->fail($e);
+
+                throw $e;
+            }
+        });
+    }
+
+    /**
+     * The mailer a site sends with, as its prod.env has it ("" for none), or null when it has none of the server's.
+     */
+    public function mailer(SiteName $name): ?string
+    {
+        $envPath = $this->paths->site($name).'/'.SiteFiles::ENV_FILE;
+
+        return is_file($envPath) && !is_link($envPath) ? (EnvFile::read($envPath)->get('MAILER_DSN') ?? '') : null;
+    }
+
+    /** The server's own mailer, which new sites get */
+    public function serverMailer(): string
+    {
+        return $this->mailerDsn;
+    }
+
     public function remove(SiteName $name, bool $backup, string $channel, string $requestedBy, \Closure $say): ?string
     {
         return $this->lock->run($name, function () use ($name, $backup, $channel, $requestedBy, $say): ?string {

@@ -689,6 +689,52 @@ final class SiteManagerTest extends RegistryTestCase
         self::assertSame('failed', $this->operations->latest()[0]['status']);
     }
 
+    public function testASitesMailerChangesWithoutItsValueLogged(): void
+    {
+        $manager = $this->manager();
+        $manager->add($this->request(), 'cli', 'darko', static fn (): null => null);
+        self::assertSame('smtp://mailer:25', $manager->mailer($this->name), 'The server\'s, when it was added.');
+        $this->commands = [];
+
+        $manager->setMailer($this->name, 'smtp://token:token@smtp.postmarkapp.com:587', 'own', 'cli', 'darko', static fn (): null => null);
+
+        self::assertSame('smtp://token:token@smtp.postmarkapp.com:587', $manager->mailer($this->name));
+        self::assertSame($this->name->value, $this->envValue((string) file_get_contents($this->paths->site($this->name).'/prod.env'), 'COMPOSE_PROJECT_NAME'), 'The rest of its settings kept.');
+        self::assertSame(0o600, fileperms($this->paths->site($this->name).'/prod.env') & 0o777);
+        self::assertSame(['config', 'up'], array_map(static fn (array $command): string => $command[8], $this->commands()), 'Started again with it.');
+        $latest = $this->operations->latest()[0];
+        self::assertSame(['site.mail', 'succeeded'], [$latest['action'], $latest['status']]);
+        self::assertStringNotContainsString('token', (string) json_encode([$latest, $this->operations->lines($latest['id'])]), 'Never its value.');
+
+        $this->commands = [];
+        $manager->setMailer($this->name, 'smtp://token:token@smtp.postmarkapp.com:587', 'own', 'cli', 'darko', static fn (): null => null);
+        self::assertSame([], $this->commands, 'The same one: nothing to do.');
+    }
+
+    public function testASiteThatDoesntStartWithItsNewMailerIsPutBack(): void
+    {
+        $manager = $this->manager();
+        $manager->add($this->request(), 'cli', 'darko', static fn (): null => null);
+        $before = (string) file_get_contents($this->paths->site($this->name).'/prod.env');
+        $started = 0;
+        $this->script['docker compose up'] = static function (array $command) use (&$started): ProcessResult {
+            return 1 === ++$started
+                ? new ProcessResult(self::strings($command), 1, '', "container php-1 is unhealthy\n")
+                : self::ok($command, "Started\n");
+        };
+
+        try {
+            $manager->setMailer($this->name, '', 'none', 'cli', 'darko', static fn (): null => null);
+            self::fail('It didn\'t fail.');
+        } catch (\RuntimeException $e) {
+            self::assertStringContainsString('unhealthy', $e->getMessage());
+        }
+
+        self::assertSame(2, $started, 'Started again as it was.');
+        self::assertSame($before, file_get_contents($this->paths->site($this->name).'/prod.env'));
+        self::assertSame('failed', $this->operations->latest()[0]['status']);
+    }
+
     public function testARemovedSiteComesBackWithItsDataAndDomains(): void
     {
         $this->skeletonWithItsFiles();
