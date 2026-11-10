@@ -56,12 +56,15 @@ jobs:
       - name: CI passed on it
         # A tag alone makes no release: the commit must have passed CI's checks (on main, after its pull
         # request). They may still be running when the tag is pushed: waited for, half an hour at most.
+        # Asked by name, every page read: a commit has a set of runs for main and for each of its tags
+        # (End to end runs on each), and past the first page (30) the check looked missing.
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           for check in 'Quality checks and tests' 'Shell scripts' "The agent's image, scanned"; do
             for attempt in $(seq 60); do
-              conclusion=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs" --jq ".check_runs | map(select(.name == \"$check\")) | sort_by(.started_at) | last | if . == null then \"missing\" else (.conclusion // \"running\") end")
+              conclusion=$(gh api -X GET "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs" -f check_name="$check" -F per_page=100 --paginate --slurp \
+                | jq -r 'map(.check_runs[]) | sort_by(.started_at) | last | if . == null then "missing" else (.conclusion // "running") end')
               [ "$conclusion" = running ] || [ "$conclusion" = missing ] || break
               sleep 30
             done
