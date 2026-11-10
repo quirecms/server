@@ -695,6 +695,42 @@ final readonly class SiteManager
     }
 
     /**
+     * A console command of the site, run in its web container (bin/console <command>), without
+     * questions, its output passed on as it comes. The operation log records who ran which command,
+     * not its arguments or output: they can hold passwords (quire:user:create prints one).
+     *
+     * @param list<string> $arguments The command's name, then its arguments and options
+     *
+     * @return int Its exit code
+     */
+    public function console(SiteName $name, array $arguments, string $channel, string $requestedBy, \Closure $output): int
+    {
+        $site = $this->registry->get($name) ?? throw new \DomainException(\sprintf('There\'s no site named "%s".', $name));
+
+        if ([] === $arguments || 1 !== preg_match('/^[a-z][a-z0-9:_-]*\z/', $arguments[0])) {
+            throw new \DomainException('Name the site\'s command first, e.g. "quire:user:list" ("list" lists them).');
+        }
+
+        $operation = $this->operations->start('site.console', $name, ['command' => $arguments[0]], $channel, $requestedBy);
+
+        try {
+            $result = $this->compose->exec($this->projectOf($site), self::PHP, ['bin/console', ...$arguments, '--no-interaction'], $output, timeout: 3600);
+        } catch (\Throwable $e) {
+            $operation->fail($e);
+
+            throw $e;
+        }
+
+        if ($result->successful()) {
+            $operation->succeed();
+        } else {
+            $operation->fail(\sprintf('%s exited with %d.', $arguments[0], $result->exitCode));
+        }
+
+        return $result->exitCode;
+    }
+
+    /**
      * The mailer a site sends with, as its prod.env has it ("" for none), or null when it has none of the server's.
      */
     public function mailer(SiteName $name): ?string

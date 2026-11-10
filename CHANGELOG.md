@@ -4,6 +4,17 @@ All notable changes to Quire Server. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+### Added
+
+- `quire-server settings` and `settings:set`: the server's settings read and changed without editing `server.env` as root. Secrets are shown only as set or not, and are never taken from the command line. Each value is checked; the server starts again with the new settings, and the ones before are put back if it doesn't start. The operation log records who changed which settings, never their values.
+- `quire-server site:mail <site>`: the mailer a site sends with, shown without its password. `--server` gives it the server's, `--set` another (asked for or piped in), `--none` none; the site starts again with it, and is put back if it doesn't start.
+- `quire-server site:console <site> <command>`: one of the site's own commands (`bin/console`), run in its web container without questions, recorded in the operation log without its arguments or output.
+- `site:add --admin-username=…`: the first admin's username, instead of the email's first part.
+
+### Changed
+
+- Deploy keys are named `<server>:<site>`: the server's name (`QUIRE_SERVER_NAME`, or the machine's host name), where they were `quire-server:<site>@<the agent's container>`. Keys made before keep their name; GitHub shows the title given when adding one.
+
 ## [0.5.1] - 2026-11-10
 
 The agent rides out PostgreSQL restarting under it.

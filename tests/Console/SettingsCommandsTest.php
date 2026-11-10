@@ -11,8 +11,8 @@ use Quire\Server\Process\ProcessResult;
 use Quire\Server\ServerUpdate\ServerFolder;
 use Quire\Server\ServerUpdate\ServerSettings;
 use Quire\Server\ServerUpdate\ServerStack;
-use Quire\Server\Tests\ScriptedRunner;
 use Quire\Server\Tests\Registry\RegistryTestCase;
+use Quire\Server\Tests\ScriptedRunner;
 use Symfony\Component\Console\Application;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Tester\CommandTester;
@@ -154,7 +154,7 @@ final class SettingsCommandsTest extends RegistryTestCase
         );
     }
 
-    private function tester(object $command): CommandTester
+    private function tester(SettingsCommand|SettingsSetCommand $command): CommandTester
     {
         $application = new Application();
         $application->addCommand($command);

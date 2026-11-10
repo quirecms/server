@@ -709,6 +709,35 @@ final class SiteManagerTest extends RegistryTestCase
         }
     }
 
+    public function testASitesCommandRunsLoggedWithoutItsArguments(): void
+    {
+        $manager = $this->manager();
+        $manager->add($this->request(), 'cli', 'darko', static fn (): null => null);
+        $this->commands = [];
+        $printed = '';
+
+        $code = $manager->console($this->name, ['quire:user:create', 'kim@example.com', '--password=Secret123'], 'cli', 'darko', static function (string $chunk) use (&$printed): void {
+            $printed .= $chunk;
+        });
+
+        self::assertSame(0, $code);
+        $consoles = array_map(static fn (array $command): array => \array_slice($command, 11), $this->commands());
+        self::assertSame([['bin/console', 'quire:user:create', 'kim@example.com', '--password=Secret123', '--no-interaction']], $consoles, 'In its web container, without questions.');
+        $latest = $this->operations->latest()[0];
+        self::assertSame(['site.console', 'succeeded'], [$latest['action'], $latest['status']]);
+        $parameters = $this->connection->fetchOne(\sprintf('SELECT parameters FROM %s.operation WHERE id = ?', $this->schema), [$latest['id']]);
+        self::assertIsString($parameters);
+        self::assertStringContainsString('quire:user:create', $parameters, 'Which command.');
+        self::assertStringNotContainsString('Secret123', $parameters.json_encode($this->operations->lines($latest['id'])), 'Not its arguments.');
+
+        try {
+            $manager->console($this->name, ['--env=dev'], 'cli', 'darko', static fn (): null => null);
+            self::fail('An option was taken for a command.');
+        } catch (\DomainException $e) {
+            self::assertStringContainsString('Name the site\'s command first', $e->getMessage());
+        }
+    }
+
     public function testASitesMailerChangesWithoutItsValueLogged(): void
     {
         $manager = $this->manager();

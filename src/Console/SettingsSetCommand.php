@@ -102,7 +102,7 @@ final readonly class SettingsSetCommand
         $operation->succeed();
         $io->success(\sprintf('Changed %s, and the server runs with them.', implode(', ', $changed)));
 
-        if (array_intersect($changed, ['QUIRE_SERVER_MAILER_DSN', 'QUIRE_SERVER_NOTIFY_EMAIL', 'QUIRE_SERVER_NOTIFY_FROM', 'QUIRE_SERVER_NOTIFY_WEBHOOK', 'QUIRE_SERVER_ACME_EMAIL'])) {
+        if ([] !== array_intersect($changed, ['QUIRE_SERVER_MAILER_DSN', 'QUIRE_SERVER_NOTIFY_EMAIL', 'QUIRE_SERVER_NOTIFY_FROM', 'QUIRE_SERVER_NOTIFY_WEBHOOK', 'QUIRE_SERVER_ACME_EMAIL'])) {
             $io->writeln('"quire-server notify:test" sends a test notification with them.');
         }
 
@@ -129,7 +129,9 @@ final readonly class SettingsSetCommand
         $changes = [];
 
         foreach ($settings as $setting) {
-            [$given, $value] = str_contains($setting, '=') ? explode('=', $setting, 2) : [$setting, null];
+            $parts = explode('=', $setting, 2);
+            $given = $parts[0];
+            $value = $parts[1] ?? null;
             $name = ServerSettings::name($given);
             $refusal = ServerSettings::refusal($name);
 
