@@ -967,6 +967,12 @@ final readonly class SiteManager
         $operation->output($result->output.$result->errorOutput);
         $result->orFail('Installing the site');
 
+        if (null !== $request->adminUsername) {
+            $renamed = $this->compose->exec($project, self::PHP, ['bin/console', 'quire:user:update', $request->adminEmail, '--username='.$request->adminUsername, '--no-interaction'], timeout: 120);
+            $operation->output($renamed->output.$renamed->errorOutput);
+            $renamed->orFail('Giving the admin their username');
+        }
+
         return $password;
     }
 

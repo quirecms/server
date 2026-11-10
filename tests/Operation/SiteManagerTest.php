@@ -689,6 +689,26 @@ final class SiteManagerTest extends RegistryTestCase
         self::assertSame('failed', $this->operations->latest()[0]['status']);
     }
 
+    public function testTheFirstAdminGetsTheUsernameAsked(): void
+    {
+        $manager = $this->manager();
+        $request = new SiteRequest($this->name, [new Domain('jane.example')], 'Jane\'s notes', 'jane@example.com', false, '^0.1', adminUsername: 'dpoposki');
+
+        $manager->add($request, 'cli', 'darko', static fn (): null => null);
+
+        $consoles = array_values(array_filter(array_map(static fn (array $command): string => implode(' ', \array_slice($command, 11)), $this->commands), static fn (string $console): bool => str_starts_with($console, 'bin/console quire:')));
+        $install = array_search('bin/console quire:install --no-interaction --admin-email=jane@example.com --title=Jane\'s notes', $consoles, true);
+        self::assertIsInt($install);
+        self::assertSame('bin/console quire:user:update jane@example.com --username=dpoposki --no-interaction', $consoles[$install + 1] ?? null, 'Right after the install.');
+
+        try {
+            new SiteRequest($this->name, [new Domain('jane.example')], 'Jane', 'jane@example.com', false, '^0.1', adminUsername: 'Darko P');
+            self::fail('A username Quire refuses was taken.');
+        } catch (\InvalidArgumentException $e) {
+            self::assertStringContainsString('isn\'t a username', $e->getMessage());
+        }
+    }
+
     public function testASitesMailerChangesWithoutItsValueLogged(): void
     {
         $manager = $this->manager();

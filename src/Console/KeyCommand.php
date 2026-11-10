@@ -48,7 +48,7 @@ final readonly class KeyCommand
         try {
             $site = new SiteName($name);
             $new = $rotate || !$this->keys->exists($site);
-            $comment = \sprintf('quire-server:%s@%s', $site, false === gethostname() ? 'server' : gethostname());
+            $comment = self::comment($site);
             $public = $rotate ? $this->keys->rotate($site, $comment) : $this->keys->publicKey($site, $comment);
         } catch (\Throwable $e) {
             $io->error($e->getMessage());
@@ -66,5 +66,27 @@ final readonly class KeyCommand
         $io->newLine();
 
         return Command::SUCCESS;
+    }
+
+    /**
+     * The key's name where it's added (a repository's deploy keys): "<server>:<site>", the server
+     * being QUIRE_SERVER_NAME, or the machine's host name ("quire-server" passes it in: the agent's own
+     * is its container's), so that the owner knows which server and site a key is for.
+     */
+    public static function comment(SiteName $site): string
+    {
+        $server = '';
+
+        foreach (['QUIRE_SERVER_NAME', 'QUIRE_SERVER_HOST_NAME'] as $variable) {
+            $value = (string) preg_replace('/[^A-Za-z0-9._-]+/', '-', trim((string) getenv($variable)));
+
+            if ('' !== trim($value, '-')) {
+                $server = substr(trim($value, '-'), 0, 63);
+
+                break;
+            }
+        }
+
+        return \sprintf('%s:%s', '' === $server ? 'quire-server' : $server, $site);
     }
 }

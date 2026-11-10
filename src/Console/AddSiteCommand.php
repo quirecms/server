@@ -56,11 +56,13 @@ final readonly class AddSiteCommand
         array $domain = [],
         #[Option(description: 'The first admin\'s email')]
         ?string $adminEmail = null,
+        #[Option(description: 'The first admin\'s username, e.g. "dpoposki" (the email\'s first part otherwise)')]
+        ?string $adminUsername = null,
         #[Option(description: 'The site\'s title')]
         ?string $title = null,
         #[Option(description: 'Email the admin a link to choose their password')]
         bool $invite = false,
-        #[Option(description: 'The Quire version, e.g. "^0.1" (the server\'s default otherwise)')]
+        #[Option(description: 'The Quire version, e.g. "^0.2" (the server\'s default otherwise)')]
         ?string $quireVersion = null,
         #[Option(description: 'Git mode: the site\'s repository (git@host:path, ssh://… or https://…)')]
         ?string $git = null,
@@ -83,6 +85,7 @@ final readonly class AddSiteCommand
                 $quireVersion ?? $this->defaultVersion,
                 null === $git ? null : new Repository($git, $branch),
                 null !== $git && $poll,
+                $adminUsername,
             );
         } catch (\InvalidArgumentException $e) {
             $io->error($e->getMessage());
