@@ -4,6 +4,10 @@ All notable changes to Quire Server. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-11-10
+
+The owner's commands: the server's settings, a site's mailer and its own commands, without editing files as root.
+
 ### Added
 
 - `quire-server settings` and `settings:set`: the server's settings read and changed without editing `server.env` as root. Secrets are shown only as set or not, and are never taken from the command line. Each value is checked; the server starts again with the new settings, and the ones before are put back if it doesn't start. The operation log records who changed which settings, never their values.
@@ -177,7 +181,8 @@ The first release.
 - Sites deployed from a Git repository.
 - Signed releases: images and files checked before installing.
 
-[Unreleased]: https://github.com/quirecms/server/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/quirecms/server/compare/v0.5.2...HEAD
+[0.5.2]: https://github.com/quirecms/server/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/quirecms/server/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/quirecms/server/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/quirecms/server/compare/v0.3.1...v0.4.0
