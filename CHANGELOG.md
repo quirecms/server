@@ -4,6 +4,10 @@ All notable changes to Quire Server. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-11-10
+
+The agent rides out PostgreSQL restarting under it.
+
 ### Fixed
 
 - The agent goes on with its round when a step fails, whichever step. Before, three of them (the front door's domains, Git mode sites' polling, the nightly updates) read the registry outside the round's error handling: when PostgreSQL restarted right then ("quire-server up" after the machine's memory changed, an update), the agent stopped, Docker started it again, and the operations it was running were marked failed. Now the step says it failed, and works again at the next round.
@@ -162,7 +166,8 @@ The first release.
 - Sites deployed from a Git repository.
 - Signed releases: images and files checked before installing.
 
-[Unreleased]: https://github.com/quirecms/server/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/quirecms/server/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/quirecms/server/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/quirecms/server/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/quirecms/server/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/quirecms/server/compare/v0.3.0...v0.3.1
