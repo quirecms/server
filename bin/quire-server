@@ -9,6 +9,7 @@
 #   quire-server update [--to=X.Y.Z] [--check] [--undo]   (the server itself, to a newer release)
 #   quire-server database:upgrade [--check] [--to=19] [--undo] [--clean]   (its PostgreSQL, to a newer major)
 #   quire-server backups:setup | backups jane | backups:now [jane] | backups:restore jane | backups:check
+#   quire-server settings | settings:set NAME=value   (server.env, without its secrets)
 #   quire-server up | down | logs | ps          (the server itself)
 #
 # Runs as root (it acts on Docker); everything it does is recorded with who asked.
@@ -132,7 +133,7 @@ case "${1:-help}" in
 	ps) shift; compose ps "$@" ;;
 	help | -h | --help | list) compose exec -T agent bin/console server:help ;;
 	--version | -V) compose exec -T agent bin/console server:version ;;
-	update | backups:setup | database:upgrade)
+	update | backups:setup | database:upgrade | settings | settings:set)
 		# In the updater, not the agent (it replaces the agent or PostgreSQL, or saves server.env): one at a time,
 		# its name says so. Secrets for automation come from the environment, never from arguments.
 		command=$1
@@ -171,7 +172,7 @@ case "${1:-help}" in
 				;;
 		esac
 		docker compose --project-directory "$root/server" --env-file "$root/server/server.env" \
-			exec $tty -e "QUIRE_SERVER_REQUESTED_BY=${SUDO_USER:-$(id -un)}" agent bin/console "server:$command" "$@" || status=$?
+			exec $tty -e "QUIRE_SERVER_REQUESTED_BY=${SUDO_USER:-$(id -un)}" -e "QUIRE_SERVER_HOST_NAME=$(hostname)" agent bin/console "server:$command" "$@" || status=$?
 		# Killed with the agent (a restart, "up", the machine's stop): it says nothing of it itself.
 		if [ "$status" -eq 137 ] || [ "$status" -eq 143 ]; then
 			echo "The agent stopped while it ran this: it puts back what was left half done when it starts again. \"quire-server operations\" shows what happened; then run it again." >&2

@@ -689,6 +689,101 @@ final class SiteManagerTest extends RegistryTestCase
         self::assertSame('failed', $this->operations->latest()[0]['status']);
     }
 
+    public function testTheFirstAdminGetsTheUsernameAsked(): void
+    {
+        $manager = $this->manager();
+        $request = new SiteRequest($this->name, [new Domain('jane.example')], 'Jane\'s notes', 'jane@example.com', false, '^0.1', adminUsername: 'dpoposki');
+
+        $manager->add($request, 'cli', 'darko', static fn (): null => null);
+
+        $consoles = array_values(array_filter(array_map(static fn (array $command): string => implode(' ', \array_slice($command, 11)), $this->commands), static fn (string $console): bool => str_starts_with($console, 'bin/console quire:')));
+        $install = array_search('bin/console quire:install --no-interaction --admin-email=jane@example.com --title=Jane\'s notes', $consoles, true);
+        self::assertIsInt($install);
+        self::assertSame('bin/console quire:user:update jane@example.com --username=dpoposki --no-interaction', $consoles[$install + 1] ?? null, 'Right after the install.');
+
+        try {
+            new SiteRequest($this->name, [new Domain('jane.example')], 'Jane', 'jane@example.com', false, '^0.1', adminUsername: 'Darko P');
+            self::fail('A username Quire refuses was taken.');
+        } catch (\InvalidArgumentException $e) {
+            self::assertStringContainsString('isn\'t a username', $e->getMessage());
+        }
+    }
+
+    public function testASitesCommandRunsLoggedWithoutItsArguments(): void
+    {
+        $manager = $this->manager();
+        $manager->add($this->request(), 'cli', 'darko', static fn (): null => null);
+        $this->commands = [];
+        $printed = '';
+
+        $code = $manager->console($this->name, ['quire:user:create', 'kim@example.com', '--password=Secret123'], 'cli', 'darko', static function (string $chunk) use (&$printed): void {
+            $printed .= $chunk;
+        });
+
+        self::assertSame(0, $code);
+        $consoles = array_map(static fn (array $command): array => \array_slice($command, 11), $this->commands());
+        self::assertSame([['bin/console', 'quire:user:create', 'kim@example.com', '--password=Secret123', '--no-interaction']], $consoles, 'In its web container, without questions.');
+        $latest = $this->operations->latest()[0];
+        self::assertSame(['site.console', 'succeeded'], [$latest['action'], $latest['status']]);
+        $parameters = $this->connection->fetchOne(\sprintf('SELECT parameters FROM %s.operation WHERE id = ?', $this->schema), [$latest['id']]);
+        self::assertIsString($parameters);
+        self::assertStringContainsString('quire:user:create', $parameters, 'Which command.');
+        self::assertStringNotContainsString('Secret123', $parameters.json_encode($this->operations->lines($latest['id'])), 'Not its arguments.');
+
+        try {
+            $manager->console($this->name, ['--env=dev'], 'cli', 'darko', static fn (): null => null);
+            self::fail('An option was taken for a command.');
+        } catch (\DomainException $e) {
+            self::assertStringContainsString('Name the site\'s command first', $e->getMessage());
+        }
+    }
+
+    public function testASitesMailerChangesWithoutItsValueLogged(): void
+    {
+        $manager = $this->manager();
+        $manager->add($this->request(), 'cli', 'darko', static fn (): null => null);
+        self::assertSame('smtp://mailer:25', $manager->mailer($this->name), 'The server\'s, when it was added.');
+        $this->commands = [];
+
+        $manager->setMailer($this->name, 'smtp://token:token@smtp.postmarkapp.com:587', 'own', 'cli', 'darko', static fn (): null => null);
+
+        self::assertSame('smtp://token:token@smtp.postmarkapp.com:587', $manager->mailer($this->name));
+        self::assertSame($this->name->value, $this->envValue((string) file_get_contents($this->paths->site($this->name).'/prod.env'), 'COMPOSE_PROJECT_NAME'), 'The rest of its settings kept.');
+        self::assertSame(0o600, fileperms($this->paths->site($this->name).'/prod.env') & 0o777);
+        self::assertSame(['config', 'up'], array_map(static fn (array $command): string => $command[8], $this->commands()), 'Started again with it.');
+        $latest = $this->operations->latest()[0];
+        self::assertSame(['site.mail', 'succeeded'], [$latest['action'], $latest['status']]);
+        self::assertStringNotContainsString('token', (string) json_encode([$latest, $this->operations->lines($latest['id'])]), 'Never its value.');
+
+        $this->commands = [];
+        $manager->setMailer($this->name, 'smtp://token:token@smtp.postmarkapp.com:587', 'own', 'cli', 'darko', static fn (): null => null);
+        self::assertSame([], $this->commands, 'The same one: nothing to do.');
+    }
+
+    public function testASiteThatDoesntStartWithItsNewMailerIsPutBack(): void
+    {
+        $manager = $this->manager();
+        $manager->add($this->request(), 'cli', 'darko', static fn (): null => null);
+        $before = (string) file_get_contents($this->paths->site($this->name).'/prod.env');
+        $started = 0;
+        $this->script['docker compose up'] = static function (array $command) use (&$started): ProcessResult {
+            return 1 === ++$started
+                ? new ProcessResult(self::strings($command), 1, '', "container php-1 is unhealthy\n")
+                : self::ok($command, "Started\n");
+        };
+
+        try {
+            $manager->setMailer($this->name, '', 'none', 'cli', 'darko', static fn (): null => null);
+            self::fail('It didn\'t fail.');
+        } catch (\RuntimeException $e) {
+            self::assertStringContainsString('unhealthy', $e->getMessage());
+        }
+
+        self::assertSame(2, $started, 'Started again as it was.');
+        self::assertSame($before, file_get_contents($this->paths->site($this->name).'/prod.env'));
+        self::assertSame('failed', $this->operations->latest()[0]['status']);
+    }
+
     public function testARemovedSiteComesBackWithItsDataAndDomains(): void
     {
         $this->skeletonWithItsFiles();

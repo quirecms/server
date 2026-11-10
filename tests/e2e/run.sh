@@ -825,6 +825,25 @@ check 'one it no longer has is not (421)' "[ \"\$(inside \"curl -sk --resolve ja
 check 'they are listed, the main one first' "inside 'quire-server site:domains jane' | head -1 | grep -qx 'jane.test (main)'"
 inside 'quire-server site:domains jane --domain=jane.test --domain=www.jane.test --domain=jane.127.0.0.1.sslip.io --yes >/dev/null 2>&1'
 
+echo '== The owner'\''s commands: the server'\''s settings, a site'\''s mail and its own commands, without root'\''s editor'
+postgres_secret=$(inside "sed -n 's/^QUIRE_SERVER_POSTGRES_PASSWORD=//p' /srv/quire/server/server.env" | tr -d "'")
+mailer_before=$(inside "sed -n 's/^QUIRE_SERVER_MAILER_DSN=//p' /srv/quire/server/server.env" | tr -d "'")
+jane_mailer_before=$(inside "sed -n 's/^MAILER_DSN=//p' /srv/quire/sites/jane/prod.env" | tr -d "'")
+check '"settings" shows them, never a secret' "inside 'quire-server settings 2>&1' | grep -q 'QUIRE_SERVER_POSTGRES_PASSWORD.*set (not shown)' && ! inside 'quire-server settings 2>&1' | grep -qF '$postgres_secret'"
+inside 'quire-server settings:set NAME=e2e-server QUIRE_VERSION=^0.2 2>&1' > "$logs"/settings-set.log || true
+check '"settings:set" changes them, and the server runs with them' "grep -q 'OK. Changed QUIRE_SERVER_NAME, QUIRE_SERVER_QUIRE_VERSION' $logs/settings-set.log && inside 'grep -qx QUIRE_SERVER_NAME=.e2e-server. /srv/quire/server/server.env' && [ \"\$(inside \"docker inspect quire-server-agent-1 --format '{{.State.Health.Status}}'\")\" = healthy ] # $logs/settings-set.log"
+check 'a secret on the command line is refused' "! inside 'quire-server settings:set MAILER_DSN=smtp://u:p@mail.test:25 2>&1' && ! inside 'grep -q mail.test /srv/quire/server/server.env'"
+inside "printf '%s\\n' 'smtp://e2e:hunter22@mail.test:25' | quire-server settings:set MAILER_DSN 2>&1" > "$logs"/settings-secret.log || true
+check 'a secret from standard input is taken, and shown without its password' "inside 'grep -q mail.test /srv/quire/server/server.env' && inside 'quire-server settings 2>&1' | grep -qF 'smtp://e2e:(password)@mail.test:25' && ! inside 'quire-server settings 2>&1' | grep -q hunter22 # $logs/settings-secret.log"
+check 'its changes are in the operation log, without values' "inside 'quire-server operations' | grep -q 'server.settings' && ! inside \"quire-server operations \$(inside 'quire-server operations' | grep -m1 server.settings | awk '{print \$1}') 2>&1\" | grep -q hunter22"
+inside 'quire-server site:mail jane --server 2>&1' > "$logs"/site-mail.log || true
+check '"site:mail --server" gives a site the server'\''s mailer, and it runs with it' "inside 'grep -q \"^MAILER_DSN=.smtp://e2e:hunter22@mail.test:25\" /srv/quire/sites/jane/prod.env' && inside 'quire-server site:mail jane' | grep -qF 'smtp://e2e:(password)@mail.test:25' && [ \"\$(inside \"curl -sk $resolve -o /dev/null -w '%{http_code}' https://jane.test/\")\" = 200 ] # $logs/site-mail.log"
+check '"site:console" runs one of the site'\''s commands' "inside 'quire-server site:console jane quire:user:list 2>&1' | grep -q jane@example.com"
+check 'a deploy key is named after the server and the site' "inside 'quire-server site:key e2e-key 2>&1' | grep -q 'ssh-ed25519 .* e2e-server:e2e-key\$'"
+# As they were, for what follows
+if [ -n "$jane_mailer_before" ]; then inside "printf '%s\\n' '$jane_mailer_before' | quire-server site:mail jane --set >/dev/null 2>&1" || true; else inside 'quire-server site:mail jane --none >/dev/null 2>&1' || true; fi
+inside "printf '%s\\n' '$mailer_before' | quire-server settings:set MAILER_DSN >/dev/null 2>&1" || true
+
 echo '== The machine restarts: everything comes back by itself'
 # As a reboot does it: Docker stops every container and starts again with the data it had. A container
 # Docker counts as stopped by hand (any docker stop, or docker kill with any signal, since it last

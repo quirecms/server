@@ -120,7 +120,11 @@ quire-server site:add jane --domain=jane.example --domain=www.jane.example --adm
 quire-server site:adopt demo            # a site installed before the server (see above)
 quire-server site:list
 quire-server site:domains jane [--domain=jane.example --domain=www.jane.example]   # its domains, or others instead
+quire-server site:mail jane [--server|--set|--none]   # how it sends email (shown without its password), or another mailer
+quire-server site:console jane quire:user:list   # one of the site's own commands (bin/console), without questions
 quire-server version                    # which release this server runs
+quire-server settings                   # the server's settings (server.env), secrets shown only as set or not
+quire-server settings:set NOTIFY_EMAIL=ops@example.com   # change some, then the server runs with them (see below)
 quire-server update [--to=0.2.0] [--check] [--undo]   # the server itself, see "Updating the server"
 quire-server database:upgrade [--check] [--to=19] [--undo] [--clean]   # its PostgreSQL, see "Upgrading PostgreSQL"
 quire-server site:update jane [--to=0.2.0] [--dry-run]   # see "Updating a site"
@@ -128,7 +132,7 @@ quire-server site:update --all [--automatic]             # every site; --automat
 quire-server site:auto-updates jane [security|all|off]   # which updates it gets by itself, every night (or site:updates)
 quire-server site:undo jane             # its last update or deploy, within a week
 quire-server site:audit jane            # known vulnerabilities in its packages
-quire-server site:key blog              # Git mode: a site's deploy key (see "Sites from a Git repository")
+quire-server site:key blog              # Git mode: a site's deploy key, named <server>:<site> (see "Sites from a Git repository")
 quire-server site:deploy blog [--commit=…]
 quire-server site:poll blog on|off      # Git mode: deploy new commits by itself
 quire-server site:remove jane          # asks you to type its name; backs it up first
@@ -157,6 +161,10 @@ quire-server up | down | ps | logs     # the server itself ("down -v" is refused
 - **Sites that keep their own PostgreSQL** (adopted ones) have it removed with them; the server's PostgreSQL holds the others' databases.
 - **Removing** backs the site up to `/srv/quire/backups/<site>/final-<time>.tar`, closes its domains, removes its containers, volumes and database, and moves its folder to `/srv/quire/sites/.removed/`. A site that can't start can't be backed up: `--skip-backup` removes it anyway, and its data is gone.
 - Point each domain's DNS at the server. Its certificate comes at the first visit (from Let's Encrypt).
+- **The first admin's username** is the email's first part, unless `--admin-username=dpoposki` names it.
+- **The server's settings** (`server.env`) are read and changed without root's editor. `quire-server settings` lists them: secrets only say whether they're set, a mailer shows without its password. `settings:set NAME=value …` changes the ones an owner sets (mail, notifications, the ACME email, the server's name, the Quire version new sites get, the nightly hours, Git polling), names with or without `QUIRE_SERVER_`. Each value is checked first; then `server.env` is written whole (root only, the one before kept as `server.env.before-<time>`), and the server starts again with it. If it doesn't start, the settings before are put back. A secret (`MAILER_DSN`, `NOTIFY_WEBHOOK`, `NOTIFY_SECRET`) is never taken from the command line, which would keep it in the shell's history: name it alone and type it when asked (not shown), or pipe it in (`printf '%s' "$dsn" \| quire-server settings:set MAILER_DSN`). The release's image, the generated secrets and the backups' bucket are the updates', the installer's and `backups:setup`'s. The operation log records who changed which settings, never their values.
+- **A site's email:** `site:mail jane` shows the mailer it sends with (it gets the server's when it's added, and keeps it); `--server` gives it the server's current one, `--set` another (asked for, or piped in), `--none` none. It's started again with it, and put back if it doesn't start. Who its emails come from is its own setting, in its admin.
+- **A site's own commands:** `site:console jane quire:user:list` runs `bin/console quire:user:list` in its web container, without questions (`--` before the site command's own options: `site:console jane -- quire:settings:set site.title "Jane"`). The operation log records who ran which command, not its arguments or output.
 - **Changing domains:** `site:domains jane --domain=…` gives it these instead, all of them, the first as its main one. It's started again with them (a few seconds offline), and the front door serves the new ones only. Point the new ones' DNS at the server first. If anything fails, it's put back as it was.
 - **Database connections:** a site's php runs 4 PHP threads (not FrankenPHP's default of 2 a CPU), each with its connection while in use; its job worker holds one. A session idle for 11 minutes ends, so a quiet site gives its connections back. The server's PostgreSQL takes as many connections as the machine's memory holds sites, 3 a site, from 200 to 1,000 (`QUIRE_SERVER_DATABASE_CONNECTIONS`, written by the installer and by `quire-server up`; a resized machine gets its new value at the next `up`, PostgreSQL starting again with it, a few seconds offline).
 - **Memory:** a new site (`site:add`, `restore --as`, adoption) isn't built while less than 1.5 GB is free (`QUIRE_SERVER_BUILD_MEMORY_MB`): it's refused before anything is made, with how much is free. Updates and deploys aren't held back. If memory runs out anyway, the kernel stops a site's container first (it starts again by itself): the server's own are the last, PostgreSQL after all of them, since one of its processes stopped would take every site's database through crash recovery.

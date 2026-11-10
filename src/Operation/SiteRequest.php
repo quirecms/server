@@ -27,6 +27,8 @@ final readonly class SiteRequest
         public ?Repository $repository = null,
         /** Git mode: the agent deploys new commits of the branch by itself */
         public bool $poll = false,
+        /** The first admin's username; Quire takes it from the email when there's none */
+        public ?string $adminUsername = null,
     ) {
         if ([] === $domains) {
             throw new \InvalidArgumentException('A site needs at least one domain.');
@@ -42,6 +44,11 @@ final readonly class SiteRequest
 
         if (false === filter_var($adminEmail, \FILTER_VALIDATE_EMAIL) || str_starts_with($adminEmail, '-')) {
             throw new \InvalidArgumentException(\sprintf('"%s" isn\'t an email address.', SiteName::printable($adminEmail)));
+        }
+
+        // As Quire's own rule (UserWriter): lowercase letters and digits, single dashes between
+        if (null !== $adminUsername && (\strlen($adminUsername) > 64 || 1 !== preg_match('/^[a-z0-9]+(?:-[a-z0-9]+)*\z/', $adminUsername))) {
+            throw new \InvalidArgumentException(\sprintf('"%s" isn\'t a username: lowercase letters and digits, with single dashes between, e.g. "dpoposki".', SiteName::printable($adminUsername)));
         }
     }
 }
