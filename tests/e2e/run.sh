@@ -593,19 +593,20 @@ inside "curl -sk $resolve -o /dev/null -H 'X-Forwarded-For: 203.0.113.77' -H 'Fo
 front_log() { inside 'docker logs quire-server-front-1 2>&1'; }
 # The machine's containers' addresses: a site Caddy can't reach yet is named by its address in the
 # message, the server's own, not a visitor's.
-own_addresses() { inside "docker ps -aq | xargs docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}'" | tr ' ' '\n' | grep -v '^$'; }
+own_addresses() { inside "docker ps -aq | xargs docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}'" | tr ' ' '\n' | grep -v '^$' || true; }
 # Full addresses anywhere in the log but the loopback's, and which of them are the containers'
-full_addresses() { printf '%s\n' "$1" | grep -Eo '([0-9]{1,3}\.){3}[0-9]{1,3}' | grep -Ev '^127\.0\.0\.1$|\.0$' | sort -u; }
+full_addresses() { printf '%s\n' "$1" | { grep -Eo '([0-9]{1,3}\.){3}[0-9]{1,3}' || true; } | { grep -Ev '^127\.0\.0\.1$|\.0$' || true; } | sort -u; }
 # Every line of the front door's, not only visits. The fields naming the client are always the
 # visitor's: a full address there fails, whoever it is. Elsewhere only the machine's containers' may be
 # whole. Whatever is found is said, for CI's log.
 masked() {
-	log=$(front_log) || return 1
+	# Under "set -e", an assignment whose grep finds nothing would end the check silently: "|| true".
+	log=$(front_log) || { echo "the front door's log can't be read:"; printf '%s\n' "$log" | tail -3; return 1; }
 	visits=$(printf '%s\n' "$log" | grep '"http.log.access') || { echo 'no visits logged'; return 1; }
 	printf '%s\n' "$visits" | grep -Eq '"remote_ip":"([0-9]+\.){3}0"' || { echo 'no visit by its network:'; printf '%s\n' "$visits" | tail -3; return 1; }
-	clients=$(printf '%s\n' "$log" | grep -E '"(remote|client)_ip":"([0-9]+\.){3}([1-9][0-9]*|0[0-9]+)"')
+	clients=$(printf '%s\n' "$log" | grep -E '"(remote|client)_ip":"([0-9]+\.){3}([1-9][0-9]*|0[0-9]+)"' || true)
 	if [ -n "$clients" ]; then echo 'a client field holds a full address:'; printf '%s\n' "$clients" | head -3 | cut -c1-600; return 1; fi
-	leaked=$(full_addresses "$log" | grep -vxF "$(own_addresses; echo 127.0.0.1)")
+	leaked=$(full_addresses "$log" | grep -vxF "$(own_addresses || true; echo 127.0.0.1)" || true)
 	[ -z "$leaked" ] && return 0
 	echo "full addresses in the front door's log: $(printf '%s ' "$leaked" | tr '\n' ' ')"
 	for address in $leaked; do printf '%s\n' "$log" | grep -F "$address" | head -2 | cut -c1-600; done
@@ -615,7 +616,7 @@ masked() {
 # lines below), or a leak to fix in the Caddyfile.
 ignored() {
 	log=$(front_log) || return 0
-	for address in $(full_addresses "$log" | grep -xF "$(own_addresses)"); do
+	for address in $(full_addresses "$log" | grep -xF "$(own_addresses)" || true); do
 		echo "ignored (own container): $address"
 		printf '%s\n' "$log" | grep -F "$address" | head -2 | cut -c1-600
 	done
