@@ -587,6 +587,13 @@ check 'a domain with no site says so over HTTP, rather than redirecting' "[ \"\$
 check 'a forged Host header gets 421, not another container' "[ \"\$(inside \"curl -sk $resolve -o /dev/null -w '%{http_code}' -H 'Host: quire-database' https://jane.test/\")\" = 421 ]"
 check 'a Host other than the TLS name gets 421' "[ \"\$(inside \"curl -sk --resolve www.jane.test:443:127.0.0.1 -o /dev/null -w '%{http_code}' -H 'Host: jane.test' https://www.jane.test/\")\" = 421 ]"
 check 'an unknown domain gets no certificate' "! inside \"curl -sk $resolve -o /dev/null https://evil.test/\""
+# SEC-0010: the visit log holds no visitor's full address, not even one a request says it forwards for,
+# and it has a set size whatever the machine's Docker defaults are
+inside "curl -sk $resolve -o /dev/null -H 'X-Forwarded-For: 203.0.113.77' -H 'Forwarded: for=203.0.113.77' https://jane.test/" || true
+visits() { inside 'docker logs quire-server-front-1 2>&1' | grep '"http.log.access'; }
+masked() { v=$(visits) && [ -n "$v" ] && printf '%s\n' "$v" | grep -Eq '"remote_ip":"([0-9]+\.){3}0"' && ! printf '%s\n' "$v" | grep -Eq '"(remote|client)_ip":"([0-9]+\.){3}[1-9][0-9]*"|203\.0\.113\.77'; }
+check 'the front door logs visits by network only, without forwarded addresses' masked
+check 'its log is capped: 3 files of 10 MB' "[ \"\$(inside \"docker inspect quire-server-front-1 --format '{{.HostConfig.LogConfig.Type}} {{index .HostConfig.LogConfig.Config \\\"max-size\\\"}} {{index .HostConfig.LogConfig.Config \\\"max-file\\\"}}'\")\" = 'local 10m 3' ]"
 check 'the site publishes no ports' "[ -z \"\$(inside 'docker port jane-php-1')\" ]"
 caps=$(inside "docker inspect jane-php-1 jane-worker-1 --format '{{.HostConfig.CapDrop}} {{.HostConfig.CapAdd}} {{.HostConfig.SecurityOpt}}'" || true)
 echo "$caps" | sed 's/^/    /'
