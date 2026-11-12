@@ -6,7 +6,7 @@ All notable changes to Quire Server. The format follows [Keep a Changelog](https
 
 ### Security
 
-- The front door's visit log no longer holds visitors' full IP addresses (SEC-0010): each is cut to its network (/24 for IPv4, /48 for IPv6) as the line is written, and headers that can carry an address (`X-Forwarded-For`, `Forwarded`, `X-Real-Ip`, `Cf-Connecting-Ip`, `True-Client-Ip`) are left out. The log has a set size, 3 files of 10 MB, whatever the machine's Docker defaults are. Lines written before the update keep their addresses until the front door is replaced, which the update does.
+- The front door's log no longer holds visitors' full IP addresses (SEC-0010), neither in visits nor in Caddy's own messages (such as a certificate obtained at a site's first visit): each is cut to its network (/24 for IPv4, /48 for IPv6) as the line is written, and headers that can carry an address (`X-Forwarded-For`, `Forwarded`, `X-Real-Ip`, `Cf-Connecting-Ip`, `True-Client-Ip`) are left out. The log has a set size, 3 files of 10 MB, whatever the machine's Docker defaults are. Lines written before the update keep their addresses until the front door is replaced, which the update does.
 
 ## [0.5.2] - 2026-11-10
 
