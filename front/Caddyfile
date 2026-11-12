@@ -10,6 +10,24 @@
 	}
 	# Nothing reaches Caddy's admin API: the configuration never changes at runtime.
 	admin off
+	# Caddy's own messages, e.g. a certificate obtained for a visitor's first visit, name the visitor
+	# too: cut to the network like visits are (SEC-0010; visits are the "log" below).
+	log default {
+		format filter {
+			wrap json
+			fields {
+				remote_ip ip_mask 24 48
+				client_ip ip_mask 24 48
+				request>remote_ip ip_mask 24 48
+				request>client_ip ip_mask 24 48
+				request>headers>X-Forwarded-For delete
+				request>headers>X-Real-Ip delete
+				request>headers>Forwarded delete
+				request>headers>Cf-Connecting-Ip delete
+				request>headers>True-Client-Ip delete
+			}
+		}
+	}
 	{$QUIRE_SERVER_TLS_GLOBAL}
 }
 
@@ -73,9 +91,23 @@ https:// {
 		}
 	}
 
+	# Visits, without the visitor (SEC-0010): the address is cut to its network (/24 for IPv4, /48 for
+	# IPv6) as the line is written, so a full IP is never stored, and the headers that can carry one
+	# are left out. Abuse is still seen by network. How long lines stay is compose.yaml's size cap.
 	log {
 		output stdout
-		format json
+		format filter {
+			wrap json
+			fields {
+				request>remote_ip ip_mask 24 48
+				request>client_ip ip_mask 24 48
+				request>headers>X-Forwarded-For delete
+				request>headers>X-Real-Ip delete
+				request>headers>Forwarded delete
+				request>headers>Cf-Connecting-Ip delete
+				request>headers>True-Client-Ip delete
+			}
+		}
 	}
 }
 

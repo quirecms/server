@@ -38,6 +38,11 @@ services:
     pids_limit: 1024
     # Among the last the kernel stops when memory runs out: sites' containers go first (D-40)
     oom_score_adj: -500
+    # Its visit log has a set size, whatever the host's Docker defaults (SEC-0010): 3 × 10 MB,
+    # compressed, oldest first. The lines hold no full IP (Caddyfile).
+    logging:
+      driver: local
+      options: {max-size: 10m, max-file: "3"}
 
   # The only part that can act on Docker (through the gate): adds and removes sites, keeps the front
   # door's domains in line. It has no network listener.

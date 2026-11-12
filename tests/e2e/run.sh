@@ -587,6 +587,43 @@ check 'a domain with no site says so over HTTP, rather than redirecting' "[ \"\$
 check 'a forged Host header gets 421, not another container' "[ \"\$(inside \"curl -sk $resolve -o /dev/null -w '%{http_code}' -H 'Host: quire-database' https://jane.test/\")\" = 421 ]"
 check 'a Host other than the TLS name gets 421' "[ \"\$(inside \"curl -sk --resolve www.jane.test:443:127.0.0.1 -o /dev/null -w '%{http_code}' -H 'Host: jane.test' https://www.jane.test/\")\" = 421 ]"
 check 'an unknown domain gets no certificate' "! inside \"curl -sk $resolve -o /dev/null https://evil.test/\""
+# SEC-0010: the visit log holds no visitor's full address, not even one a request says it forwards for,
+# and it has a set size whatever the machine's Docker defaults are
+inside "curl -sk $resolve -o /dev/null -H 'X-Forwarded-For: 203.0.113.77' -H 'Forwarded: for=203.0.113.77' https://jane.test/" || true
+front_log() { inside 'docker logs quire-server-front-1 2>&1'; }
+# The machine's containers' addresses: a site Caddy can't reach yet is named by its address in the
+# message, the server's own, not a visitor's.
+own_addresses() { inside "docker ps -aq | xargs docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}'" | tr ' ' '\n' | grep -v '^$' || true; }
+# Full addresses anywhere in the log but the loopback's, and which of them are the containers'
+full_addresses() { printf '%s\n' "$1" | { grep -Eo '([0-9]{1,3}\.){3}[0-9]{1,3}' || true; } | { grep -Ev '^127\.0\.0\.1$|\.0$' || true; } | sort -u; }
+# Every line of the front door's, not only visits. The fields naming the client are always the
+# visitor's: a full address there fails, whoever it is. Elsewhere only the machine's containers' may be
+# whole. Whatever is found is said, for CI's log.
+masked() {
+	# Under "set -e", an assignment whose grep finds nothing would end the check silently: "|| true".
+	log=$(front_log) || { echo "the front door's log can't be read:"; printf '%s\n' "$log" | tail -3; return 1; }
+	visits=$(printf '%s\n' "$log" | grep '"http.log.access') || { echo 'no visits logged'; return 1; }
+	printf '%s\n' "$visits" | grep -Eq '"remote_ip":"([0-9]+\.){3}0"' || { echo 'no visit by its network:'; printf '%s\n' "$visits" | tail -3; return 1; }
+	clients=$(printf '%s\n' "$log" | grep -E '"(remote|client)_ip":"([0-9]+\.){3}([1-9][0-9]*|0[0-9]+)"' || true)
+	if [ -n "$clients" ]; then echo 'a client field holds a full address:'; printf '%s\n' "$clients" | head -3 | cut -c1-600; return 1; fi
+	leaked=$(full_addresses "$log" | grep -vxF "$(own_addresses || true; echo 127.0.0.1)" || true)
+	[ -z "$leaked" ] && return 0
+	echo "full addresses in the front door's log: $(printf '%s ' "$leaked" | tr '\n' ' ')"
+	for address in $leaked; do printf '%s\n' "$log" | grep -F "$address" | head -2 | cut -c1-600; done
+	return 1
+}
+# What the check leaves out, said in passing runs too: each is the server's own (an upstream, by its
+# lines below), or a leak to fix in the Caddyfile.
+ignored() {
+	log=$(front_log) || return 0
+	for address in $(full_addresses "$log" | grep -xF "$(own_addresses)" || true); do
+		echo "ignored (own container): $address"
+		printf '%s\n' "$log" | grep -F "$address" | head -2 | cut -c1-600
+	done
+}
+ignored | sed 's/^/    /'
+check 'the front door logs visits by network only, without forwarded addresses' masked
+check 'its log is capped: 3 files of 10 MB' "[ \"\$(inside \"docker inspect quire-server-front-1 --format '{{.HostConfig.LogConfig.Type}} {{index .HostConfig.LogConfig.Config \\\"max-size\\\"}} {{index .HostConfig.LogConfig.Config \\\"max-file\\\"}}'\")\" = 'local 10m 3' ]"
 check 'the site publishes no ports' "[ -z \"\$(inside 'docker port jane-php-1')\" ]"
 caps=$(inside "docker inspect jane-php-1 jane-worker-1 --format '{{.HostConfig.CapDrop}} {{.HostConfig.CapAdd}} {{.HostConfig.SecurityOpt}}'" || true)
 echo "$caps" | sed 's/^/    /'
