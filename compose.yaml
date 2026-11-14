@@ -67,7 +67,7 @@ services:
       QUIRE_SERVER_NOTIFY_WEBHOOK: ${QUIRE_SERVER_NOTIFY_WEBHOOK:-}
       QUIRE_SERVER_NOTIFY_SECRET: ${QUIRE_SERVER_NOTIFY_SECRET:-}
       QUIRE_SERVER_NAME: ${QUIRE_SERVER_NAME:-}
-      QUIRE_SERVER_QUIRE_VERSION: ${QUIRE_SERVER_QUIRE_VERSION:-^0.1}
+      QUIRE_SERVER_QUIRE_VERSION: ${QUIRE_SERVER_QUIRE_VERSION:-^0.3}
       # What building a site takes (MB): a new site isn't built with less memory free (D-40)
       QUIRE_SERVER_BUILD_MEMORY_MB: ${QUIRE_SERVER_BUILD_MEMORY_MB:-1536}
       QUIRE_SERVER_ROOT: ${QUIRE_SERVER_ROOT:-/srv/quire}
@@ -165,7 +165,7 @@ services:
   # network at all: only the agent mounts its sockets. Root without capabilities, as Docker's socket
   # is root's (whoever holds that socket is root on the host anyway).
   gate:
-    image: ghcr.io/yorvolabs/yorvogate:0.2.2@sha256:bb5ff1be3e01277cace418597ad9adde40b133ff1864ca657f456d3cb15bd134
+    image: ghcr.io/yorvolabs/yorvogate:0.3.0@sha256:5c7e5ae91d30374dd8690073639234c990eb8e12620f5270145f945e3ec8267d
     restart: unless-stopped
     user: "0:0"
     volumes:
@@ -180,6 +180,8 @@ services:
       # Where it keeps an image a site's build loads while it checks the image's names (on disk, not
       # in memory: a site's image is hundreds of megabytes)
       - gate_spool:/tmp
+      # Its state file (gate/yorvogate.yaml): only the gate mounts it
+      - gate_state:/var/lib/quire-gate
     network_mode: none
     read_only: true
     cap_drop: [ALL]
@@ -258,6 +260,7 @@ volumes:
   database_access:
   gate_trusted:
   gate_sites:
+  gate_state:
   gate_scopes:
   gate_spool:
   host_facts:

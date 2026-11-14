@@ -14,6 +14,7 @@ use Quire\Server\Process\ProcessResult;
 use Quire\Server\Registry\RuntimeBuilds;
 use Quire\Server\Registry\RuntimeFloors;
 use Quire\Server\Registry\SiteLock;
+use Quire\Server\Registry\SiteNetworks;
 use Quire\Server\Registry\SiteRegistry;
 use Quire\Server\Site\Domain;
 use Quire\Server\Site\ServerPaths;
@@ -21,6 +22,7 @@ use Quire\Server\Site\Site;
 use Quire\Server\Site\SiteFiles;
 use Quire\Server\Site\SiteName;
 use Quire\Server\Tests\GateFixture;
+use Quire\Server\Tests\LinkAliases;
 use Quire\Server\Tests\Registry\RegistryTestCase;
 use Quire\Server\Tests\ScriptedRunner;
 use Symfony\Component\Filesystem\Filesystem;
@@ -43,6 +45,9 @@ final class SiteOverridesTest extends RegistryTestCase
 
     private bool $refused = false;
 
+    /** The seccomp options of the site's containers, as Docker shows them (YorvoGate 0.3 writes "seccomp=builtin") */
+    private string $securityOpt = '["no-new-privileges=true","seccomp=builtin"]';
+
     #[\Override]
     protected function setUp(): void
     {
@@ -52,7 +57,14 @@ final class SiteOverridesTest extends RegistryTestCase
         $this->registry = new SiteRegistry($this->connection, $this->schema);
         $this->runner = new ScriptedRunner([
             'docker image inspect' => fn (array $command): ProcessResult => isset($this->tags[$command[5]]) ? ScriptedRunner::ok($command, $this->tags[$command[5]]."\n") : ScriptedRunner::failed($command, 'No such image'),
-            'docker container inspect' => static fn (array $command): ProcessResult => 'demo-x-php-1' === $command[5] || 'jane-php-1' === $command[5] ? ScriptedRunner::ok($command, self::RUNNING."\n") : ScriptedRunner::failed($command, 'No such container'),
+            'docker container inspect' => fn (array $command): ProcessResult => match (true) {
+                // Each of the site's containers' seccomp options (Compose::up)
+                '{{json .HostConfig.SecurityOpt}}' === $command[4] => ScriptedRunner::ok($command, implode("\n", array_fill(0, \count($command) - 5, $this->securityOpt))."\n"),
+                'demo-x-php-1' === $command[5] || 'jane-php-1' === $command[5] => ScriptedRunner::ok($command, self::RUNNING."\n"),
+                default => ScriptedRunner::failed($command, 'No such container'),
+            },
+            // The site's containers: one, whose seccomp option is $securityOpt
+            'docker container ls' => static fn (array $command): ProcessResult => ScriptedRunner::ok($command, "c0ffee\n"),
             'docker image tag' => function (array $command): ProcessResult {
                 $this->tags[$command[4]] = $command[3];
 
@@ -125,7 +137,7 @@ final class SiteOverridesTest extends RegistryTestCase
         self::assertStringContainsString('quire-link-jane', $jane);
         self::assertStringNotContainsString('quire-edge', $jane, 'Off the networks every site shared.');
         self::assertStringContainsString('subnet: 10.72.0.32/27', $jane, 'Its own network at its addresses: Compose makes it again there on "up".');
-        self::assertSame(['jane.example.quire.internal'], $reached, 'Once it runs, the front door is asked to reach it there.');
+        self::assertSame(['edge.jane.example.quire.internal'], $reached, 'Once it runs, the front door is asked to reach it there, by its name of 0.6.');
     }
 
     public function testASiteWhoseNetworkMovesHasEveryContainerMadeAgain(): void
@@ -154,6 +166,58 @@ final class SiteOverridesTest extends RegistryTestCase
     }
 
     /**
+     * Before any site is brought up to date, every site's scope is as this release writes it: one of
+     * the release before may hold a name the gate now gives another site, and it would refuse that
+     * site's scope (both sites') until it's rewritten. None is removed here: a registered site whose
+     * project can't be made now keeps its scope as it is, and so does any other (the agent's start
+     * removes those of sites that are gone).
+     */
+    public function testEverySitesScopeIsWrittenAnewFirstAndNoneRemoved(): void
+    {
+        $this->site('jane', 'jane', Site::SHARED_DATABASE);
+        $this->site('demo-x', 'demo-x', Site::SHARED_DATABASE);
+        // As a release before 0.6 wrote it: the name of before only
+        new Filesystem()->dumpFile($this->root.'/gate/scopes/jane.json', '{"networks": {"quire-link-jane": {"aliases": ["jane.example.quire.internal"]}}}');
+        // A registered site without its folder now: its scope can't be made
+        $this->registry->add(new SiteName('kim'), [new Domain('kim.example')], Site::SHARED_DATABASE, 'kim');
+        $this->registry->setStatus(new SiteName('kim'), Site::RUNNING);
+        $kims = '{"as": "it was"}';
+        new Filesystem()->dumpFile($this->root.'/gate/scopes/kim.json', $kims);
+        new Filesystem()->dumpFile($this->root.'/gate/scopes/gone.json', '{}');
+
+        self::assertSame([], $this->subject()->refresh());
+
+        self::assertContains(SiteFiles::edgeName('jane.example'), LinkAliases::in(json_decode((string) file_get_contents($this->root.'/gate/scopes/jane.json'), true), 'quire-link-jane'));
+        self::assertFileExists($this->root.'/gate/scopes/demo-x.json');
+        self::assertSame($kims, file_get_contents($this->root.'/gate/scopes/kim.json'), 'Kept byte for byte: its socket stays open.');
+        self::assertFileExists($this->root.'/gate/scopes/gone.json', 'Left to the agent\'s start.');
+    }
+
+    public function testContainersMadeBeforeTheGateHardenedThemAreMadeAgain(): void
+    {
+        $this->site('jane', 'jane', Site::SHARED_DATABASE);
+        // Made under YorvoGate 0.2: no seccomp option of the gate's
+        $this->securityOpt = '["no-new-privileges=true"]';
+
+        $this->subject()->refresh();
+
+        self::assertContains('--force-recreate', $this->lastUp(), 'Every container, the worker too: Compose would make again only those whose configuration changed.');
+
+        // Docker can't say: said, and only what changed is made again
+        $this->runner->script['docker container ls'] = static fn (array $command): ProcessResult => ScriptedRunner::failed(array_values(array_filter($command, \is_string(...))), 'Cannot connect');
+        new Filesystem()->dumpFile($this->paths->site(new SiteName('jane')).'/'.SiteFiles::OVERRIDE, "services: {}\n");
+        $this->subject()->refresh();
+        self::assertNotContains('--force-recreate', $this->lastUp());
+        $this->runner->script['docker container ls'] = static fn (array $command): ProcessResult => ScriptedRunner::ok(array_values(array_filter($command, \is_string(...))), "c0ffee\n");
+
+        // Made under 0.3: only what changed
+        $this->securityOpt = '["no-new-privileges=true","seccomp=builtin"]';
+        new Filesystem()->dumpFile($this->paths->site(new SiteName('jane')).'/'.SiteFiles::OVERRIDE, "services: {}\n");
+        $this->subject()->refresh();
+        self::assertNotContains('--force-recreate', $this->lastUp());
+    }
+
+    /**
      * @return list<string>
      */
     private function lastUp(): array
@@ -170,7 +234,7 @@ final class SiteOverridesTest extends RegistryTestCase
 
         $failed = $this->subject()->refresh();
 
-        self::assertStringContainsString('the front door doesn\'t reach it on its link (jane.example.quire.internal:80)', $failed['jane'] ?? '');
+        self::assertStringContainsString('the front door doesn\'t reach it on its link (edge.jane.example.quire.internal:80)', $failed['jane'] ?? '');
         self::assertStringContainsString('quire-link-jane', (string) file_get_contents($this->paths->site(new SiteName('jane')).'/'.SiteFiles::OVERRIDE), 'It runs with it: kept.');
     }
 
@@ -205,6 +269,6 @@ final class SiteOverridesTest extends RegistryTestCase
 
     private function subject(): SiteOverrides
     {
-        return new SiteOverrides($this->registry, new SiteFiles(), $this->paths, new Images($this->runner, GateFixture::gate($this->runner, $this->root, 'jane', 'demo-x', 'gone')), new SiteLock($this->connection, $this->schema), new Compose($this->runner, new ComposePolicy(), new ComposeFiles(), new RuntimeImages($this->runner, new RuntimeFloors($this->connection, $this->schema)), new RuntimeBuilds($this->connection, $this->schema), GateFixture::gate($this->runner, $this->root, 'jane', 'demo-x', 'gone'), GateFixture::builders($this->runner, $this->root)), GateFixture::links($this->runner, $this->connection, $this->schema));
+        return new SiteOverrides($this->registry, new SiteFiles(), $this->paths, new Images($this->runner, GateFixture::gate($this->runner, $this->root, 'jane', 'demo-x', 'gone')), new SiteLock($this->connection, $this->schema), new Compose($this->runner, new ComposePolicy(), new ComposeFiles(), new RuntimeImages($this->runner, new RuntimeFloors($this->connection, $this->schema)), new RuntimeBuilds($this->connection, $this->schema), GateFixture::gate($this->runner, $this->root, 'jane', 'demo-x', 'gone'), GateFixture::builders($this->runner, $this->root)), GateFixture::links($this->runner, $this->connection, $this->schema), GateFixture::gate($this->runner, $this->root, 'jane', 'demo-x', 'gone'), new SiteNetworks($this->connection, $this->schema));
     }
 }

@@ -67,8 +67,12 @@ https:// {
 		header ?Strict-Transport-Security "max-age=31536000"
 		header ?X-Content-Type-Options "nosniff"
 		header -Server
-		# By its name on quire-edge only, which no public DNS answers (see SiteFiles::EDGE_SUFFIX)
-		reverse_proxy {host}.quire.internal:80 {
+		# By its name on its link only, which no public DNS answers (SiteFiles::edgeName; a test keeps
+		# them equal). The second is the name of releases before 0.6, while a site's containers still
+		# have only that one (the agent gives them both at its start): a connection that fails moves
+		# to the other. Deprecated: 0.7 asks for the first only.
+		reverse_proxy edge.{host}.quire.internal:80 {host}.quire.internal:80 {
+			lb_policy round_robin
 			# A site that's down or restarting: tell visitors, don't hang.
 			lb_try_duration 10s
 		}

@@ -5,10 +5,12 @@ declare(strict_types=1);
 namespace Quire\Server\Operation;
 
 use Quire\Server\Docker\Compose;
+use Quire\Server\Docker\Gate;
 use Quire\Server\Docker\Images;
 use Quire\Server\Docker\SiteProject;
 use Quire\Server\Network\SiteLinks;
 use Quire\Server\Registry\SiteLock;
+use Quire\Server\Registry\SiteNetworks;
 use Quire\Server\Registry\SiteRegistry;
 use Quire\Server\Site\ServerPaths;
 use Quire\Server\Site\Site;
@@ -36,7 +38,43 @@ final readonly class SiteOverrides
         private SiteLock $lock,
         private Compose $compose,
         private SiteLinks $links,
+        private Gate $gate,
+        private SiteNetworks $networks,
     ) {
+    }
+
+    /**
+     * Each registered site's scope on the gate, as this release writes them, removing none: a site
+     * whose project can't be made now (its folder missing, say) keeps its scope as it is, and is said.
+     * The agent's start removes the scopes of sites that are gone (Gate::reconcile).
+     *
+     * @return array<string, string> Site => why its scope couldn't be written, or the gate refused it
+     */
+    private function scopes(): array
+    {
+        $sites = array_values(array_filter($this->registry->all(), static fn (Site $site): bool => Site::REMOVED !== $site->status));
+        $projects = [];
+        $failed = [];
+
+        foreach ($sites as $site) {
+            if (!is_dir($this->paths->site($site->name))) {
+                // One whose add was cut short has no folder yet: nothing to write for it
+                continue;
+            }
+
+            try {
+                $others = array_values(array_map(static fn (Site $other): string => $other->project, array_filter($sites, static fn (Site $other): bool => $other->name->value !== $site->name->value)));
+                $projects[] = SiteProject::of($this->paths, $site->name, $site->domains, $site->project, $site->databaseMode, $this->networks->find($site->name), $others);
+            } catch (\Throwable $e) {
+                $failed[$site->name->value] = $e->getMessage();
+            }
+        }
+
+        foreach ($this->gate->apply($projects) as $project => $why) {
+            $failed[$project] = $why;
+        }
+
+        return $failed;
     }
 
     /**
@@ -44,7 +82,10 @@ final readonly class SiteOverrides
      */
     public function refresh(): array
     {
-        $failed = [];
+        // Every site's scope first, as this release writes it: a scope of the release before may hold
+        // a name the gate now gives another site (YorvoGate 0.3: "jane-blog.test.quire.internal" is
+        // under "jane-"), and the gate would refuse that other site's scope until it's rewritten.
+        $failed = $this->scopes();
 
         foreach ($this->registry->all() as $site) {
             $directory = $this->paths->site($site->name);
@@ -60,9 +101,10 @@ final readonly class SiteOverrides
                     $before = (string) file_get_contents($override);
                     // Its link and addresses: made the first time (a site of a release before D-34)
                     $subnets = $this->links->ensure($site->name, $site->project, Site::SHARED_DATABASE === $site->databaseMode);
-                    $this->files->writeOverride($directory, $site->name, $site->domains, $site->databaseMode, $subnets, $site->project);
+                    $projects = array_values(array_map(static fn (Site $other): string => $other->project, array_filter($this->registry->all(), static fn (Site $other): bool => $other->name->value !== $site->name->value && Site::REMOVED !== $other->status)));
+                    $this->files->writeOverride($directory, $site->name, $site->domains, $site->databaseMode, $subnets, $projects, $site->project);
                     $image = SiteFiles::image($site->project);
-                    $project = SiteProject::of($this->paths, $site->name, $site->domains, $site->project, $site->databaseMode, $subnets);
+                    $project = SiteProject::of($this->paths, $site->name, $site->domains, $site->project, $site->databaseMode, $subnets, $projects);
 
                     if (null === $this->images->id($project, $image)) {
                         $running = $this->images->ofContainer($project, $site->project.'-php-1');
@@ -86,7 +128,7 @@ final readonly class SiteOverrides
                         $domain = $site->domains[0]->value;
 
                         if (false === $this->links->frontDoorReaches($domain)) {
-                            throw new \RuntimeException(\sprintf('It runs, but the front door doesn\'t reach it on its link (%s%s:80): the agent\'s rounds connect the front door again each minute, and say it if they can\'t ("quire-server logs agent").', $domain, SiteFiles::EDGE_SUFFIX));
+                            throw new \RuntimeException(\sprintf('It runs, but the front door doesn\'t reach it on its link (%s:80): the agent\'s rounds connect the front door again each minute, and say it if they can\'t ("quire-server logs agent").', SiteFiles::edgeName($domain)));
                         }
                     }
                 });

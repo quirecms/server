@@ -18,6 +18,8 @@ use Quire\Server\Site\ServerPaths;
 use Quire\Server\Site\Site;
 use Quire\Server\Site\SiteName;
 use Quire\Server\Tests\GateFixture;
+use Quire\Server\Tests\LinkAliases;
+use Quire\Server\Tests\LoadedScopeStatus;
 use Quire\Server\Tests\ScriptedRunner;
 use Symfony\Component\Filesystem\Filesystem;
 use Symfony\Component\Yaml\Yaml;
@@ -52,7 +54,7 @@ final class GateTest extends TestCase
             'networks' => [
                 // Its own link only (D-34): Compose's own aliases (the service's name and its
                 // container's), and its domains', where the front door finds it
-                'quire-link-jane' => ['aliases' => ['jane-php-1', 'jane-worker-1', 'jane.example.quire.internal', 'php', 'worker', 'www.jane.example.quire.internal']],
+                'quire-link-jane' => ['aliases' => ['edge.jane.example.quire.internal', 'edge.www.jane.example.quire.internal', 'jane-php-1', 'jane-worker-1', 'jane.example.quire.internal', 'php', 'worker', 'www.jane.example.quire.internal']],
             ],
             'builders' => ['quire-buildkit-jane'],
             // Where its networks' addresses must be: its project's /27 (the gate refuses any other)
@@ -64,7 +66,7 @@ final class GateTest extends TestCase
     {
         $scope = $this->gate()->scope($this->project('demo', Site::OWN_DATABASE));
 
-        self::assertSame(['quire-link-demo' => ['aliases' => ['demo-php-1', 'demo.example.quire.internal', 'php', 'www.demo.example.quire.internal']]], $scope['networks'] ?? null, 'Its php for the front door; its worker stays off: it reaches no PostgreSQL there.');
+        self::assertSame(['quire-link-demo' => ['aliases' => ['demo-php-1', 'demo.example.quire.internal', 'edge.demo.example.quire.internal', 'edge.www.demo.example.quire.internal', 'php', 'www.demo.example.quire.internal']]], $scope['networks'] ?? null, 'Its php for the front door; its worker stays off: it reaches no PostgreSQL there.');
     }
 
     public function testEachOperationHasTheScopeWrittenAndTheSitesOwnDockerConfiguration(): void
@@ -94,8 +96,31 @@ final class GateTest extends TestCase
 
     public function testTheGateMustOpenTheSitesSocket(): void
     {
-        $gate = new Gate($this->runner, GateFixture::TRUSTED, $this->root.'/gate/scopes', $this->root.'/gate/sites', $this->root.'/gate/docker', reloadSeconds: 0.0);
+        $gate = new Gate($this->runner, GateFixture::TRUSTED, $this->root.'/gate/scopes', $this->root.'/gate/sites', $this->root.'/gate/docker', new LoadedScopeStatus());
         $this->expectExceptionMessageIsOrContains('The Docker gate didn\'t open the socket of "jane"');
+
+        $gate->site($this->project('jane'));
+    }
+
+    public function testTheGateIsAskedAboutTheExactFileWrittenAndWhenItsGone(): void
+    {
+        GateFixture::open($this->root, 'jane');
+        $status = new LoadedScopeStatus();
+        $gate = new Gate($this->runner, GateFixture::TRUSTED, $this->root.'/gate/scopes', $this->root.'/gate/sites', $this->root.'/gate/docker', $status);
+
+        $gate->site($this->project('jane'));
+        $written = hash_file('sha256', $this->root.'/gate/scopes/jane.json');
+        $gate->site($this->project('jane'));
+        $gate->remove('jane');
+
+        self::assertSame([['jane', $written], ['jane', $written], ['jane', null]], $status->asked, 'The file as written; asked again unchanged (the gate may have refused it since); then whether it\'s gone.');
+    }
+
+    public function testNothingIsDoneForASiteWhoseScopeTheGateRefused(): void
+    {
+        GateFixture::open($this->root, 'jane');
+        $gate = new Gate($this->runner, GateFixture::TRUSTED, $this->root.'/gate/scopes', $this->root.'/gate/sites', $this->root.'/gate/docker', new LoadedScopeStatus(['jane' => ['state' => 'reserved', 'reason' => 'its prefix "jane-" collides with "jane-blog"']]));
+        $this->expectExceptionMessageIsOrContains('The Docker gate refused the scope of "jane" (reserved): its prefix "jane-" collides with "jane-blog"');
 
         $gate->site($this->project('jane'));
     }
@@ -145,16 +170,40 @@ final class GateTest extends TestCase
     {
         $gate = $this->gate('jane', 'jane-blog', 'demo');
 
-        foreach ([$this->project('jane'), $this->project('jane-blog'), $this->project('demo', Site::OWN_DATABASE)] as $project) {
+        foreach ([$this->project('jane', others: ['jane-blog', 'demo']), $this->project('jane-blog', others: ['jane', 'demo']), $this->project('demo', Site::OWN_DATABASE, ['jane', 'jane-blog'])] as $project) {
             $gate->site($project);
         }
 
-        $config = str_replace(['/etc/yorvogate/sites', '/run/yorvogate/sites', '/run/yorvogate/trusted'], [$this->root.'/gate/scopes', $this->root.'/gate/sites', $this->root.'/gate/trusted'], (string) file_get_contents(self::SERVER.'/gate/yorvogate.yaml'));
-        new Filesystem()->dumpFile($this->root.'/yorvogate.yaml', $config);
-        $check = new SymfonyProcessRunner()->run(['yorvogate', 'check', '--config', $this->root.'/yorvogate.yaml'], timeout: 60);
+        $check = $this->check();
 
         self::assertTrue($check->successful(), $check->output.$check->errorOutput);
         self::assertStringContainsString('sites (scoped, scope_sockets '.$this->root.'/gate/sites): ok, 3 scopes', $check->output);
+    }
+
+    /**
+     * No site's prefix ("<project>-") covers a name "edge.<domain>.quire.internal": no project's name has a
+     * ".". The names of releases before 0.6 ("<domain>.quire.internal") are kept only where no other site's
+     * prefix covers them, which the gate refuses (YorvoGate 0.3) for both sites.
+     */
+    public function testNoSitesPrefixCoversAnotherSitesNamesOnItsLink(): void
+    {
+        $sites = ['edge' => ['edge.example'], 'edge-x' => ['edge-x.com'], 'jane' => ['jane.example'], 'jane-blog' => ['jane-blog.example']];
+        $gate = $this->gate(...array_keys($sites));
+
+        foreach ($sites as $name => $domains) {
+            $gate->site($this->project($name, others: array_values(array_diff(array_keys($sites), [$name])), domains: $domains));
+        }
+
+        $check = $this->check();
+        self::assertTrue($check->successful(), $check->output.$check->errorOutput);
+        self::assertStringContainsString('ok, 4 scopes', $check->output);
+
+        $aliases = fn (string $name): array => LinkAliases::in(json_decode((string) file_get_contents($this->root.'/gate/scopes/'.$name.'.json'), true), 'quire-link-'.$name);
+        self::assertContains('edge.jane-blog.example.quire.internal', $aliases('jane-blog'));
+        self::assertNotContains('jane-blog.example.quire.internal', $aliases('jane-blog'), 'Under "jane-": the gate gives it to jane.');
+        self::assertNotContains('edge-x.com.quire.internal', $aliases('edge-x'), 'Under "edge-".');
+        self::assertContains('jane.example.quire.internal', $aliases('jane'), 'No other site\'s prefix covers it: kept for a rollback to 0.5.');
+        self::assertContains('edge.edge.example.quire.internal', $aliases('edge'));
     }
 
     public function testTheGateHoldsSitesToWhatThePolicyAllows(): void
@@ -217,12 +266,30 @@ final class GateTest extends TestCase
         return GateFixture::gate($this->runner, $this->root, ...$open);
     }
 
-    private function project(string $name, string $database = Site::SHARED_DATABASE): SiteProject
+    /**
+     * @param list<string>      $others  The other sites' projects
+     * @param list<string>|null $domains Its domains, "<name>.example" and "www.<name>.example" if null
+     */
+    private function project(string $name, string $database = Site::SHARED_DATABASE, array $others = [], ?array $domains = null): SiteProject
     {
         $site = new SiteName($name);
         $paths = new ServerPaths($this->root);
         new Filesystem()->mkdir($paths->site($site));
+        $domains ??= [$site->value.'.example', 'www.'.$site->value.'.example'];
 
-        return SiteProject::of($paths, $site, [new Domain($site->value.'.example'), new Domain('www.'.$site->value.'.example')], $name, $database, new SiteNetworkRange(SiteNetworkRange::DEFAULT)->block(0));
+        return SiteProject::of($paths, $site, array_map(static fn (string $domain): Domain => new Domain($domain), $domains), $name, $database, new SiteNetworkRange(SiteNetworkRange::DEFAULT)->block(0), $others);
+    }
+
+    /**
+     * Runs the gate's own check (YorvoGate, the image the server runs) on the server's settings and the
+     * scope files in the test's folder.
+     */
+    private function check(): ProcessResult
+    {
+        $config = str_replace(['/etc/yorvogate/sites', '/run/yorvogate/sites', '/run/yorvogate/trusted', '/var/lib/quire-gate/'], [$this->root.'/gate/scopes', $this->root.'/gate/sites', $this->root.'/gate/trusted', $this->root.'/gate/state/'], (string) file_get_contents(self::SERVER.'/gate/yorvogate.yaml'));
+        new Filesystem()->dumpFile($this->root.'/yorvogate.yaml', $config);
+        new Filesystem()->mkdir($this->root.'/gate/state', 0o700);
+
+        return new SymfonyProcessRunner()->run(['yorvogate', 'check', '--config', $this->root.'/yorvogate.yaml'], timeout: 60);
     }
 }

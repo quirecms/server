@@ -33,6 +33,67 @@ final readonly class SiteFiles
     public const string EDGE_SUFFIX = '.quire.internal';
 
     /**
+     * The first label of a site's name on its link: "edge.<domain>.quire.internal". The Docker gate
+     * gives an alias to the site whose prefix ("<project>-") it starts with (YorvoGate 0.3), and a site's
+     * domain may start with another site's name ("jane-blog.example" next to the site "jane"). Every
+     * prefix ends with "-" and no project's name has a "." (SiteName's pattern), so none covers "edge.":
+     * not even a site called "edge", whose prefix is "edge-".
+     */
+    public const string EDGE_LABEL = 'edge.';
+
+    /**
+     * A site's name on its link, for one of its domains.
+     */
+    public static function edgeName(string $host): string
+    {
+        return self::EDGE_LABEL.$host.self::EDGE_SUFFIX;
+    }
+
+    /**
+     * Its names on its link: "edge.<domain>.quire.internal", and the name releases before 0.6 gave it
+     * ("<domain>.quire.internal"), which their front door asks for after an update rolls back, where the
+     * gate allows it: not when another site's prefix covers it. Deprecated: 0.7 gives the first only.
+     *
+     * @param list<string> $projects Every other site's project
+     *
+     * @return list<string>
+     */
+    public static function edgeNames(string $host, array $projects): array
+    {
+        return [self::edgeName($host), ...(null === self::coveredBy($host, $projects) ? [$host.self::EDGE_SUFFIX] : [])];
+    }
+
+    /**
+     * The other site whose prefix covers a domain's name of releases before 0.6, or null.
+     *
+     * @param list<string> $projects
+     */
+    public static function coveredBy(string $host, array $projects): ?string
+    {
+        foreach ($projects as $project) {
+            if (str_starts_with($host, $project.'-')) {
+                return $project;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * The domain a name on a site's link is for (either form), or null when it's none of them.
+     */
+    public static function hostOfEdgeName(string $alias): ?string
+    {
+        if (!str_ends_with($alias, self::EDGE_SUFFIX)) {
+            return null;
+        }
+
+        $host = substr($alias, 0, -\strlen(self::EDGE_SUFFIX));
+
+        return str_starts_with($host, self::EDGE_LABEL) ? substr($host, \strlen(self::EDGE_LABEL)) : $host;
+    }
+
+    /**
      * FrankenPHP worker threads a site's php runs: 4 serve about 80 to 200 pages a second, plenty for a
      * site, and each holds one database connection (SiteDatabases::CONNECTIONS) while it's in use.
      */
@@ -98,11 +159,12 @@ final readonly class SiteFiles
     }
 
     /**
-     * @param list<Domain> $domains The primary one first
-     * @param SiteSubnets  $subnets Its addresses (SiteLinks::ensure made its link)
-     * @param string|null  $project Its Compose project (its own for an adopted site), the site's name if null
+     * @param list<Domain> $domains  The primary one first
+     * @param SiteSubnets  $subnets  Its addresses (SiteLinks::ensure made its link)
+     * @param list<string> $projects Every other site's project, for its names on its link (edgeNames)
+     * @param string|null  $project  Its Compose project (its own for an adopted site), the site's name if null
      */
-    public function writeOverride(string $directory, SiteName $site, array $domains, string $databaseMode, SiteSubnets $subnets, ?string $project = null): void
+    public function writeOverride(string $directory, SiteName $site, array $domains, string $databaseMode, SiteSubnets $subnets, array $projects, ?string $project = null): void
     {
         if ([] === $domains) {
             throw new \InvalidArgumentException('A site needs at least one domain.');
@@ -132,7 +194,7 @@ final readonly class SiteFiles
             ],
             'labels' => ['com.quirecms.site' => 'true', 'com.quirecms.server.site' => $site->value],
             // Its link, where the front door finds it by these names; its own network for the internet
-            'networks' => ['default' => null, $link => ['aliases' => array_map(static fn (string $host): string => $host.self::EDGE_SUFFIX, $hosts)]],
+            'networks' => ['default' => null, $link => ['aliases' => array_merge(...array_map(static fn (string $host): array => self::edgeNames($host, $projects), $hosts))]],
             'mem_limit' => '1g',
             'pids_limit' => 512,
             // FrankenPHP's binary needs this one to start (a file capability, for port 80).

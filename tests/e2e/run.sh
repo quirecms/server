@@ -16,6 +16,9 @@
 #   E2E_ONLY=links tests/e2e/run.sh …  sites' links (D-34): the last release before them (0.3.1) installed with
 #                                             a site on the shared networks, moved to this checkout (its files and agent),
 #                                             a second site added; what each reaches of the other and the server
+#   E2E_ONLY=rollback tests/e2e/run.sh … an update from the last release (E2E_ROLLBACK_FROM, else 0.5.2) to this
+#                                             checkout, then rolled back: its files put back as the updater does,
+#                                             its Docker gate and front door serve every site again
 #   E2E_CACHE=1 tests/e2e/run.sh …     keeps the machine's images and build cache between runs
 #                                             (in the volume quire-server-e2e-cache; one run at a time)
 #
@@ -47,6 +50,9 @@ explain() {
 	done
 }
 inside() { docker exec "$dind" sh -c "$1"; }
+# The names of the image a container runs. Its Config.Image is no name since YorvoGate 0.3: the gate
+# names the checked image to Docker by its ID ("<repository>@<ID>", or the ID on the classic store).
+image_names() { inside "docker image inspect --format '{{join .RepoTags \" \"}}' \$(docker inspect --format '{{.Image}}' $1)"; }
 # A site's files from quire/skeleton, with Composer in the machine (its folder $1, mounted from $2): tried
 # once more 30 s later, as the server itself does, when GitHub fails for a moment (HTTP 504s, 2026-11-07)
 skeleton() {
@@ -72,8 +78,9 @@ updating() { [ "${E2E_ONLY:-}" = update ]; }
 backingup() { [ "${E2E_ONLY:-}" = backups ]; }
 upgrading() { [ "${E2E_ONLY:-}" = database ]; }
 linking() { [ "${E2E_ONLY:-}" = links ]; }
+rollingback() { [ "${E2E_ONLY:-}" = rollback ]; }
 # Installed from a published release (its signatures checked: the latest, or for links 0.3.1), not from this checkout
-from_release() { release || linking; }
+from_release() { release || linking || rollingback; }
 cache=''
 if [ "${E2E_CACHE:-}" = 1 ]; then cache='-v quire-server-e2e-cache:/var/lib/docker'; fi
 # Docker Hub refuses anonymous pulls now and then (CI's runners are anonymous): the machine's image, and
@@ -120,6 +127,8 @@ if from_release; then
 	install='umask 077; sh /root/quire-server/install.sh --yes --test-certificates --no-os-updates --unsupported-os 2>&1'
 	# Links: the last release before them (0.4.0 has them), whatever the latest is
 	if linking; then install="${install% 2>&1} --version=0.3.1 2>&1"; fi
+	# Rollback: the release an update to this checkout rolls back to (its gate is YorvoGate 0.2.2)
+	if rollingback; then install="${install% 2>&1} --version=${E2E_ROLLBACK_FROM:-0.5.2} 2>&1"; fi
 	check 'a release that doesn'\''t exist, or a version that isn'\''t one, installs nothing' "! inside 'sh /root/quire-server/install.sh --version=0.0.0 --yes --no-os-updates --unsupported-os' && ! inside 'sh /root/quire-server/install.sh \"--version=0.1.0/../..\" --yes --no-os-updates --unsupported-os' && ! inside 'test -e /srv/quire/server'"
 else
 	install='sh /root/quire-server/install.sh --source=/root/quire-server --yes --test-certificates --no-os-updates --unsupported-os 2>&1'
@@ -154,7 +163,7 @@ if release; then
 check 'the release'\''s signatures were checked' "grep -q 'Its signature checks out' $logs/install.log && grep -q 'Its image'\''s signature checks out too' $logs/install.log"
 check 'it runs the release'\''s signed image, by digest' "inside 'quire-server version' | grep -Eq '^Agent: ghcr.io/quirecms/server@sha256:[0-9a-f]{64}\$' && [ \"\$(inside 'docker inspect quire-server-agent-1 --format {{.Config.Image}}')\" = \"\$(inside 'sed -n s/^QUIRE_SERVER_IMAGE=//p /srv/quire/server/server.env')\" ]"
 check 'nothing was built on the machine' "[ -z \"\$(inside 'docker images -q quire-server-agent')\" ]"
-elif ! linking; then
+elif ! linking && ! rollingback; then
 check 'it says it was built from a checkout (no release image)' "inside 'quire-server version' | grep -q 'built from a checkout'"
 fi
 check 'every image of the stack is pinned by digest' "! inside 'cd /srv/quire/server && docker compose --env-file server.env config --images' | grep -v '^quire-server-agent\$' | grep -vq '@sha256:'"
@@ -175,7 +184,7 @@ check 'it can'\''t reach the server'\''s PostgreSQL' "! inside 'docker exec demo
 check 'it was backed up first' "inside 'ls /srv/quire/backups/demo/before-server-*.tar'"
 check 'its settings as they were are kept (root only)' "[ \"\$(inside 'cat /srv/quire/sites/demo/prod.env.before-server')\" = \"\$demo_env\" ] && [ \"\$(inside 'stat -c %a /srv/quire/sites/demo/prod.env.before-server')\" = 600 ]"
 check 'two lines of its prod.env changed' "inside 'grep -c compose.server.yaml /srv/quire/sites/demo/prod.env' | grep -q 1 && inside 'grep -q \"^COMPOSE_PROJECT_NAME='\\''demo'\\''\" /srv/quire/sites/demo/prod.env'"
-check 'its image has its own name' "inside 'docker inspect demo-php-1 --format \"{{.Config.Image}}\"' | grep -q '^quire-sites/demo/php-prod'"
+check 'its image has its own name' "image_names demo-php-1 | grep -q 'quire-sites/demo/php-prod:'"
 check 'the adoption is recorded' "inside 'quire-server operations' | grep -q 'site.adopt.*succeeded'"
 check 'its versions are recorded in its folder' "inside 'test -f /srv/quire/sites/demo/composer.lock'"
 fi
@@ -627,7 +636,8 @@ check 'its log is capped: 3 files of 10 MB' "[ \"\$(inside \"docker inspect quir
 check 'the site publishes no ports' "[ -z \"\$(inside 'docker port jane-php-1')\" ]"
 caps=$(inside "docker inspect jane-php-1 jane-worker-1 --format '{{.HostConfig.CapDrop}} {{.HostConfig.CapAdd}} {{.HostConfig.SecurityOpt}}'" || true)
 echo "$caps" | sed 's/^/    /'
-check 'the site runs without capabilities (the web one: only to bind port 80)' "[ \"\$(echo \"\$caps\" | head -1)\" = '[ALL] [CAP_NET_BIND_SERVICE] [no-new-privileges=true]' ] && [ \"\$(echo \"\$caps\" | tail -1)\" = '[ALL] [] [no-new-privileges=true]' ]"
+# seccomp=builtin: Docker's built-in profile, which the gate writes into every site container (YorvoGate 0.3)
+check 'the site runs without capabilities (the web one: only to bind port 80), under Docker'\''s seccomp profile' "[ \"\$(echo \"\$caps\" | head -1)\" = '[ALL] [CAP_NET_BIND_SERVICE] [no-new-privileges=true seccomp=builtin]' ] && [ \"\$(echo \"\$caps\" | tail -1)\" = '[ALL] [] [no-new-privileges=true seccomp=builtin]' ]"
 check 'the site has no own PostgreSQL (the shared one)' "! inside 'docker ps --format \"{{.Names}}\"' | grep -q jane-database"
 check 'its role opens its database' "inside 'docker exec jane-php-1 php bin/console dbal:run-sql -q \"SELECT 1\"'"
 # Its database connections (D-39): 4 PHP threads, its role's limit and idle timeout, PostgreSQL sized
@@ -798,7 +808,7 @@ commit 'printf "services: {}\n" > compose.server.yaml' 'Its own server file'
 inside 'quire-server site:deploy blog 2>&1' | tee "$logs"/git-tracked.log | sed 's/^/    /'
 check 'a commit with the server'\''s own files is refused, they stay' "grep -q 'the server.s own files' $logs/git-tracked.log && inside 'grep -q cap_drop /srv/quire/sites/blog/compose.server.yaml'"
 commit 'git revert --no-commit HEAD' 'Back again'
-check 'its image is named in its own namespace' "[ \"\$(inside 'docker inspect blog-php-1 --format \"{{.Config.Image}}\"')\" = quire-sites/blog/php-prod ]"
+check 'its image is named in its own namespace' "image_names blog-php-1 | grep -q 'quire-sites/blog/php-prod:'"
 # A commit building an image under another site's name (its next start would run this code)
 inside "printf '%s\n' '{print} /^services:\$/ && !done {print \"  squat:\"; print \"    build: .\"; print \"    image: quire-sites/jane/php-prod\"; done = 1}' > /root/squat.awk && docker cp /root/squat.awk git-server:/tmp/squat.awk"
 commit 'awk -f /tmp/squat.awk compose.prod.yaml > /tmp/c && cat /tmp/c > compose.prod.yaml' 'Squat'
@@ -848,8 +858,9 @@ echo '== A release a crash cut short, put back at the agent'\''s start'
 # As a power cut in the middle of a rebuild leaves it: its intent, naming the image it ran before (the
 # one kept to undo its update, which differs from the one it runs now)
 before=$(inside "docker image inspect quire-sites/jane/php-prod:before-update jane-php-prod:before-update --format '{{.Id}}' 2>/dev/null" | head -1)
-image=$(inside "docker inspect jane-php-1 --format '{{.Config.Image}}'")
-inside "printf '{\"operation\": \"x\", \"what\": \"rebuild\", \"image\": \"%s\", \"image_before\": \"%s\", \"backup\": null, \"put_back\": []}\n' '$image' '$before' > /srv/quire/backups/jane/release.json && chmod 600 /srv/quire/backups/jane/release.json"
+# The image's name, as the server writes it in an intent (SiteFiles::image): not Config.Image, an ID since 0.3
+intent_image=quire-sites/jane/php-prod
+inside "printf '{\"operation\": \"x\", \"what\": \"rebuild\", \"image\": \"%s\", \"image_before\": \"%s\", \"backup\": null, \"put_back\": []}\n' '$intent_image' '$before' > /srv/quire/backups/jane/release.json && chmod 600 /srv/quire/backups/jane/release.json"
 inside 'docker restart quire-server-agent-1 >/dev/null'
 waited=0
 until inside 'quire-server operations --site=jane' | grep site.recover | grep -qv running || [ $waited -ge 300 ]; do sleep 10; waited=$((waited + 10)); done
@@ -914,6 +925,59 @@ check 'one of them restores it, and says how to undo that' "grep -q 'is as $fina
 check 'another site'\''s, or a path elsewhere, is refused' "inside 'quire-server backups:restore jane --file=../demo/x.tar --yes 2>&1' | grep -q 'isn.t one of'"
 inside 'quire-server site:remove jane --yes >/dev/null 2>&1'
 
+fi
+
+if rollingback; then
+from=${E2E_ROLLBACK_FROM:-0.5.2}
+echo "== Quire Server $from with three sites: one whose domain starts with another's name (jane-blog.test, next to jane)"
+for site in jane jane-blog kim; do
+	inside "quire-server site:add $site --domain=$site.test --admin-email=$site@example.com --title=\"Site $site\" 2>&1" > "$logs/add-$site.log" || sed 's/^/    /' "$logs/add-$site.log"
+done
+served() { inside "curl -sk --resolve $1.test:443:127.0.0.1 https://$1.test/" | grep -q "Site $1"; }
+check "all three run and are served on $from" 'served jane && served jane-blog && served kim'
+# What a rollback puts back: the release's files as they were (ServerFolder::archive/restore)
+inside 'tar -C /srv/quire/server -cf /root/server-before.tar .'
+# A container's names on a network
+names() { inside "docker inspect $1 --format '{{range \$name, \$n := .NetworkSettings.Networks}}{{\$name}}:{{join \$n.DNSNames \",\"}} {{end}}'"; }
+# The agent's start, done: it says so when it starts its rounds
+started() { inside 'for i in $(seq 180); do quire-server logs agent 2>&1 | grep -q "Automatic updates" && exit 0; sleep 2; done; exit 1'; }
+
+echo '== It moves to this checkout (its files and its agent, as an update replaces them)'
+inside 'tar -C /root/quire-server -cf - . | tar -C /srv/quire/server -xf - --no-same-owner'
+inside "sed -i 's/^QUIRE_SERVER_IMAGE=.*/QUIRE_SERVER_IMAGE=/' /srv/quire/server/server.env"
+inside 'quire-server up 2>&1' > "$logs"/up-rollback.log || sed 's/^/    /' "$logs"/up-rollback.log
+started || true
+inside 'quire-server logs agent 2>&1 | grep -v "^ *$" | tail -12' | sed 's/^/    /'
+check 'its gate is YorvoGate 0.3.0' "inside \"docker inspect quire-server-gate-1 --format '{{.Config.Image}}'\" | grep -q 'yorvogate:0.3.0@sha256:'"
+inside 'docker exec quire-server-gate-1 yorvogate check --docker --config /etc/yorvogate/yorvogate.yaml 2>&1' > "$logs"/gate-check.log || true
+sed 's/^/    /' "$logs"/gate-check.log
+check 'the gate'\''s own check passes on this Docker (its seccomp, AppArmor, runtime)' "inside 'docker exec quire-server-gate-1 yorvogate check --docker --config /etc/yorvogate/yorvogate.yaml' >/dev/null 2>&1"
+# The gate's image has no shell or tools: its volume is read from PostgreSQL's (on the machine already)
+gate_state() { inside "docker run --rm --network none -v quire-server_gate_state:/state:ro --entrypoint $1 \$(docker inspect quire-server-database-1 --format '{{.Config.Image}}') $2"; }
+gate_state ls '-ln /state' | sed 's/^/    /' || true
+check 'its state file is the gate'\''s own: root'\''s, readable by it only' "[ \"\$(gate_state stat '-c %u:%a /state/state.json')\" = '0:600' ]"
+check 'the gate says nothing wrong with its state file' "! inside 'docker logs quire-server-gate-1 2>&1' | grep -i 'state file'"
+check 'all three are served on this checkout, the colliding pair too' 'served jane && served jane-blog && served kim'
+check 'jane-blog has only its name "edge.jane-blog.test" on its link (the gate gives "jane-blog.…" to jane)' "names jane-blog-php-1 | grep -q 'quire-link-jane-blog:[^ ]*edge.jane-blog.test.quire.internal' && ! names jane-blog-php-1 | grep -Eq '[:,]jane-blog.test.quire.internal'"
+check 'jane and kim have both names, for a rollback' "names jane-php-1 | grep -q 'edge.jane.test.quire.internal' && names jane-php-1 | grep -Eq '[:,]jane.test.quire.internal' && names kim-php-1 | grep -Eq '[:,]kim.test.quire.internal'"
+check 'every container was made again under the gate (Docker'\''s built-in seccomp profile)' "[ -z \"\$(inside \"docker ps -q --filter label=com.quirecms.server.site | xargs docker inspect --format '{{.Name}} {{json .HostConfig.SecurityOpt}}'\" | grep -v seccomp=builtin)\" ]"
+check 'a site'\''s container runs its image by ID, as the gate names it to Docker' "inside \"docker inspect jane-php-1 --format '{{.Config.Image}}'\" | grep -Eq '^(quire-sites/jane/php-prod@)?sha256:[0-9a-f]{64}\$'"
+check 'a site'\''s own command goes through its scope' "inside 'quire-server site:console jane-blog quire:about 2>&1' | grep -q 'Quire'"
+inside 'docker logs quire-server-gate-1 2>&1' > "$logs"/gate-0.3.log || true
+check 'the gate refused no site'\''s request on its way here' "! grep -E '\"status\": ?4(01|03)' $logs/gate-0.3.log | grep -q '\"scope\"'"
+grep -o '"headers_not_forwarded":[^]]*]' "$logs"/gate-0.3.log | sort | uniq -c | sed 's/^/    not forwarded: /' || true
+
+echo "== The update rolls back: $from's files put back, as the updater does"
+inside 'cd /srv/quire/server && find . -mindepth 1 -maxdepth 1 ! -name server.env -exec rm -rf {} + && tar -xf /root/server-before.tar --no-same-owner'
+inside 'quire-server up 2>&1' > "$logs"/up-back.log || sed 's/^/    /' "$logs"/up-back.log
+started || true
+inside 'quire-server logs agent 2>&1 | grep -v "^ *$" | tail -12' | sed 's/^/    /'
+check "it runs $from, its gate YorvoGate 0.2.2" "inside 'quire-server version' | grep -q \"^Quire Server $from\" && inside \"docker inspect quire-server-gate-1 --format '{{.Config.Image}}'\" | grep -q 'yorvogate:0.2.2@sha256:'"
+inside 'docker logs quire-server-gate-1 2>&1' > "$logs"/gate-0.2.log || true
+check 'its gate read every site'\''s scope (0.6 left them as 0.2.2 reads them)' "! grep -iE 'refus|unknown field' $logs/gate-0.2.log | grep -qE 'jane|kim'"
+check "all three are served by $from's front door again, the colliding pair too, with no deploy" 'served jane && served jane-blog && served kim'
+check 'jane-blog has its name of before on its link again' "names jane-blog-php-1 | grep -Eq '[:,]jane-blog.test.quire.internal'"
+check 'a site'\''s own command works through its scope' "inside 'quire-server site:console jane-blog quire:about 2>&1' | grep -q 'Quire'"
 fi
 
 if want adopt; then

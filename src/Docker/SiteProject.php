@@ -31,14 +31,15 @@ final readonly class SiteProject
      * join no network of the server's and choose no addresses of its own.
      *
      * @param list<Domain> $domains
+     * @param list<string> $projects Every other site's project, for its names on its link (SiteFiles::edgeNames)
      */
-    public static function of(ServerPaths $paths, SiteName $name, array $domains, string $project, string $databaseMode, ?SiteSubnets $subnets): self
+    public static function of(ServerPaths $paths, SiteName $name, array $domains, string $project, string $databaseMode, ?SiteSubnets $subnets, array $projects): self
     {
         $directory = $paths->site($name);
         $shared = $subnets instanceof SiteSubnets ? [SiteLinks::name($project) => [
             // The front door finds its php by its domains; with the server's PostgreSQL, the worker
             // reaches it there too
-            'php' => array_map(static fn (Domain $domain): string => $domain->value.SiteFiles::EDGE_SUFFIX, $domains),
+            'php' => array_merge(...array_map(static fn (Domain $domain): array => SiteFiles::edgeNames($domain->value, $projects), $domains)),
             ...(Site::SHARED_DATABASE === $databaseMode ? ['worker' => []] : []),
         ]] : [];
 
