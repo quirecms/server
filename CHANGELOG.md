@@ -8,6 +8,8 @@ All notable changes to Quire Server. The format follows [Keep a Changelog](https
 
 - **The Docker gate is YorvoGate 0.3.0** (pinned by its digest, its signature checked), which fixes flaws of 0.2.2 that apply to this server. A site could run a container from another site's image by the image's ID: High here, because the server protects sites' images (`protected_images`). A token taken off a scope kept working until the scope's file changed size. A request could crash the gate for every site (GO-2026-6859). The gate now also writes Docker's built-in seccomp profile and a private cgroup namespace into every site container. At the agent's start after the update, every site's containers that don't have them are made again (a few seconds offline each).
 
+- A site restored as a new one sends no email unless asked (SEC-0014). This covers `backups:restore --as`, `--from-server` and `backups:restore-server`, on this server or another. Before, it kept the mailer its backup had, so a drill or a rehearsal could email the original's users from the real sender, with the production token on the copy. "No email" is now written as such (`MAILER_DSN=null://null`), also for `site:mail --none` and a site added to a server without a mailer, so a mailer in the site's own `.env` files can't take over. `--keep-mailer` keeps the backup's mailer, for a real move; `--server-mailer` gives the site this server's. The restore names each site's mailer, without its password.
+
 - The front door's log no longer holds visitors' full IP addresses (SEC-0010), neither in visits nor in Caddy's own messages (such as a certificate obtained at a site's first visit): each is cut to its network (/24 for IPv4, /48 for IPv6) as the line is written, and headers that can carry an address (`X-Forwarded-For`, `Forwarded`, `X-Real-Ip`, `Cf-Connecting-Ip`, `True-Client-Ip`) are left out. The log has a set size, 3 files of 10 MB, whatever the machine's Docker defaults are. Lines written before the update keep their addresses until the front door is replaced, which the update does.
 
 ### Changed
@@ -17,6 +19,10 @@ All notable changes to Quire Server. The format follows [Keep a Changelog](https
 - The front door reaches a site by `edge.<domain>.quire.internal`. YorvoGate 0.3 gives a name to the site whose prefix it starts with, so a site whose domain starts with another site's name (the domain `jane-blog.example` next to the site `jane`) had both sites refused. A site keeps its name of earlier releases (`<domain>.quire.internal`) where no other site's prefix covers it, and loses it when a site added later covers it.
 - Sites' builders run under YorvoGate 0.3.0's AppArmor profile, its release file as published.
 - New sites get Quire `^0.3` unless the server says otherwise (`settings:set QUIRE_SERVER_QUIRE_VERSION=…`); it was `^0.1`. A server that set its own keeps it.
+
+### Known limits
+
+- A restored copy keeps its other settings that point at what the original uses: a storage disk on the original's bucket (where the copy's clean-up jobs could delete the original's files), an analytics ID, a webhook. Check them in the copy's admin before using it.
 
 ### Deprecated
 

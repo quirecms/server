@@ -30,6 +30,13 @@ final readonly class SiteFiles
      * resolve anywhere else, and visitors get the "Back in a moment" page. A site's public domain would
      * be asked of public DNS then, which names this server: the front door again, in a loop.
      */
+    /**
+     * A site that sends no email: written as such, not left out. Symfony takes a real environment
+     * variable over the site's own .env files, so a MAILER_DSN left out is the one its code ships (a
+     * Git mode site's, a backup's), which may be the original's (SEC-0014).
+     */
+    public const string NO_MAIL = 'null://null';
+
     public const string EDGE_SUFFIX = '.quire.internal';
 
     /**

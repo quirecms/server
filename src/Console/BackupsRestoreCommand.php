@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Quire\Server\Console;
 
 use Quire\Server\Backup\OffsiteBackups;
+use Quire\Server\Operation\SiteManager;
 use Quire\Server\Site\Domain;
 use Quire\Server\Site\SiteName;
 use Quire\Server\Update\UpdateFailed;
@@ -32,6 +33,10 @@ use Symfony\Component\Console\Style\SymfonyStyle;
 
           <info>quire-server backups:restore jane --as=jane-copy --domain=copy.jane.example</info>
           <info>quire-server backups:restore jane --from-server=old-server --as=jane --domain=jane.example</info>
+
+        The new site sends no email: a copy or a rehearsal holds the original's users, and must not
+        email them. For a real move, --keep-mailer keeps the backup's mailer; --server-mailer gives it
+        this server's (it then emails those users from this server).
 
         A Git mode site's code is in its repository, not its backups: add it from there, then restore
         its data in place.
@@ -79,7 +84,23 @@ final readonly class BackupsRestoreCommand
         bool $unsigned = false,
         #[Option(description: 'One of its backups on the server instead, by name ("quire-server backups <site> --local"), e.g. the one made before a restore')]
         ?string $file = null,
+        #[Option(description: 'Keep the mailer its backup had, rather than this server\'s (or none): only for a real move, never a test or a rehearsal while the original still runs')]
+        bool $keepMailer = false,
+        #[Option(description: 'Give it this server\'s mailer: it emails the original\'s users from this server')]
+        bool $serverMailer = false,
     ): int {
+        if ($keepMailer && $serverMailer) {
+            $io->error('--keep-mailer or --server-mailer, not both.');
+
+            return Command::INVALID;
+        }
+
+        if (($keepMailer || $serverMailer) && null === $as) {
+            $io->error('--keep-mailer and --server-mailer are for a restore as a new site (--as): restored over itself, a site keeps its mailer.');
+
+            return Command::INVALID;
+        }
+
         if (null !== $file) {
             return $this->fromFile($io, $name, $file, $yes);
         }
@@ -91,7 +112,7 @@ final readonly class BackupsRestoreCommand
         }
 
         if (null !== $as || null !== $fromServer || [] !== $domain) {
-            return $this->asNew($io, $name, $snapshot, $as, $domain, $fromServer, $yes, $signedBy, $unsigned);
+            return $this->asNew($io, $name, $snapshot, $as, $domain, $fromServer, $yes, $signedBy, $unsigned, $keepMailer, $serverMailer);
         }
 
         try {
@@ -166,7 +187,7 @@ final readonly class BackupsRestoreCommand
     /**
      * @param list<string> $domains
      */
-    private function asNew(SymfonyStyle $io, string $name, string $snapshot, ?string $as, array $domains, ?string $fromServer, bool $yes, ?string $signedBy, bool $unsigned): int
+    private function asNew(SymfonyStyle $io, string $name, string $snapshot, ?string $as, array $domains, ?string $fromServer, bool $yes, ?string $signedBy, bool $unsigned, bool $keepMailer, bool $serverMailer): int
     {
         try {
             $source = new SiteName($name);
@@ -183,7 +204,7 @@ final readonly class BackupsRestoreCommand
                 return Command::SUCCESS;
             }
 
-            $restored = $this->backups->restoreAsNew($source, $snapshot, $target, $domains, $fromServer, Requester::CHANNEL, Requester::name(), static fn (string $step) => $io->writeln('  '.$step.'…'), $signedBy, $unsigned);
+            $restored = $this->backups->restoreAsNew($source, $snapshot, $target, $domains, $fromServer, Requester::CHANNEL, Requester::name(), static fn (string $step) => $io->writeln('  '.$step.'…'), $signedBy, $unsigned, $this->mailer($keepMailer, $serverMailer));
         } catch (\Throwable $e) {
             $io->error(['The site wasn\'t added (everything done was undone):', $e->getMessage()]);
 
@@ -194,5 +215,21 @@ final readonly class BackupsRestoreCommand
         $io->writeln(\sprintf('Point the DNS of %s at this server: its certificate comes at the first visit. Everyone signs in again (it has a secret of its own).', implode(', ', array_map(static fn (Domain $domain): string => $domain->unicode(), $domains))));
 
         return Command::SUCCESS;
+    }
+
+    /**
+     * The new site's mailer, as asked: none unless one of the options says otherwise.
+     */
+    private function mailer(bool $keepMailer, bool $serverMailer): string
+    {
+        if ($keepMailer && $serverMailer) {
+            throw new \InvalidArgumentException('--keep-mailer or --server-mailer, not both.');
+        }
+
+        return match (true) {
+            $keepMailer => SiteManager::MAILER_BACKUP,
+            $serverMailer => SiteManager::MAILER_SERVER,
+            default => SiteManager::MAILER_NONE,
+        };
     }
 }

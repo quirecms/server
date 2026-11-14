@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Quire\Server\Console;
 
 use Quire\Server\Backup\OffsiteBackups;
+use Quire\Server\Operation\SiteManager;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Attribute\Option;
 use Symfony\Component\Console\Command\Command;
@@ -28,6 +29,10 @@ use Symfony\Component\Console\Style\SymfonyStyle;
 
         Then point each domain's DNS at this server. The sites have settings of their own (their
         database, password and secret): everyone signs in again.
+
+        The sites send no email, so a rehearsal can't email the old server's users. For a real move,
+        --keep-mailer keeps the mailers their backups had; --server-mailer gives them this server's.
+        The summary says which mailer each site has.
         HELP,
 )]
 final readonly class BackupsRestoreServerCommand
@@ -47,7 +52,17 @@ final readonly class BackupsRestoreServerCommand
         ?string $signedBy = null,
         #[Option(description: 'Restore backups this server can\'t verify (made before servers signed theirs): only ones you know the origin of')]
         bool $unsigned = false,
+        #[Option(description: 'Keep the mailers the sites\' backups had, rather than this server\'s (or none): only for a real move, never a test or a rehearsal while the old server still runs')]
+        bool $keepMailer = false,
+        #[Option(description: 'Give them this server\'s mailer: they email the old server\'s users from this server')]
+        bool $serverMailer = false,
     ): int {
+        if ($keepMailer && $serverMailer) {
+            $io->error('--keep-mailer or --server-mailer, not both.');
+
+            return Command::INVALID;
+        }
+
         if (!$this->backups->configured()) {
             $io->error('Backups off the server aren\'t set up: "quire-server backups:setup --existing --host=<this server\'s name>" connects to the old server\'s.');
 
@@ -85,7 +100,7 @@ final readonly class BackupsRestoreServerCommand
             return Command::SUCCESS;
         }
 
-        $outcomes = $this->backups->restoreServer($fromServer, Requester::CHANNEL, Requester::name(), static fn (string $line) => $io->writeln('  '.$line), $signedBy, $unsigned);
+        $outcomes = $this->backups->restoreServer($fromServer, Requester::CHANNEL, Requester::name(), static fn (string $line) => $io->writeln('  '.$line), $signedBy, $unsigned, $this->mailer($keepMailer, $serverMailer));
         $io->table(['Site', 'Outcome', ''], array_map(array_values(...), $outcomes));
 
         if (\in_array('failed', array_column($outcomes, 'outcome'), true)) {
@@ -97,5 +112,21 @@ final readonly class BackupsRestoreServerCommand
         $io->success('The sites are restored. Point their domains\' DNS at this server: their certificates come at the first visit.');
 
         return Command::SUCCESS;
+    }
+
+    /**
+     * The new site's mailer, as asked: none unless one of the options says otherwise.
+     */
+    private function mailer(bool $keepMailer, bool $serverMailer): string
+    {
+        if ($keepMailer && $serverMailer) {
+            throw new \InvalidArgumentException('--keep-mailer or --server-mailer, not both.');
+        }
+
+        return match (true) {
+            $keepMailer => SiteManager::MAILER_BACKUP,
+            $serverMailer => SiteManager::MAILER_SERVER,
+            default => SiteManager::MAILER_NONE,
+        };
     }
 }
