@@ -160,7 +160,7 @@ if release; then
 check 'the release'\''s signatures were checked' "grep -q 'Its signature checks out' $logs/install.log && grep -q 'Its image'\''s signature checks out too' $logs/install.log"
 check 'it runs the release'\''s signed image, by digest' "inside 'quire-server version' | grep -Eq '^Agent: ghcr.io/quirecms/server@sha256:[0-9a-f]{64}\$' && [ \"\$(inside 'docker inspect quire-server-agent-1 --format {{.Config.Image}}')\" = \"\$(inside 'sed -n s/^QUIRE_SERVER_IMAGE=//p /srv/quire/server/server.env')\" ]"
 check 'nothing was built on the machine' "[ -z \"\$(inside 'docker images -q quire-server-agent')\" ]"
-elif ! linking; then
+elif ! linking && ! rollingback; then
 check 'it says it was built from a checkout (no release image)' "inside 'quire-server version' | grep -q 'built from a checkout'"
 fi
 check 'every image of the stack is pinned by digest' "! inside 'cd /srv/quire/server && docker compose --env-file server.env config --images' | grep -v '^quire-server-agent\$' | grep -vq '@sha256:'"
@@ -947,7 +947,10 @@ check 'its gate is YorvoGate 0.3.0' "inside \"docker inspect quire-server-gate-1
 inside 'docker exec quire-server-gate-1 yorvogate check --docker --config /etc/yorvogate/yorvogate.yaml 2>&1' > "$logs"/gate-check.log || true
 sed 's/^/    /' "$logs"/gate-check.log
 check 'the gate'\''s own check passes on this Docker (its seccomp, AppArmor, runtime)' "inside 'docker exec quire-server-gate-1 yorvogate check --docker --config /etc/yorvogate/yorvogate.yaml' >/dev/null 2>&1"
-check 'its state file is the gate'\''s own: root'\''s, readable by it only' "[ \"\$(inside 'docker exec quire-server-gate-1 stat -c \"%u %a\" /var/lib/yorvogate/state.json')\" = '0 600' ]"
+# The gate's image has no shell or tools: its volume is read from PostgreSQL's (on the machine already)
+gate_state() { inside "docker run --rm --network none -v quire-server_gate_state:/state:ro --entrypoint $1 \$(docker inspect quire-server-database-1 --format '{{.Config.Image}}') $2"; }
+gate_state ls '-ln /state' | sed 's/^/    /' || true
+check 'its state file is the gate'\''s own: root'\''s, readable by it only' "[ \"\$(gate_state stat '-c %u:%a /state/state.json')\" = '0:600' ]"
 check 'all three are served on this checkout, the colliding pair too' 'served jane && served jane-blog && served kim'
 check 'jane-blog has only its name "edge.jane-blog.test" on its link (the gate gives "jane-blog.…" to jane)' "names jane-blog-php-1 | grep -q 'quire-link-jane-blog:[^ ]*edge.jane-blog.test.quire.internal' && ! names jane-blog-php-1 | grep -Eq '[:,]jane-blog.test.quire.internal'"
 check 'jane and kim have both names, for a rollback' "names jane-php-1 | grep -q 'edge.jane.test.quire.internal' && names jane-php-1 | grep -Eq '[:,]jane.test.quire.internal' && names kim-php-1 | grep -Eq '[:,]kim.test.quire.internal'"

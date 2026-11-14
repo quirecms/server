@@ -14,6 +14,7 @@ use Quire\Server\Process\ProcessResult;
 use Quire\Server\Registry\RuntimeBuilds;
 use Quire\Server\Registry\RuntimeFloors;
 use Quire\Server\Registry\SiteLock;
+use Quire\Server\Registry\SiteNetworks;
 use Quire\Server\Registry\SiteRegistry;
 use Quire\Server\Site\Domain;
 use Quire\Server\Site\ServerPaths;
@@ -21,6 +22,7 @@ use Quire\Server\Site\Site;
 use Quire\Server\Site\SiteFiles;
 use Quire\Server\Site\SiteName;
 use Quire\Server\Tests\GateFixture;
+use Quire\Server\Tests\LinkAliases;
 use Quire\Server\Tests\Registry\RegistryTestCase;
 use Quire\Server\Tests\ScriptedRunner;
 use Symfony\Component\Filesystem\Filesystem;
@@ -163,6 +165,26 @@ final class SiteOverridesTest extends RegistryTestCase
         self::assertNotContains('--force-recreate', $this->lastUp());
     }
 
+    /**
+     * Before any site is brought up to date, every site's scope is as this release writes it: one of
+     * the release before may hold a name the gate now gives another site, and it would refuse that
+     * site's scope (both sites') until it's rewritten. And one left by a site that's gone is removed.
+     */
+    public function testEverySitesScopeIsWrittenAnewFirst(): void
+    {
+        $this->site('jane', 'jane', Site::SHARED_DATABASE);
+        $this->site('demo-x', 'demo-x', Site::SHARED_DATABASE);
+        // As a release before 0.6 wrote it: the name of before only
+        new Filesystem()->dumpFile($this->root.'/gate/scopes/jane.json', '{"networks": {"quire-link-jane": {"aliases": ["jane.example.quire.internal"]}}}');
+        new Filesystem()->dumpFile($this->root.'/gate/scopes/gone.json', '{}');
+
+        self::assertSame([], $this->subject()->refresh());
+
+        self::assertContains(SiteFiles::edgeName('jane.example'), LinkAliases::in(json_decode((string) file_get_contents($this->root.'/gate/scopes/jane.json'), true), 'quire-link-jane'));
+        self::assertFileExists($this->root.'/gate/scopes/demo-x.json');
+        self::assertFileDoesNotExist($this->root.'/gate/scopes/gone.json');
+    }
+
     public function testContainersMadeBeforeTheGateHardenedThemAreMadeAgain(): void
     {
         $this->site('jane', 'jane', Site::SHARED_DATABASE);
@@ -239,6 +261,6 @@ final class SiteOverridesTest extends RegistryTestCase
 
     private function subject(): SiteOverrides
     {
-        return new SiteOverrides($this->registry, new SiteFiles(), $this->paths, new Images($this->runner, GateFixture::gate($this->runner, $this->root, 'jane', 'demo-x', 'gone')), new SiteLock($this->connection, $this->schema), new Compose($this->runner, new ComposePolicy(), new ComposeFiles(), new RuntimeImages($this->runner, new RuntimeFloors($this->connection, $this->schema)), new RuntimeBuilds($this->connection, $this->schema), GateFixture::gate($this->runner, $this->root, 'jane', 'demo-x', 'gone'), GateFixture::builders($this->runner, $this->root)), GateFixture::links($this->runner, $this->connection, $this->schema));
+        return new SiteOverrides($this->registry, new SiteFiles(), $this->paths, new Images($this->runner, GateFixture::gate($this->runner, $this->root, 'jane', 'demo-x', 'gone')), new SiteLock($this->connection, $this->schema), new Compose($this->runner, new ComposePolicy(), new ComposeFiles(), new RuntimeImages($this->runner, new RuntimeFloors($this->connection, $this->schema)), new RuntimeBuilds($this->connection, $this->schema), GateFixture::gate($this->runner, $this->root, 'jane', 'demo-x', 'gone'), GateFixture::builders($this->runner, $this->root)), GateFixture::links($this->runner, $this->connection, $this->schema), GateFixture::gate($this->runner, $this->root, 'jane', 'demo-x', 'gone'), new SiteNetworks($this->connection, $this->schema));
     }
 }

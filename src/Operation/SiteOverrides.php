@@ -5,10 +5,12 @@ declare(strict_types=1);
 namespace Quire\Server\Operation;
 
 use Quire\Server\Docker\Compose;
+use Quire\Server\Docker\Gate;
 use Quire\Server\Docker\Images;
 use Quire\Server\Docker\SiteProject;
 use Quire\Server\Network\SiteLinks;
 use Quire\Server\Registry\SiteLock;
+use Quire\Server\Registry\SiteNetworks;
 use Quire\Server\Registry\SiteRegistry;
 use Quire\Server\Site\ServerPaths;
 use Quire\Server\Site\Site;
@@ -36,7 +38,36 @@ final readonly class SiteOverrides
         private SiteLock $lock,
         private Compose $compose,
         private SiteLinks $links,
+        private Gate $gate,
+        private SiteNetworks $networks,
     ) {
+    }
+
+    /**
+     * Each registered site's scope on the gate, as the agent's start writes them (Gate::reconcile).
+     *
+     * @return array<string, string> Site => why its scope couldn't be written, or the gate refused it
+     */
+    private function scopes(): array
+    {
+        $sites = array_values(array_filter($this->registry->all(), fn (Site $site): bool => Site::REMOVED !== $site->status && is_dir($this->paths->site($site->name))));
+        $projects = [];
+        $failed = [];
+
+        foreach ($sites as $site) {
+            try {
+                $others = array_values(array_map(static fn (Site $other): string => $other->project, array_filter($sites, static fn (Site $other): bool => $other->name->value !== $site->name->value)));
+                $projects[] = SiteProject::of($this->paths, $site->name, $site->domains, $site->project, $site->databaseMode, $this->networks->find($site->name), $others);
+            } catch (\Throwable $e) {
+                $failed[$site->name->value] = $e->getMessage();
+            }
+        }
+
+        foreach ($this->gate->reconcile($projects)['failed'] as $project => $why) {
+            $failed[$project] = $why;
+        }
+
+        return $failed;
     }
 
     /**
@@ -44,7 +75,10 @@ final readonly class SiteOverrides
      */
     public function refresh(): array
     {
-        $failed = [];
+        // Every site's scope first, as this release writes it: a scope of the release before may hold
+        // a name the gate now gives another site (YorvoGate 0.3: "jane-blog.test.quire.internal" is
+        // under "jane-"), and the gate would refuse that other site's scope until it's rewritten.
+        $failed = $this->scopes();
 
         foreach ($this->registry->all() as $site) {
             $directory = $this->paths->site($site->name);
