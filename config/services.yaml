@@ -40,6 +40,12 @@ services:
 
     # The Docker gate: the agent's own operations on its trusted socket (DOCKER_HOST), each site's on a
     # socket of the site's own (compose.yaml mounts them)
+    Quire\Server\Docker\GateScopeStatus:
+        arguments:
+            $dockerHost: '%env(DOCKER_HOST)%'
+
+    Quire\Server\Docker\ScopeStatus: '@Quire\Server\Docker\GateScopeStatus'
+
     Quire\Server\Docker\Gate:
         arguments:
             $dockerHost: '%env(DOCKER_HOST)%'

@@ -38,7 +38,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        part: [adopt, sites, git, release, update, backups, database, links]
+        part: [adopt, sites, git, release, update, backups, database, links, rollback]
     runs-on: ubuntu-26.04
     timeout-minutes: 40
     steps:

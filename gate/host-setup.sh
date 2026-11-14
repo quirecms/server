@@ -47,11 +47,15 @@ if [ ! -f /etc/apparmor.d/abi/4.0 ]; then
 	exit 0
 fi
 
-# Written whole, then moved in place: a cut-short write never leaves half a profile for the boot.
+# YorvoGate's release file of the version the server runs (yorvogate-buildkit-rootless, in its
+# SHA256SUMS), byte for byte: a test checks it. Written whole, then moved in place: a cut-short write
+# never leaves half a profile for the boot.
 temporary=$(mktemp "/etc/apparmor.d/.$name.XXXXXX")
 cat >"$temporary" <<'EOF'
-# Quire Server: sites' rootless BuildKit builders (YorvoGate's profile). It grants only what the
-# kernel restricts for unprivileged processes: creating a user namespace. Managed by Quire Server.
+# AppArmor profile for a scope's rootless BuildKit builder (see docs/configuration.md, Builders).
+# It grants only what Ubuntu 26.04 restricts for unprivileged processes: creating a user namespace.
+#   sudo cp yorvogate-buildkit-rootless /etc/apparmor.d/
+#   sudo apparmor_parser -r /etc/apparmor.d/yorvogate-buildkit-rootless
 abi <abi/4.0>,
 include <tunables/global>
 

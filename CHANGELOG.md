@@ -6,7 +6,22 @@ All notable changes to Quire Server. The format follows [Keep a Changelog](https
 
 ### Security
 
+- **The Docker gate is YorvoGate 0.3.0** (pinned by its digest, its signature checked), which fixes flaws of 0.2.2 that apply to this server. A site could run a container from another site's image by the image's ID: High here, because the server protects sites' images (`protected_images`). A token taken off a scope kept working until the scope's file changed size. A request could crash the gate for every site (GO-2026-6859). The gate now also writes Docker's built-in seccomp profile and a private cgroup namespace into every site container. At the agent's start after the update, every site's containers that don't have them are made again (a few seconds offline each).
+
 - The front door's log no longer holds visitors' full IP addresses (SEC-0010), neither in visits nor in Caddy's own messages (such as a certificate obtained at a site's first visit): each is cut to its network (/24 for IPv4, /48 for IPv6) as the line is written, and headers that can carry an address (`X-Forwarded-For`, `Forwarded`, `X-Real-Ip`, `Cf-Connecting-Ip`, `True-Client-Ip`) are left out. The log has a set size, 3 files of 10 MB, whatever the machine's Docker defaults are. Lines written before the update keep their addresses until the front door is replaced, which the update does.
+
+### Changed
+
+- The agent waits for the gate to read a site's scope (YorvoGate 0.3's scope status) instead of sleeping past its scan. A scope the gate refuses stops the operation, with the gate's reason.
+- The gate keeps each site's last valid claims across its restarts (a state file on a volume of its own).
+- The front door reaches a site by `edge.<domain>.quire.internal`. YorvoGate 0.3 gives a name to the site whose prefix it starts with, so a site whose domain starts with another site's name (the domain `jane-blog.example` next to the site `jane`) had both sites refused. A site keeps its name of earlier releases (`<domain>.quire.internal`) where no other site's prefix covers it, and loses it when a site added later covers it.
+- Sites' builders run under YorvoGate 0.3.0's AppArmor profile, its release file as published.
+- New sites get Quire `^0.3` unless the server says otherwise (`settings:set QUIRE_SERVER_QUIRE_VERSION=…`); it was `^0.1`. A server that set its own keeps it.
+
+### Deprecated
+
+- **If the update to 0.6 rolls back** (by itself, or with `quire-server update --undo`): 0.5's agent, at its start, writes every running site's Compose files again as 0.5 writes them and brings each site up once more (a few seconds offline each), so its front door reaches every site by the name it uses. A site that fails to start is tried again at each start of the agent and named in its log (`quire-server logs agent`). A site whose domain starts with another site's name and a dash (`jane-blog.example` next to `jane`) has only its 0.6 name until then.
+- The front door's second name for a site, `<domain>.quire.internal`, kept so that an update rolled back to 0.5 still reaches every site: 0.7 removes it. The scope files the agent writes have no `version` until 0.7, because YorvoGate 0.2.2, which a rollback to 0.5 runs, refuses one.
 
 ## [0.5.2] - 2026-11-10
 

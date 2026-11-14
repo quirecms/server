@@ -43,6 +43,9 @@ final class SiteOverridesTest extends RegistryTestCase
 
     private bool $refused = false;
 
+    /** The seccomp options of the site's containers, as Docker shows them (YorvoGate 0.3 writes "seccomp=builtin") */
+    private string $securityOpt = '["no-new-privileges=true","seccomp=builtin"]';
+
     #[\Override]
     protected function setUp(): void
     {
@@ -52,7 +55,14 @@ final class SiteOverridesTest extends RegistryTestCase
         $this->registry = new SiteRegistry($this->connection, $this->schema);
         $this->runner = new ScriptedRunner([
             'docker image inspect' => fn (array $command): ProcessResult => isset($this->tags[$command[5]]) ? ScriptedRunner::ok($command, $this->tags[$command[5]]."\n") : ScriptedRunner::failed($command, 'No such image'),
-            'docker container inspect' => static fn (array $command): ProcessResult => 'demo-x-php-1' === $command[5] || 'jane-php-1' === $command[5] ? ScriptedRunner::ok($command, self::RUNNING."\n") : ScriptedRunner::failed($command, 'No such container'),
+            'docker container inspect' => fn (array $command): ProcessResult => match (true) {
+                // Each of the site's containers' seccomp options (Compose::up)
+                '{{json .HostConfig.SecurityOpt}}' === $command[4] => ScriptedRunner::ok($command, implode("\n", array_fill(0, \count($command) - 5, $this->securityOpt))."\n"),
+                'demo-x-php-1' === $command[5] || 'jane-php-1' === $command[5] => ScriptedRunner::ok($command, self::RUNNING."\n"),
+                default => ScriptedRunner::failed($command, 'No such container'),
+            },
+            // The site's containers: one, whose seccomp option is $securityOpt
+            'docker container ls' => static fn (array $command): ProcessResult => ScriptedRunner::ok($command, "c0ffee\n"),
             'docker image tag' => function (array $command): ProcessResult {
                 $this->tags[$command[4]] = $command[3];
 
@@ -125,7 +135,7 @@ final class SiteOverridesTest extends RegistryTestCase
         self::assertStringContainsString('quire-link-jane', $jane);
         self::assertStringNotContainsString('quire-edge', $jane, 'Off the networks every site shared.');
         self::assertStringContainsString('subnet: 10.72.0.32/27', $jane, 'Its own network at its addresses: Compose makes it again there on "up".');
-        self::assertSame(['jane.example.quire.internal'], $reached, 'Once it runs, the front door is asked to reach it there.');
+        self::assertSame(['edge.jane.example.quire.internal'], $reached, 'Once it runs, the front door is asked to reach it there, by its name of 0.6.');
     }
 
     public function testASiteWhoseNetworkMovesHasEveryContainerMadeAgain(): void
@@ -153,6 +163,30 @@ final class SiteOverridesTest extends RegistryTestCase
         self::assertNotContains('--force-recreate', $this->lastUp());
     }
 
+    public function testContainersMadeBeforeTheGateHardenedThemAreMadeAgain(): void
+    {
+        $this->site('jane', 'jane', Site::SHARED_DATABASE);
+        // Made under YorvoGate 0.2: no seccomp option of the gate's
+        $this->securityOpt = '["no-new-privileges=true"]';
+
+        $this->subject()->refresh();
+
+        self::assertContains('--force-recreate', $this->lastUp(), 'Every container, the worker too: Compose would make again only those whose configuration changed.');
+
+        // Docker can't say: said, and only what changed is made again
+        $this->runner->script['docker container ls'] = static fn (array $command): ProcessResult => ScriptedRunner::failed(array_values(array_filter($command, \is_string(...))), 'Cannot connect');
+        new Filesystem()->dumpFile($this->paths->site(new SiteName('jane')).'/'.SiteFiles::OVERRIDE, "services: {}\n");
+        $this->subject()->refresh();
+        self::assertNotContains('--force-recreate', $this->lastUp());
+        $this->runner->script['docker container ls'] = static fn (array $command): ProcessResult => ScriptedRunner::ok(array_values(array_filter($command, \is_string(...))), "c0ffee\n");
+
+        // Made under 0.3: only what changed
+        $this->securityOpt = '["no-new-privileges=true","seccomp=builtin"]';
+        new Filesystem()->dumpFile($this->paths->site(new SiteName('jane')).'/'.SiteFiles::OVERRIDE, "services: {}\n");
+        $this->subject()->refresh();
+        self::assertNotContains('--force-recreate', $this->lastUp());
+    }
+
     /**
      * @return list<string>
      */
@@ -170,7 +204,7 @@ final class SiteOverridesTest extends RegistryTestCase
 
         $failed = $this->subject()->refresh();
 
-        self::assertStringContainsString('the front door doesn\'t reach it on its link (jane.example.quire.internal:80)', $failed['jane'] ?? '');
+        self::assertStringContainsString('the front door doesn\'t reach it on its link (edge.jane.example.quire.internal:80)', $failed['jane'] ?? '');
         self::assertStringContainsString('quire-link-jane', (string) file_get_contents($this->paths->site(new SiteName('jane')).'/'.SiteFiles::OVERRIDE), 'It runs with it: kept.');
     }
 

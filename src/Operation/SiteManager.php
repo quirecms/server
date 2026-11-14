@@ -167,7 +167,8 @@ final readonly class SiteManager
                 ], static fn (string $value): bool => '' !== $value));
                 $subnets = $this->links->ensure($request->name, $request->name->value, true);
                 $undo[] = fn () => $this->links->remove($request->name, $request->name->value);
-                $this->files->writeOverride($directory, $request->name, $request->domains, Site::SHARED_DATABASE, $subnets);
+                $this->yieldEdgeNames($request->name->value, $operation);
+                $this->files->writeOverride($directory, $request->name, $request->domains, Site::SHARED_DATABASE, $subnets, $this->otherProjects($request->name));
                 $project = $this->project($request->name, $request->domains, $request->name->value, Site::SHARED_DATABASE);
 
                 $step('Checking and building it (a few minutes)');
@@ -296,7 +297,8 @@ final readonly class SiteManager
                 ], static fn (string $value): bool => '' !== $value));
                 $subnets = $this->links->ensure($name, $name->value, true);
                 $undo[] = fn () => $this->links->remove($name, $name->value);
-                $this->files->writeOverride($directory, $name, $domains, Site::SHARED_DATABASE, $subnets);
+                $this->yieldEdgeNames($name->value, $operation);
+                $this->files->writeOverride($directory, $name, $domains, Site::SHARED_DATABASE, $subnets, $this->otherProjects($name));
                 $project = $this->project($name, $domains, $name->value, Site::SHARED_DATABASE);
 
                 $step('Checking and building it (a few minutes)');
@@ -436,7 +438,8 @@ final readonly class SiteManager
                 $files = $env->clear('COMPOSE_FILE') ?? 'compose.yaml:compose.prod.yaml';
                 $subnets = $this->links->ensure($name, $project, false);
                 $undo[] = fn () => $this->links->remove($name, $project);
-                $this->files->writeOverride($directory, $name, $domains, Site::OWN_DATABASE, $subnets, $project);
+                $this->yieldEdgeNames($project, $operation);
+                $this->files->writeOverride($directory, $name, $domains, Site::OWN_DATABASE, $subnets, $this->otherProjects($name), $project);
                 $this->files->write($envPath, $env->with([
                     'COMPOSE_FILE' => str_contains($files, SiteFiles::OVERRIDE) ? $files : $files.':'.SiteFiles::OVERRIDE,
                     'COMPOSE_PROJECT_NAME' => $project,
@@ -555,7 +558,7 @@ final readonly class SiteManager
                     $this->files->write($envPath, $envBefore, 0o600);
                 };
                 $subnets = $this->links->ensure($name, $site->project, Site::SHARED_DATABASE === $site->databaseMode);
-                $this->files->writeOverride($directory, $name, $domains, $site->databaseMode, $subnets, $site->project);
+                $this->files->writeOverride($directory, $name, $domains, $site->databaseMode, $subnets, $this->otherProjects($name), $site->project);
                 $env = EnvFile::parse($envBefore);
 
                 // The server's own prod.env names its main domain; an adopted site's keeps its own settings
@@ -567,7 +570,7 @@ final readonly class SiteManager
                 $this->compose->up($this->project($name, $domains, $site->project, $site->databaseMode), $operation->output(...));
 
                 if (false === $this->links->frontDoorReaches($domains[0]->value)) {
-                    throw new \RuntimeException(\sprintf('It runs, but the front door doesn\'t reach it by its new name (%s%s:80).', $domains[0]->value, SiteFiles::EDGE_SUFFIX));
+                    throw new \RuntimeException(\sprintf('It runs, but the front door doesn\'t reach it by its new name (%s:80).', SiteFiles::edgeName($domains[0]->value)));
                 }
 
                 $step('Opening its new domains to visitors');
@@ -862,8 +865,10 @@ final readonly class SiteManager
     }
 
     /**
-     * The domains a site had, from the override the server wrote in its folder (each one's name on
-     * its link, "<domain>.quire.internal"), main one first.
+     * The domains a site had, from the override the server wrote in its folder, main one first: its
+     * php's SERVER_NAME ("http://<domain>, …, php:80", in every release), else its names on its link
+     * (either form, see SiteFiles::hostOfEdgeName). SERVER_NAME first: a domain that starts with
+     * "edge." makes the link's names of 0.6 ambiguous.
      *
      * @return list<Domain>
      */
@@ -878,33 +883,50 @@ final readonly class SiteManager
         }
 
         $hosts = [];
-        $walk = static function (mixed $value) use (&$walk, &$hosts): void {
-            // The override's "!reset" and "!override" tags
-            if ($value instanceof \Symfony\Component\Yaml\Tag\TaggedValue) {
-                $value = $value->getValue();
-            }
+        $php = \is_array($override) && \is_array($override['services'] ?? null) ? ($override['services']['php'] ?? null) : null;
+        $php = $php instanceof \Symfony\Component\Yaml\Tag\TaggedValue ? $php->getValue() : $php;
+        $serverName = \is_array($php) && \is_array($php['environment'] ?? null) ? ($php['environment']['SERVER_NAME'] ?? null) : null;
 
-            if (!\is_array($value)) {
-                return;
-            }
+        if (\is_string($serverName)) {
+            foreach (explode(',', $serverName) as $name) {
+                $name = trim($name);
 
-            foreach ($value as $key => $child) {
-                if ($child instanceof \Symfony\Component\Yaml\Tag\TaggedValue) {
-                    $child = $child->getValue();
+                if (str_starts_with($name, 'http://')) {
+                    $hosts[substr($name, 7)] = true;
+                }
+            }
+        } else {
+            $walk = static function (mixed $value) use (&$walk, &$hosts): void {
+                // The override's "!reset" and "!override" tags
+                if ($value instanceof \Symfony\Component\Yaml\Tag\TaggedValue) {
+                    $value = $value->getValue();
                 }
 
-                if ('aliases' === $key && \is_array($child)) {
-                    foreach ($child as $alias) {
-                        if (\is_string($alias) && str_ends_with($alias, SiteFiles::EDGE_SUFFIX)) {
-                            $hosts[substr($alias, 0, -\strlen(SiteFiles::EDGE_SUFFIX))] = true;
-                        }
+                if (!\is_array($value)) {
+                    return;
+                }
+
+                foreach ($value as $key => $child) {
+                    if ($child instanceof \Symfony\Component\Yaml\Tag\TaggedValue) {
+                        $child = $child->getValue();
                     }
-                } else {
-                    $walk($child);
+
+                    if ('aliases' === $key && \is_array($child)) {
+                        foreach ($child as $alias) {
+                            $host = \is_string($alias) ? SiteFiles::hostOfEdgeName($alias) : null;
+
+                            if (null !== $host) {
+                                $hosts[$host] = true;
+                            }
+                        }
+                    } else {
+                        $walk($child);
+                    }
                 }
-            }
-        };
-        $walk($override);
+            };
+            $walk($override);
+        }
+
         $domains = [];
 
         foreach (array_keys($hosts) as $host) {
@@ -946,7 +968,56 @@ final readonly class SiteManager
      */
     public function project(SiteName $name, array $domains, string $project, string $databaseMode): SiteProject
     {
-        return SiteProject::of($this->paths, $name, $domains, $project, $databaseMode, $this->networks->find($name));
+        return SiteProject::of($this->paths, $name, $domains, $project, $databaseMode, $this->networks->find($name), $this->otherProjects($name));
+    }
+
+    /**
+     * The Compose projects of the server's other sites: their prefixes decide which of a site's names on
+     * its link the gate allows it (SiteFiles::edgeNames).
+     *
+     * @return list<string>
+     */
+    private function otherProjects(SiteName $name): array
+    {
+        $projects = [];
+
+        foreach ($this->registry->all() as $site) {
+            if ($site->name->value !== $name->value && Site::REMOVED !== $site->status) {
+                $projects[] = $site->project;
+            }
+        }
+
+        return $projects;
+    }
+
+    /**
+     * Before a new project's scope is on the gate: the sites whose names of releases before 0.6 on
+     * their link it covers ("jane-blog.example.quire.internal" once there's a site "jane") lose them,
+     * in their scope and their override, so the gate refuses neither. Their running containers keep
+     * the name until they're next made; their front door finds them by "edge.<domain>" meanwhile.
+     */
+    private function yieldEdgeNames(string $project, Operation $operation): void
+    {
+        foreach ($this->registry->all() as $site) {
+            $covered = array_filter($site->domains, static fn (Domain $domain): bool => null !== SiteFiles::coveredBy($domain->value, [$project]));
+
+            if ($site->project === $project || Site::REMOVED === $site->status || [] === $covered) {
+                continue;
+            }
+
+            $directory = $this->paths->site($site->name);
+            $subnets = $this->networks->find($site->name);
+
+            if (!is_file($directory.'/'.SiteFiles::OVERRIDE) || !$subnets instanceof \Quire\Server\Network\SiteSubnets) {
+                continue;
+            }
+
+            $this->lock->run($site->name, function () use ($site, $directory, $subnets): void {
+                $this->files->writeOverride($directory, $site->name, $site->domains, $site->databaseMode, $subnets, $this->otherProjects($site->name), $site->project);
+                $this->compose->scope($this->projectOf($site));
+            });
+            $operation->line(\sprintf('"%s" no longer has its link\'s names of releases before 0.6 that start with "%s-" (the gate gives those to this site); the front door finds it by "edge.<domain>"', $site->name->value, $project));
+        }
     }
 
     public function projectOf(Site $site): SiteProject

@@ -175,8 +175,52 @@ final readonly class Compose
         // Its own network moves to its addresses (a site of a release before D-34, or adopted): Compose
         // makes the network again, but reconnects the containers it doesn't make again without their
         // service's name (Compose 5.6), so "database" wouldn't resolve. All are made again.
-        $recreate = $this->moves($project) ? ['--force-recreate'] : [];
+        // And containers made before the gate wrote what Docker would otherwise decide (YorvoGate 0.3:
+        // Docker's built-in seccomp profile, a private cgroup namespace): made again, they carry them.
+        $unhardened = $this->madeBeforeTheGateHardened($project);
+
+        if (null === $unhardened && $output instanceof \Closure) {
+            $output("Note: whether the site's containers carry the gate's seccomp profile couldn't be read from Docker: they're made again only if their configuration changed.\n");
+        }
+
+        $recreate = $this->moves($project) || true === $unhardened ? ['--force-recreate'] : [];
         $this->compose($project, ['up', '--detach', '--wait', '--wait-timeout', '600', '--remove-orphans', '--no-build', ...$recreate], timeout: 900, output: $output)->orFail('Starting the site');
+    }
+
+    /**
+     * Whether a container of the site was made before the gate set its seccomp profile ("seccomp=builtin",
+     * which YorvoGate 0.3 writes into every site container it creates that doesn't set one); null when
+     * Docker couldn't say.
+     */
+    private function madeBeforeTheGateHardened(SiteProject $project): ?bool
+    {
+        $listed = $this->runner->run(['docker', 'container', 'ls', '--all', '--quiet', '--no-trunc', '--filter', 'label='.Gate::OWNER_LABEL.'='.$project->name()], $this->gate->trusted(), timeout: 60);
+
+        if (!$listed->successful()) {
+            return null;
+        }
+
+        $ids = array_values(array_filter(explode("\n", trim($listed->output)), static fn (string $id): bool => '' !== $id));
+
+        if ([] === $ids) {
+            return false;
+        }
+
+        $inspected = $this->runner->run(['docker', 'container', 'inspect', '--format', '{{json .HostConfig.SecurityOpt}}', ...$ids], $this->gate->trusted(), timeout: 60);
+
+        if (!$inspected->successful()) {
+            return null;
+        }
+
+        foreach (explode("\n", trim($inspected->output)) as $line) {
+            $options = json_decode($line, true);
+
+            if (!\is_array($options) || !\in_array('seccomp=builtin', $options, true)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -215,6 +259,15 @@ final readonly class Compose
     public function down(SiteProject $project, bool $volumes, ?\Closure $output = null): void
     {
         $this->compose($project, ['down', '--remove-orphans', ...($volumes ? ['--volumes'] : [])], timeout: 300, output: $output)->orFail('Stopping the site');
+    }
+
+    /**
+     * The site's scope on the gate as its policy says now, in effect: e.g. after another site's
+     * arrival took one of its names on its link (SiteManager::yieldEdgeNames).
+     */
+    public function scope(SiteProject $project): void
+    {
+        $this->gate->site($project);
     }
 
     /**

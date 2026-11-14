@@ -32,9 +32,12 @@ use Quire\Server\Registry\SiteRegistry;
 use Quire\Server\Site\Domain;
 use Quire\Server\Site\ServerPaths;
 use Quire\Server\Site\Site;
+use Quire\Server\Site\SiteFiles;
 use Quire\Server\Site\SiteName;
 use Quire\Server\Tests\GateFixture;
+use Quire\Server\Tests\LinkAliases;
 use Quire\Server\Tests\Registry\RegistryTestCase;
+use Quire\Server\Tests\ScriptedRunner;
 use Quire\Server\Update\ContractNotKept;
 use Quire\Server\Update\ReleaseCheck;
 use Symfony\Component\Filesystem\Filesystem;
@@ -119,6 +122,8 @@ final class SiteManagerTest extends RegistryTestCase
                 return self::ok($command, '');
             },
             'docker network inspect' => static fn (array $command): ProcessResult => self::ok($command, ''),
+            // The site's containers, to see whether they were made before the gate hardened them: none here
+            'docker container ls' => static fn (array $command): ProcessResult => self::ok($command, ''),
             // Registered in the site's Docker configuration (its socket)
             'docker buildx inspect' => fn (array $command): ProcessResult => '--bootstrap' === self::argument($command, 3) || \in_array(self::argument($command, 3), $this->registered, true) ? self::ok($command, '') : new ProcessResult(self::strings($command), 1, '', 'ERROR: no builder found'),
             'docker buildx create' => function (array $command): ProcessResult {
@@ -186,7 +191,8 @@ final class SiteManagerTest extends RegistryTestCase
         $written = Yaml::parse($override, Yaml::PARSE_CUSTOM_TAGS);
         $link = 'quire-link-'.$this->name->value;
         self::assertSame([
-            'php' => ['default' => null, $link => ['aliases' => ['jane.example.quire.internal', 'www.jane.example.quire.internal']]],
+            // "edge.<domain>" for the front door, and the name of releases before 0.6 for a rollback to them
+            'php' => ['default' => null, $link => ['aliases' => ['edge.jane.example.quire.internal', 'jane.example.quire.internal', 'edge.www.jane.example.quire.internal', 'www.jane.example.quire.internal']]],
             'worker' => ['default' => null, $link => null],
             'link' => ['external' => true],
             'own' => ['ipam' => ['config' => [['subnet' => '10.72.0.32/27']]]],
@@ -628,7 +634,7 @@ final class SiteManagerTest extends RegistryTestCase
         self::assertSame(['jane.example' => $this->name->value, 'jane.test' => $this->name->value], $this->frontDoor->all(), 'The new one open, the one it no longer has closed.');
         /** @var array{services: array{php: array{networks: array<string, array{aliases: list<string>}>, environment: array<string, string>}}} $written */
         $written = Yaml::parse((string) file_get_contents($this->paths->site($this->name).'/compose.server.yaml'), Yaml::PARSE_CUSTOM_TAGS);
-        self::assertSame(['jane.test.quire.internal', 'jane.example.quire.internal'], $written['services']['php']['networks']['quire-link-'.$this->name->value]['aliases'], 'The front door reaches it by its new names.');
+        self::assertSame(['edge.jane.test.quire.internal', 'jane.test.quire.internal', 'edge.jane.example.quire.internal', 'jane.example.quire.internal'], $written['services']['php']['networks']['quire-link-'.$this->name->value]['aliases'], 'The front door reaches it by its new names.');
         self::assertSame(['http://jane.test, http://jane.example, php:80', 'https://jane.test'], [$written['services']['php']['environment']['SERVER_NAME'], $written['services']['php']['environment']['DEFAULT_URI']]);
         self::assertSame('jane.test', $this->envValue((string) file_get_contents($this->paths->site($this->name).'/prod.env'), 'SERVER_NAME'));
         self::assertSame(['config', 'up'], array_map(static fn (array $command): string => $command[8], $this->commands()), 'Checked, and started again with them: not built again.');
@@ -809,6 +815,56 @@ final class SiteManagerTest extends RegistryTestCase
         self::assertFileExists($this->paths->site($this->name).'/composer.json', 'Its code, from its folder.');
         self::assertContains('quire:restore', $this->consoles(), 'Its data, from its final backup.');
         self::assertSame(['site.restore_as_new', 'succeeded'], [$this->operations->latest()[0]['action'], $this->operations->latest()[0]['status']]);
+    }
+
+    /**
+     * A new site whose prefix covers a site's name of releases before 0.6 on its link ("kim" has the
+     * domain "<new site>-shop.example"): the gate would give it to the new site, and refuse both. So
+     * "kim" loses that name, in its override and its scope, before the new site's scope is written.
+     */
+    public function testANewSiteTakesNoOtherSitesNameOnItsLink(): void
+    {
+        $this->skeletonWithItsFiles();
+        $kim = new SiteName('kim');
+        $domain = new Domain($this->name->value.'-shop.example');
+        $this->registry->add($kim, [$domain], Site::SHARED_DATABASE, 'kim');
+        $this->registry->setStatus($kim, Site::RUNNING);
+        // Its link made on a Docker that has no networks yet
+        $docker = new ScriptedRunner(['docker network' => static fn (array $command): ProcessResult => self::ok($command, ''), 'docker container' => static fn (array $command): ProcessResult => self::ok($command, ''), 'docker exec' => static fn (array $command): ProcessResult => self::ok($command, '')]);
+        $subnets = GateFixture::links($docker, $this->connection, $this->schema)->ensure($kim, 'kim', false);
+        $files = new SiteFiles();
+        new Filesystem()->mkdir($this->paths->site($kim));
+        $files->writeOverride($this->paths->site($kim), $kim, [$domain], Site::SHARED_DATABASE, $subnets, [], 'kim');
+        $kimsNames = fn (): array => LinkAliases::in(Yaml::parseFile($this->paths->site($kim).'/'.SiteFiles::OVERRIDE, Yaml::PARSE_CUSTOM_TAGS), 'quire-link-kim', 'services', 'php');
+        self::assertContains($domain->value.'.quire.internal', $kimsNames(), 'Before: no site covered it.');
+
+        $this->manager()->add($this->request(), 'cli', 'darko', static fn (): null => null);
+
+        self::assertSame([SiteFiles::edgeName($domain->value)], $kimsNames());
+        self::assertNotContains($domain->value.'.quire.internal', LinkAliases::in(json_decode((string) file_get_contents($this->root.'/gate/scopes/kim.json'), true), 'quire-link-kim'), 'Its scope too.');
+        self::assertStringContainsString('"kim" no longer has its link\'s names of releases before 0.6 that start with "'.$this->name->value.'-"', implode("\n", $this->operations->lines($this->operations->latest()[0]['id'])));
+    }
+
+    /**
+     * A removed site's domains, read back from the override in its folder: its php's SERVER_NAME (every
+     * release has it), else its names on its link, of 0.6 ("edge.<domain>…") or before.
+     */
+    public function testARemovedSitesDomainsAreReadFromItsOverrideOfAnyRelease(): void
+    {
+        $folder = $this->root.'/removed-jane';
+        $read = function (string $override) use ($folder): array {
+            new Filesystem()->dumpFile($folder.'/compose.server.yaml', $override);
+            /** @var list<Domain> $domains */
+            $domains = new \ReflectionMethod(SiteManager::class, 'domainsInFolder')->invoke($this->manager(), $folder);
+
+            return array_map(static fn (Domain $domain): string => $domain->value, $domains);
+        };
+        $php = static fn (string $environment, string $aliases): string => "services:\n  php:\n    environment:\n{$environment}    networks:\n      quire-link-jane:\n        aliases: [{$aliases}]\n";
+
+        // A domain that starts with "edge.": only SERVER_NAME says it unambiguously.
+        self::assertSame(['edge.jane.example', 'www.jane.example'], $read($php("      SERVER_NAME: 'http://edge.jane.example, http://www.jane.example, php:80'\n", 'edge.edge.jane.example.quire.internal, edge.jane.example.quire.internal, edge.www.jane.example.quire.internal, www.jane.example.quire.internal')));
+        self::assertSame(['jane.example', 'www.jane.example'], $read($php("      DEFAULT_URI: 'https://jane.example'\n", 'jane.example.quire.internal, www.jane.example.quire.internal')), 'Before 0.6, by its names.');
+        self::assertSame(['jane.example', 'www.jane.example'], $read($php("      DEFAULT_URI: 'https://jane.example'\n", 'edge.jane.example.quire.internal, jane.example.quire.internal, edge.www.jane.example.quire.internal')), 'From 0.6, either name.');
     }
 
     public function testARemovedSiteWithoutItsFinalBackupOrFromGitIsntBroughtBack(): void
@@ -1364,7 +1420,7 @@ final class SiteManagerTest extends RegistryTestCase
             new SiteLock($this->connection, $this->schema),
             new SkeletonInstaller($runner),
             $this->databases,
-            new \Quire\Server\Site\SiteFiles(),
+            new SiteFiles(),
             $compose = new Compose($runner, new ComposePolicy(), new ComposeFiles(), new RuntimeImages($runner, new RuntimeFloors($this->connection, $this->schema)), new RuntimeBuilds($this->connection, $this->schema), GateFixture::gate($runner, $this->root, $this->name->value, 'kim', 'old-site'), GateFixture::builders($runner, $this->root), $checksCode ? new \Quire\Server\Update\CodeCheck(new \Quire\Server\Release\QuireFeed(new \Quire\Server\Release\GitHubReleases($runner))) : null, retrySeconds: 0.0),
             $this->frontDoor,
             $this->paths,

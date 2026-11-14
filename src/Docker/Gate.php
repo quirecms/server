@@ -27,9 +27,6 @@ final readonly class Gate
     /** The label that says which project (and so which site) a Docker object belongs to */
     public const string OWNER_LABEL = 'com.docker.compose.project';
 
-    /** How long the gate takes at most to see a scope file that changed (it looks every 2 seconds) */
-    private const float RELOAD_SECONDS = 2.5;
-
     /** How long a site's socket may take to open */
     private const float OPEN_SECONDS = 15.0;
 
@@ -45,8 +42,8 @@ final readonly class Gate
         private string $sockets,
         /** Where each site's Docker configuration is kept (the agent's own, never a site's) */
         private string $configs,
-        /** Waiting for the gate (tests don't) */
-        private float $reloadSeconds = self::RELOAD_SECONDS,
+        /** What the gate made of a scope file, once it read it */
+        private ScopeStatus $status,
     ) {
         $this->filesystem = new Filesystem();
     }
@@ -70,12 +67,8 @@ final readonly class Gate
     public function site(SiteProject $project): array
     {
         $name = $project->name();
-
-        if ($this->write($project)) {
-            // An open socket serves the scope the gate read before: it reads the new one at its next look.
-            usleep((int) ($this->reloadSeconds * 1_000_000));
-        }
-
+        // In effect as written, whether it changed or not: the gate says so, or why it refused it.
+        $this->inEffect($name, $this->write($project));
         $this->waitForSocket($name);
 
         return $this->configuration($name);
@@ -89,6 +82,8 @@ final readonly class Gate
         // A path of its own only
         SiteProject::checked($project);
         $this->filesystem->remove([$this->scopeFile($project), $this->configs.'/'.$project]);
+        // Gone from the gate too: its socket closed, its names free.
+        $this->status->gone($project);
     }
 
     /**
@@ -125,25 +120,22 @@ final readonly class Gate
             }
         }
 
-        // Every file first, then one wait for the gate: not one per site.
+        // Every file first, then the gate's word on each: the scans they need overlap.
         $failed = [];
-        $changed = false;
+        $written = [];
 
         foreach ($keep as $name => $project) {
             try {
-                $changed = $this->write($project) || $changed;
+                $written[$name] = $this->write($project);
             } catch (\Throwable $e) {
                 $failed[$name] = $e->getMessage();
             }
         }
 
-        if ($changed) {
-            usleep((int) ($this->reloadSeconds * 1_000_000));
-        }
-
-        foreach (array_keys($keep) as $name) {
+        foreach ($written as $name => $sha256) {
             if (!isset($failed[$name])) {
                 try {
+                    $this->inEffect($name, $sha256);
                     $this->waitForSocket($name);
                     $this->configuration($name);
                 } catch (\Throwable $e) {
@@ -158,10 +150,9 @@ final readonly class Gate
     /**
      * Writes the site's scope file when it changed.
      *
-     * @return bool Whether the gate had read an earlier one (its socket is open): it reads the new one
-     *              within RELOAD_SECONDS
+     * @return string The SHA-256 of the scope file, as the gate is to read it
      */
-    private function write(SiteProject $project): bool
+    private function write(SiteProject $project): string
     {
         $name = SiteProject::checked($project->name());
         $file = $this->scopeFile($name);
@@ -169,7 +160,7 @@ final readonly class Gate
         $before = is_file($file) ? file_get_contents($file) : null;
 
         if ($before === $document) {
-            return false;
+            return hash('sha256', $document);
         }
 
         $this->filesystem->mkdir($this->scopes, 0o700);
@@ -180,7 +171,20 @@ final readonly class Gate
         $this->filesystem->chmod($temporary, 0o600);
         $this->filesystem->rename($temporary, $file, true);
 
-        return null !== $before && $this->isSocket($this->socket($name));
+        return hash('sha256', $document);
+    }
+
+    /**
+     * Waits for the gate to read the scope file the agent wrote, and fails with its reason when it
+     * refused it: nothing is done for a site the gate doesn't have as the server wrote it.
+     */
+    private function inEffect(string $project, string $sha256): void
+    {
+        $status = $this->status->read($project, $sha256);
+
+        if ('loaded' !== $status['state']) {
+            throw new \RuntimeException(\sprintf('The Docker gate refused the scope of "%s" (%s)%s: see "quire-server logs gate".', $project, $status['state'], null === $status['reason'] ? '' : ': '.$status['reason']));
+        }
     }
 
     /**

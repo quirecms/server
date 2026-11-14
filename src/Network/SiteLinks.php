@@ -144,11 +144,11 @@ final readonly class SiteLinks
 
     /**
      * Whether the front door reaches a site's web container on its link, by the name it proxies to
-     * ("<domain>.quire.internal", port 80): null when the front door isn't there to ask.
+     * ("edge.<domain>.quire.internal", port 80): null when the front door isn't there to ask.
      */
     public function frontDoorReaches(string $domain): ?bool
     {
-        $reached = $this->docker(['exec', self::FRONT_DOOR, 'nc', '-z', '-w', '5', $domain.SiteFiles::EDGE_SUFFIX, '80']);
+        $reached = $this->docker(['exec', self::FRONT_DOOR, 'nc', '-z', '-w', '5', SiteFiles::edgeName($domain), '80']);
 
         if (!$reached->successful() && (str_contains($reached->errorOutput, 'No such container') || str_contains($reached->errorOutput, 'is not running'))) {
             return null;

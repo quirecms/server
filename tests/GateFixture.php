@@ -29,7 +29,7 @@ final class GateFixture
     {
         self::open($root, ...$projects);
 
-        return new Gate($runner, self::TRUSTED, $root.'/gate/scopes', $root.'/gate/sites', $root.'/gate/docker', reloadSeconds: 0.0);
+        return new Gate($runner, self::TRUSTED, $root.'/gate/scopes', $root.'/gate/sites', $root.'/gate/docker', new LoadedScopeStatus());
     }
 
     /**

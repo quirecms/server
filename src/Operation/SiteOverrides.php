@@ -60,9 +60,10 @@ final readonly class SiteOverrides
                     $before = (string) file_get_contents($override);
                     // Its link and addresses: made the first time (a site of a release before D-34)
                     $subnets = $this->links->ensure($site->name, $site->project, Site::SHARED_DATABASE === $site->databaseMode);
-                    $this->files->writeOverride($directory, $site->name, $site->domains, $site->databaseMode, $subnets, $site->project);
+                    $projects = array_values(array_map(static fn (Site $other): string => $other->project, array_filter($this->registry->all(), static fn (Site $other): bool => $other->name->value !== $site->name->value && Site::REMOVED !== $other->status)));
+                    $this->files->writeOverride($directory, $site->name, $site->domains, $site->databaseMode, $subnets, $projects, $site->project);
                     $image = SiteFiles::image($site->project);
-                    $project = SiteProject::of($this->paths, $site->name, $site->domains, $site->project, $site->databaseMode, $subnets);
+                    $project = SiteProject::of($this->paths, $site->name, $site->domains, $site->project, $site->databaseMode, $subnets, $projects);
 
                     if (null === $this->images->id($project, $image)) {
                         $running = $this->images->ofContainer($project, $site->project.'-php-1');
@@ -86,7 +87,7 @@ final readonly class SiteOverrides
                         $domain = $site->domains[0]->value;
 
                         if (false === $this->links->frontDoorReaches($domain)) {
-                            throw new \RuntimeException(\sprintf('It runs, but the front door doesn\'t reach it on its link (%s%s:80): the agent\'s rounds connect the front door again each minute, and say it if they can\'t ("quire-server logs agent").', $domain, SiteFiles::EDGE_SUFFIX));
+                            throw new \RuntimeException(\sprintf('It runs, but the front door doesn\'t reach it on its link (%s:80): the agent\'s rounds connect the front door again each minute, and say it if they can\'t ("quire-server logs agent").', SiteFiles::edgeName($domain)));
                         }
                     }
                 });

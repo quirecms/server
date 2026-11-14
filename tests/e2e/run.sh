@@ -16,6 +16,9 @@
 #   E2E_ONLY=links tests/e2e/run.sh …  sites' links (D-34): the last release before them (0.3.1) installed with
 #                                             a site on the shared networks, moved to this checkout (its files and agent),
 #                                             a second site added; what each reaches of the other and the server
+#   E2E_ONLY=rollback tests/e2e/run.sh … an update from the last release (E2E_ROLLBACK_FROM, else 0.5.2) to this
+#                                             checkout, then rolled back: its files put back as the updater does,
+#                                             its Docker gate and front door serve every site again
 #   E2E_CACHE=1 tests/e2e/run.sh …     keeps the machine's images and build cache between runs
 #                                             (in the volume quire-server-e2e-cache; one run at a time)
 #
@@ -72,8 +75,9 @@ updating() { [ "${E2E_ONLY:-}" = update ]; }
 backingup() { [ "${E2E_ONLY:-}" = backups ]; }
 upgrading() { [ "${E2E_ONLY:-}" = database ]; }
 linking() { [ "${E2E_ONLY:-}" = links ]; }
+rollingback() { [ "${E2E_ONLY:-}" = rollback ]; }
 # Installed from a published release (its signatures checked: the latest, or for links 0.3.1), not from this checkout
-from_release() { release || linking; }
+from_release() { release || linking || rollingback; }
 cache=''
 if [ "${E2E_CACHE:-}" = 1 ]; then cache='-v quire-server-e2e-cache:/var/lib/docker'; fi
 # Docker Hub refuses anonymous pulls now and then (CI's runners are anonymous): the machine's image, and
@@ -120,6 +124,8 @@ if from_release; then
 	install='umask 077; sh /root/quire-server/install.sh --yes --test-certificates --no-os-updates --unsupported-os 2>&1'
 	# Links: the last release before them (0.4.0 has them), whatever the latest is
 	if linking; then install="${install% 2>&1} --version=0.3.1 2>&1"; fi
+	# Rollback: the release an update to this checkout rolls back to (its gate is YorvoGate 0.2.2)
+	if rollingback; then install="${install% 2>&1} --version=${E2E_ROLLBACK_FROM:-0.5.2} 2>&1"; fi
 	check 'a release that doesn'\''t exist, or a version that isn'\''t one, installs nothing' "! inside 'sh /root/quire-server/install.sh --version=0.0.0 --yes --no-os-updates --unsupported-os' && ! inside 'sh /root/quire-server/install.sh \"--version=0.1.0/../..\" --yes --no-os-updates --unsupported-os' && ! inside 'test -e /srv/quire/server'"
 else
 	install='sh /root/quire-server/install.sh --source=/root/quire-server --yes --test-certificates --no-os-updates --unsupported-os 2>&1'
@@ -914,6 +920,55 @@ check 'one of them restores it, and says how to undo that' "grep -q 'is as $fina
 check 'another site'\''s, or a path elsewhere, is refused' "inside 'quire-server backups:restore jane --file=../demo/x.tar --yes 2>&1' | grep -q 'isn.t one of'"
 inside 'quire-server site:remove jane --yes >/dev/null 2>&1'
 
+fi
+
+if rollingback; then
+from=${E2E_ROLLBACK_FROM:-0.5.2}
+echo "== Quire Server $from with three sites: one whose domain starts with another's name (jane-blog.test, next to jane)"
+for site in jane jane-blog kim; do
+	inside "quire-server site:add $site --domain=$site.test --admin-email=$site@example.com --title=\"Site $site\" 2>&1" > "$logs/add-$site.log" || sed 's/^/    /' "$logs/add-$site.log"
+done
+served() { inside "curl -sk --resolve $1.test:443:127.0.0.1 https://$1.test/" | grep -q "Site $1"; }
+check "all three run and are served on $from" 'served jane && served jane-blog && served kim'
+# What a rollback puts back: the release's files as they were (ServerFolder::archive/restore)
+inside 'tar -C /srv/quire/server -cf /root/server-before.tar .'
+# A container's names on a network
+names() { inside "docker inspect $1 --format '{{range \$name, \$n := .NetworkSettings.Networks}}{{\$name}}:{{join \$n.DNSNames \",\"}} {{end}}'"; }
+# The agent's start, done: it says so when it starts its rounds
+started() { inside 'for i in $(seq 180); do quire-server logs agent 2>&1 | grep -q "Automatic updates" && exit 0; sleep 2; done; exit 1'; }
+
+echo '== It moves to this checkout (its files and its agent, as an update replaces them)'
+inside 'tar -C /root/quire-server -cf - . | tar -C /srv/quire/server -xf - --no-same-owner'
+inside "sed -i 's/^QUIRE_SERVER_IMAGE=.*/QUIRE_SERVER_IMAGE=/' /srv/quire/server/server.env"
+inside 'quire-server up 2>&1' > "$logs"/up-rollback.log || sed 's/^/    /' "$logs"/up-rollback.log
+started || true
+inside 'quire-server logs agent 2>&1 | grep -v "^ *$" | tail -12' | sed 's/^/    /'
+check 'its gate is YorvoGate 0.3.0' "inside \"docker inspect quire-server-gate-1 --format '{{.Config.Image}}'\" | grep -q 'yorvogate:0.3.0@sha256:'"
+inside 'docker exec quire-server-gate-1 yorvogate check --docker --config /etc/yorvogate/yorvogate.yaml 2>&1' > "$logs"/gate-check.log || true
+sed 's/^/    /' "$logs"/gate-check.log
+check 'the gate'\''s own check passes on this Docker (its seccomp, AppArmor, runtime)' "inside 'docker exec quire-server-gate-1 yorvogate check --docker --config /etc/yorvogate/yorvogate.yaml' >/dev/null 2>&1"
+check 'its state file is the gate'\''s own: root'\''s, readable by it only' "[ \"\$(inside 'docker exec quire-server-gate-1 stat -c \"%u %a\" /var/lib/yorvogate/state.json')\" = '0 600' ]"
+check 'all three are served on this checkout, the colliding pair too' 'served jane && served jane-blog && served kim'
+check 'jane-blog has only its name "edge.jane-blog.test" on its link (the gate gives "jane-blog.…" to jane)' "names jane-blog-php-1 | grep -q 'quire-link-jane-blog:[^ ]*edge.jane-blog.test.quire.internal' && ! names jane-blog-php-1 | grep -Eq '[:,]jane-blog.test.quire.internal'"
+check 'jane and kim have both names, for a rollback' "names jane-php-1 | grep -q 'edge.jane.test.quire.internal' && names jane-php-1 | grep -Eq '[:,]jane.test.quire.internal' && names kim-php-1 | grep -Eq '[:,]kim.test.quire.internal'"
+check 'every container was made again under the gate (Docker'\''s built-in seccomp profile)' "[ -z \"\$(inside \"docker ps -q --filter label=com.quirecms.server.site | xargs docker inspect --format '{{.Name}} {{json .HostConfig.SecurityOpt}}'\" | grep -v seccomp=builtin)\" ]"
+check 'a site'\''s container runs its image by ID, as the gate names it to Docker' "inside \"docker inspect jane-php-1 --format '{{.Config.Image}}'\" | grep -Eq '^(quire-sites/jane/php-prod@)?sha256:[0-9a-f]{64}\$'"
+check 'a site'\''s own command goes through its scope' "inside 'quire-server site:console jane-blog quire:about 2>&1' | grep -q 'Quire'"
+inside 'docker logs quire-server-gate-1 2>&1' > "$logs"/gate-0.3.log || true
+check 'the gate refused no site'\''s request on its way here' "! grep -E '\"status\": ?4(01|03)' $logs/gate-0.3.log | grep -q '\"scope\"'"
+grep -o '"headers_not_forwarded":[^]]*]' "$logs"/gate-0.3.log | sort | uniq -c | sed 's/^/    not forwarded: /' || true
+
+echo "== The update rolls back: $from's files put back, as the updater does"
+inside 'cd /srv/quire/server && find . -mindepth 1 -maxdepth 1 ! -name server.env -exec rm -rf {} + && tar -xf /root/server-before.tar --no-same-owner'
+inside 'quire-server up 2>&1' > "$logs"/up-back.log || sed 's/^/    /' "$logs"/up-back.log
+started || true
+inside 'quire-server logs agent 2>&1 | grep -v "^ *$" | tail -12' | sed 's/^/    /'
+check "it runs $from, its gate YorvoGate 0.2.2" "inside 'quire-server version' | grep -q \"^Quire Server $from\" && inside \"docker inspect quire-server-gate-1 --format '{{.Config.Image}}'\" | grep -q 'yorvogate:0.2.2@sha256:'"
+inside 'docker logs quire-server-gate-1 2>&1' > "$logs"/gate-0.2.log || true
+check 'its gate read every site'\''s scope (0.6 left them as 0.2.2 reads them)' "! grep -iE 'refus|unknown field' $logs/gate-0.2.log | grep -qE 'jane|kim'"
+check "all three are served by $from's front door again, the colliding pair too, with no deploy" 'served jane && served jane-blog && served kim'
+check 'jane-blog has its name of before on its link again' "names jane-blog-php-1 | grep -Eq '[:,]jane-blog.test.quire.internal'"
+check 'a site'\''s own command works through its scope' "inside 'quire-server site:console jane-blog quire:about 2>&1' | grep -q 'Quire'"
 fi
 
 if want adopt; then
