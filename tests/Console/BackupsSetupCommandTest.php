@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Quire\Server\Tests\Console;
 
 use Quire\Server\Backup\BackupLedger;
+use Quire\Server\Backup\BackupProtection;
 use Quire\Server\Backup\BackupSettings;
 use Quire\Server\Backup\BackupSigning;
 use Quire\Server\Console\BackupsSetupCommand;
@@ -91,6 +92,77 @@ final class BackupsSetupCommandTest extends RegistryTestCase
         $tester->execute(['--repository' => 's3:https://new.example.com/backups', '--access-key' => 'new', '--region' => 'fra1', '--yes' => true], ['interactive' => false]);
         self::assertStringContainsString('stays recoverable for 30 days', $tester->getDisplay());
         self::assertFalse(new Checks($this->connection, $this->schema)->get('backups.protection')['failing'] ?? true);
+    }
+
+    /**
+     * SEC-0015: a machine that restores another server's backups (a drill, a new machine after an
+     * incident) with a key that only reads. Setup takes it, says so, and restic never locks.
+     */
+    public function testAKeyThatOnlyReadsIsTakenForRestoresOnly(): void
+    {
+        $this->exists = true;
+        $this->bucket = new FakeBucket(FakeBucket::COMPLIANCE, readOnly: true);
+        putenv('QUIRE_SERVER_BACKUP_SETUP_PASSWORD=the-repository-password-0123');
+        $tester = $this->tester();
+        $status = $tester->execute(['--repository' => 's3:https://new.example.com/backups', '--access-key' => 'new', '--region' => 'fra1', '--existing' => true, '--same-server' => true, '--yes' => true], ['interactive' => false]);
+        $display = (string) preg_replace(['/\s+!\s+/', '/\s+/'], ' ', $tester->getDisplay());
+
+        self::assertSame(Command::SUCCESS, $status, $display);
+        self::assertStringContainsString('only reads: this server restores and lists the backups', $display);
+        self::assertStringContainsString('set up for restores only', $display);
+        self::assertStringNotContainsString('every night', $display);
+        self::assertStringContainsString("QUIRE_SERVER_BACKUP_READ_ONLY='true'", (string) file_get_contents($this->root.'/server/server.env'));
+
+        $restic = array_values(array_filter($this->runner->runs, static fn (array $run): bool => 'restic' === $run['command'][0]));
+        self::assertNotSame([], $restic);
+
+        foreach ($restic as $run) {
+            self::assertSame('--no-lock', $run['command'][3], 'No lock, which the key couldn\'t write: '.implode(' ', $run['command']));
+        }
+
+        self::assertSame([['PUT', 'https://new.example.com/backups/quire-probe']], array_map(static fn (array $request): array => [$request[0], (string) preg_replace('/\?.*/', '', $request[1])], array_values(array_filter($this->bucket->requests, static fn (array $request): bool => 'GET' !== $request[0]))), 'One write tried, refused; no protection probe after it.');
+    }
+
+    /**
+     * A key refused for reads too: restic finds no repository (its exit code 10, as for one that isn't
+     * there). Setup must not say to create one: with a key that only reads, it's another server's bucket.
+     */
+    public function testAKeyThatCantReadTheRepositoryIsSaidSoNeverToCreateOne(): void
+    {
+        $this->exists = false;
+        $this->bucket = new FakeBucket(FakeBucket::COMPLIANCE, readOnly: true);
+        putenv('QUIRE_SERVER_BACKUP_SETUP_PASSWORD=the-repository-password-0123');
+        $tester = $this->tester();
+        $status = $tester->execute(['--repository' => 's3:https://new.example.com/backups', '--access-key' => 'new', '--region' => 'fra1', '--existing' => true, '--yes' => true], ['interactive' => false]);
+        $display = (string) preg_replace('/\s+/', ' ', $tester->getDisplay());
+
+        self::assertSame(Command::FAILURE, $status);
+        self::assertStringContainsString('This key only reads, and reads no backup repository there', $display);
+        self::assertStringNotContainsString('leave out --existing', $display);
+        self::assertSame(self::BEFORE, file_get_contents($this->root.'/server/server.env'), 'Nothing saved.');
+    }
+
+    public function testARestoresOnlyServerRecordsNoProtectionItDidntCheck(): void
+    {
+        $this->exists = true;
+        $this->bucket = new FakeBucket(FakeBucket::COMPLIANCE, readOnly: true);
+        putenv('QUIRE_SERVER_BACKUP_SETUP_PASSWORD=the-repository-password-0123');
+        new Checks($this->connection, $this->schema)->record(BackupProtection::CHECK, false, 'Backups off the server are protected: …');
+        $this->tester()->execute(['--repository' => 's3:https://new.example.com/backups', '--access-key' => 'new', '--region' => 'fra1', '--existing' => true, '--same-server' => true, '--yes' => true], ['interactive' => false]);
+
+        self::assertNull(new Checks($this->connection, $this->schema)->get(BackupProtection::CHECK), 'Not checked, so not recorded as checked; the one before is gone.');
+    }
+
+    public function testAKeyThatWritesIsAsBefore(): void
+    {
+        $this->exists = true;
+        putenv('QUIRE_SERVER_BACKUP_SETUP_PASSWORD=the-repository-password-0123');
+        $tester = $this->tester();
+        $status = $tester->execute(['--repository' => 's3:https://new.example.com/backups', '--access-key' => 'new', '--region' => 'fra1', '--existing' => true, '--same-server' => true, '--yes' => true], ['interactive' => false]);
+
+        self::assertSame(Command::SUCCESS, $status, $tester->getDisplay());
+        self::assertStringContainsString("QUIRE_SERVER_BACKUP_READ_ONLY='false'", (string) file_get_contents($this->root.'/server/server.env'));
+        self::assertStringNotContainsString('--no-lock', implode(' ', array_merge(...array_map(static fn (array $run): array => $run['command'], $this->runner->runs))));
     }
 
     public function testAnotherServersNameInTheBucketIsntTaken(): void

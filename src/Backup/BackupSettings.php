@@ -23,6 +23,12 @@ final readonly class BackupSettings
         public string $host = 'quire-server',
         public string $hour = '2',
         public string $keep = '7 daily, 4 weekly, 6 monthly',
+        /**
+         * The bucket's key only reads (QUIRE_SERVER_BACKUP_READ_ONLY, set by backups:setup): this server
+         * restores and lists backups, and makes none (SEC-0015). A machine that restores another's, for
+         * a drill or after an incident, needs no key that could change or delete the only copy.
+         */
+        public bool $readOnly = false,
     ) {
     }
 

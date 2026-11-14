@@ -136,6 +136,13 @@ final readonly class StatusCommand
             return;
         }
 
+        if ($this->backups->readOnly) {
+            // Not a problem told every night: what a machine that restores another's backups needs (SEC-0015)
+            $io->writeln(BackupsSetupCommand::RESTORES_ONLY);
+
+            return;
+        }
+
         $last = array_find($this->operations->latest(null, 200), static fn (array $operation): bool => OffsiteBackups::NIGHTLY === $operation['action']);
         $io->writeln(null === $last
             ? \sprintf('Backups off the server: from %02d:00 UTC, none made yet', (int) $this->backups->hour)

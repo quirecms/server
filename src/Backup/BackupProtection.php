@@ -30,6 +30,32 @@ final readonly class BackupProtection
     }
 
     /**
+     * Whether these keys may write to the bucket: the check's own object, written as every night's check
+     * writes it. A key that only reads is refused (401 or 403); a bucket that isn't there (404) isn't
+     * known to be read-only.
+     */
+    public function writable(): bool
+    {
+        $status = $this->s3->put($this->s3->key(self::PROBE), "Quire Server checks with this object, every night, that the bucket keeps what's deleted.\n")['status'];
+
+        if (401 === $status || 403 === $status) {
+            return false;
+        }
+
+        // No such bucket (or folder): nothing there to tell a reading key from a writing one by. The
+        // repository's own check that follows says what's there ("no backup repository there").
+        if (404 === $status) {
+            return true;
+        }
+
+        if ($status < 200 || $status >= 300) {
+            throw new BackupFailed(\sprintf('The bucket answered a test write with HTTP %d: whether these keys may write isn\'t known.', $status));
+        }
+
+        return true;
+    }
+
+    /**
      * @return array{protected: bool, summary: string, advice: string}
      */
     public function probe(): array

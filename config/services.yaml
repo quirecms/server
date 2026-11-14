@@ -174,6 +174,7 @@ services:
             $host: '%env(QUIRE_SERVER_BACKUP_HOST)%'
             $hour: '%env(QUIRE_SERVER_BACKUP_HOUR)%'
             $keep: '%env(QUIRE_SERVER_BACKUP_KEEP)%'
+            $readOnly: '%env(bool:QUIRE_SERVER_BACKUP_READ_ONLY)%'
 
     Quire\Server\Backup\LocalBackups:
         arguments:

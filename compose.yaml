@@ -90,6 +90,7 @@ services:
       QUIRE_SERVER_BACKUP_REGION: ${QUIRE_SERVER_BACKUP_REGION:-us-east-1}
       QUIRE_SERVER_BACKUP_HOST: ${QUIRE_SERVER_BACKUP_HOST:-quire-server}
       QUIRE_SERVER_BACKUP_HOUR: ${QUIRE_SERVER_BACKUP_HOUR:-2}
+      QUIRE_SERVER_BACKUP_READ_ONLY: ${QUIRE_SERVER_BACKUP_READ_ONLY:-false}
       QUIRE_SERVER_BACKUP_KEEP: ${QUIRE_SERVER_BACKUP_KEEP:-7 daily, 4 weekly, 6 monthly}
       # The gate's listener for the agent's own operations; each site's Compose runs on the site's
       # own socket (/run/quire-gate/sites/<project>.sock), for the scope the agent writes

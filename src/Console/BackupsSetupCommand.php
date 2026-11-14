@@ -43,6 +43,9 @@ use Symfony\Contracts\HttpClient\HttpClientInterface;
 )]
 final readonly class BackupsSetupCommand
 {
+    /** What "status" says of a server whose key only reads */
+    public const string RESTORES_ONLY = 'Backups off the server: read-only key, restores only. This server restores and lists backups, and makes none.';
+
     public function __construct(
         private ProcessRunner $runner,
         private ServerFolder $folder,
@@ -106,9 +109,22 @@ final readonly class BackupsSetupCommand
                 : $this->secret('QUIRE_SERVER_BACKUP_SETUP_PASSWORD') ?? rtrim(strtr(base64_encode(random_bytes(30)), '+/', '-_'), '=');
             $settings = new BackupSettings($repository, $accessKey, $secretKey, $password, '' === $region ? 'us-east-1' : $region, $host);
             $settings->validate();
-            $restic = new Restic($this->runner, $settings, $this->cache);
             $io->writeln('  Checking the bucket…');
+            // Before restic opens it, which writes a lock: a key that only reads restores other servers'
+            // backups (a drill, a new machine after an incident), and needn't be able to change them.
+            $readOnly = $existing && !new BackupProtection(S3::of($settings, $this->client))->writable();
+
+            if ($readOnly) {
+                $settings = new BackupSettings($settings->repository, $settings->accessKey, $settings->secretKey, $settings->password, $settings->region, $settings->host, readOnly: true);
+            }
+
+            $restic = new Restic($this->runner, $settings, $this->cache);
             $opens = $restic->opens();
+
+            if ($readOnly && !$opens) {
+                // Never "create one": with a key that only reads, it's most likely another server's bucket
+                throw new BackupFailed('This key only reads, and reads no backup repository there: check the bucket and its folder (as the server that makes the backups has them), and that the key may read them.');
+            }
 
             if ($existing && !$opens) {
                 throw new BackupFailed('There\'s no backup repository there: leave out --existing to create one.');
@@ -126,9 +142,17 @@ final readonly class BackupsSetupCommand
             }
 
             $this->signing->ensure();
-            $io->writeln('  Checking that the bucket keeps what\'s deleted…');
-            $protection = new BackupProtection(S3::of($settings, $this->client))->probe();
-            $this->checks->record(BackupProtection::CHECK, !$protection['protected'], $protection['summary'], $protection['advice']);
+
+            if ($readOnly) {
+                // Not checked, so nothing recorded as checked: whether the bucket keeps what's deleted is
+                // the backing-up server's to check, and one of an earlier setup no longer holds.
+                $protection = null;
+                $this->checks->forget(BackupProtection::CHECK);
+            } else {
+                $io->writeln('  Checking that the bucket keeps what\'s deleted…');
+                $protection = new BackupProtection(S3::of($settings, $this->client))->probe();
+                $this->checks->record(BackupProtection::CHECK, !$protection['protected'], $protection['summary'], $protection['advice']);
+            }
         } catch (\InvalidArgumentException|BackupFailed $e) {
             $io->error(['Nothing was saved.', $e->getMessage()]);
 
@@ -152,6 +176,7 @@ final readonly class BackupsSetupCommand
             'QUIRE_SERVER_BACKUP_PASSWORD' => $settings->password,
             'QUIRE_SERVER_BACKUP_REGION' => $settings->region,
             'QUIRE_SERVER_BACKUP_HOST' => $settings->host,
+            'QUIRE_SERVER_BACKUP_READ_ONLY' => $readOnly ? 'true' : 'false',
         ]));
         $io->writeln('  Saved in server.env (root only). Restarting the agent…');
 
@@ -170,7 +195,12 @@ final readonly class BackupsSetupCommand
             ]);
         }
 
-        if ($protection['protected']) {
+        if ($readOnly) {
+            $io->note([
+                'The bucket\'s key only reads: this server restores and lists the backups (without a lock, so it writes nothing there), and makes none. Its nightly backups are off, and "quire-server status" says so.',
+                'That\'s what a machine that restores another server\'s backups needs (a drill, a new machine after an incident). To back this server up, run setup again with a key that may write.',
+            ]);
+        } elseif ($protection['protected']) {
             $io->writeln('  '.$protection['summary']);
         } else {
             // A backup that can be deleted beats none: said, not refused
@@ -182,6 +212,12 @@ final readonly class BackupsSetupCommand
             $this->signing->publicKey(),
             'Keep it with the backups\' password: restoring them on another machine checks it, so that a backup someone else put in the bucket isn\'t taken for this server\'s.',
         ]);
+
+        if ($readOnly) {
+            $io->success('Backups off the server are set up for restores only: "quire-server backups --from-server=<name>" lists another server\'s, "backups:restore" and "backups:restore-server" restore them.');
+
+            return Command::SUCCESS;
+        }
 
         $hour = \Quire\Server\Update\AutomaticUpdates::parseHour($this->current->hour, 'QUIRE_SERVER_BACKUP_HOUR');
         $io->success(null === $hour
