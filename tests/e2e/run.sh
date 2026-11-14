@@ -951,6 +951,7 @@ check 'the gate'\''s own check passes on this Docker (its seccomp, AppArmor, run
 gate_state() { inside "docker run --rm --network none -v quire-server_gate_state:/state:ro --entrypoint $1 \$(docker inspect quire-server-database-1 --format '{{.Config.Image}}') $2"; }
 gate_state ls '-ln /state' | sed 's/^/    /' || true
 check 'its state file is the gate'\''s own: root'\''s, readable by it only' "[ \"\$(gate_state stat '-c %u:%a /state/state.json')\" = '0:600' ]"
+check 'the gate says nothing wrong with its state file' "! inside 'docker logs quire-server-gate-1 2>&1' | grep -i 'state file'"
 check 'all three are served on this checkout, the colliding pair too' 'served jane && served jane-blog && served kim'
 check 'jane-blog has only its name "edge.jane-blog.test" on its link (the gate gives "jane-blog.…" to jane)' "names jane-blog-php-1 | grep -q 'quire-link-jane-blog:[^ ]*edge.jane-blog.test.quire.internal' && ! names jane-blog-php-1 | grep -Eq '[:,]jane-blog.test.quire.internal'"
 check 'jane and kim have both names, for a rollback' "names jane-php-1 | grep -q 'edge.jane.test.quire.internal' && names jane-php-1 | grep -Eq '[:,]jane.test.quire.internal' && names kim-php-1 | grep -Eq '[:,]kim.test.quire.internal'"

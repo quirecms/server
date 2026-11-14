@@ -181,7 +181,7 @@ services:
       # in memory: a site's image is hundreds of megabytes)
       - gate_spool:/tmp
       # Its state file (gate/yorvogate.yaml): only the gate mounts it
-      - gate_state:/var/lib/yorvogate
+      - gate_state:/var/lib/quire-gate
     network_mode: none
     read_only: true
     cap_drop: [ALL]

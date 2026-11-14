@@ -286,7 +286,7 @@ final class GateTest extends TestCase
      */
     private function check(): ProcessResult
     {
-        $config = str_replace(['/etc/yorvogate/sites', '/run/yorvogate/sites', '/run/yorvogate/trusted', '/var/lib/yorvogate/'], [$this->root.'/gate/scopes', $this->root.'/gate/sites', $this->root.'/gate/trusted', $this->root.'/gate/state/'], (string) file_get_contents(self::SERVER.'/gate/yorvogate.yaml'));
+        $config = str_replace(['/etc/yorvogate/sites', '/run/yorvogate/sites', '/run/yorvogate/trusted', '/var/lib/quire-gate/'], [$this->root.'/gate/scopes', $this->root.'/gate/sites', $this->root.'/gate/trusted', $this->root.'/gate/state/'], (string) file_get_contents(self::SERVER.'/gate/yorvogate.yaml'));
         new Filesystem()->dumpFile($this->root.'/yorvogate.yaml', $config);
         new Filesystem()->mkdir($this->root.'/gate/state', 0o700);
 
