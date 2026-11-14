@@ -136,9 +136,52 @@ final class ResticTest extends TestCase
         $this->restic()->backup(['/x'], ['--exclude=/']);
     }
 
-    private function restic(): Restic
+    private function restic(bool $readOnly = false): Restic
     {
-        return new Restic($this->runner, new BackupSettings('s3:https://host/bucket', 'the-key', 'the-secret', self::PASSWORD), '/srv/quire/backups/.restic-cache');
+        return new Restic($this->runner, new BackupSettings('s3:https://host/bucket', 'the-key', 'the-secret', self::PASSWORD, readOnly: $readOnly), '/srv/quire/backups/.restic-cache');
+    }
+
+    /**
+     * A key that only reads (SEC-0015): what restic reads, it reads without a lock, which it couldn't
+     * write; what would change the backups is refused before restic runs.
+     */
+    public function testWithAKeyThatOnlyReadsItReadsWithoutALockAndChangesNothing(): void
+    {
+        $this->answers['snapshots'] = [0, '[]', ''];
+        $restic = $this->restic(readOnly: true);
+
+        self::assertTrue($restic->opens());
+        self::assertSame([], $restic->snapshots());
+        $restic->restorePaths(str_repeat('a', 64), ['/srv/quire/backups/jane/off-server-1.tar'], '/tmp/x');
+
+        foreach ($this->runner->runs as $run) {
+            self::assertSame('--no-lock', $run['command'][3], implode(' ', $run['command']));
+        }
+
+        $writes = [
+            'backup' => static function (Restic $r): void { $r->backup(['/x'], []); },
+            'forget' => static function (Restic $r): void { $r->forget(false); },
+            'check' => static function (Restic $r): void { $r->check(5); },
+            'init' => static function (Restic $r): void { $r->init(); },
+        ];
+
+        foreach ($writes as $what => $call) {
+            try {
+                $call($restic);
+                self::fail($what.' ran.');
+            } catch (BackupFailed $e) {
+                self::assertStringContainsString('only reads', $e->getMessage());
+            }
+        }
+
+        self::assertCount(3, $this->runner->runs, 'None of them reached restic.');
+    }
+
+    public function testWithAKeyThatWritesItLocksAsBefore(): void
+    {
+        $this->restic()->opens();
+
+        self::assertSame(['restic', '--quiet', 'cat', 'config'], $this->runner->runs[0]['command']);
     }
 
     public function testWhatABuildMakesAgainIsLeftOut(): void

@@ -17,6 +17,9 @@ final readonly class Restic
 {
     public const string SNAPSHOT = '/^(?:latest|[0-9a-f]{8,64})\z/';
 
+    /** What restic does with a key that only reads, without a lock (SEC-0015) */
+    private const array READS = ['cat', 'snapshots', 'restore', 'ls', 'dump'];
+
     public function __construct(
         private ProcessRunner $runner,
         private BackupSettings $settings,
@@ -263,6 +266,17 @@ final readonly class Restic
      */
     private function run(array $arguments, float $timeout): ProcessResult
     {
+        if ($this->settings->readOnly) {
+            if (!\in_array($arguments[0] ?? '', self::READS, true)) {
+                throw new BackupFailed(\sprintf('This server\'s key for the bucket only reads: it restores and lists backups, and makes no %s. A key that may write goes in with "quire-server backups:setup --existing".', match ($arguments[0] ?? '') {
+                    'backup' => 'backup', 'forget' => 'clean-up of old backups', 'check' => 'check of the backups (it needs a lock)', default => 'change to the backups',
+                }));
+            }
+
+            // Opening the repository writes a lock to the bucket, which a key that only reads can't
+            $arguments = [$arguments[0], '--no-lock', ...\array_slice($arguments, 1)];
+        }
+
         return $this->runner->run(['restic', '--quiet', ...$arguments], [
             'RESTIC_REPOSITORY' => $this->settings->repository,
             'RESTIC_PASSWORD' => $this->settings->password,

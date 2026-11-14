@@ -127,7 +127,7 @@ final readonly class Watch
      */
     private function lateBackups(): array
     {
-        if (!$this->backups->configured()) {
+        if (!$this->backups->configured() || $this->backups->readOnly) {
             return [];
         }
 

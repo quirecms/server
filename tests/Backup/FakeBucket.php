@@ -31,6 +31,8 @@ final class FakeBucket
         public int $days = 30,
         public bool $mayBypass = false,
         public string $now = '2026-11-04T02:00:00Z',
+        /** Its key only reads: every write is refused, as Backblaze or S3 refuse it */
+        public bool $readOnly = false,
     ) {
     }
 
@@ -51,6 +53,10 @@ final class FakeBucket
         $key = rawurldecode(implode('/', \array_slice(explode('/', $path), 2)));
         $version = \is_string($query['versionId'] ?? null) ? $query['versionId'] : null;
         $headers = \is_array($options['headers'] ?? null) ? implode("\n", array_map(static fn (mixed $header): string => \is_string($header) ? strtolower($header) : '', $options['headers'])) : '';
+
+        if ($this->readOnly && \in_array($method, ['PUT', 'POST', 'DELETE'], true)) {
+            return new MockResponse('<Error><Code>AccessDenied</Code></Error>', ['http_code' => 403]);
+        }
 
         return match (true) {
             'GET' === $method && '' === $key && \array_key_exists('versions', $query) => $this->list(\is_string($query['prefix'] ?? null) ? $query['prefix'] : ''),

@@ -90,11 +90,20 @@ final readonly class OffsiteBackups
     }
 
     /**
+     * Whether its key only reads: it restores and lists backups, and makes none (SEC-0015).
+     */
+    public function restoresOnly(): bool
+    {
+        return $this->settings->readOnly;
+    }
+
+    /**
      * Whether tonight's backups are due: set up, tonight's window open, and not run since it opened.
      */
     public function due(): bool
     {
-        if (!$this->configured()) {
+        // A key that only reads makes none: nothing is late, nothing fails every night
+        if (!$this->configured() || $this->settings->readOnly) {
             return false;
         }
 
@@ -128,6 +137,11 @@ final readonly class OffsiteBackups
     public function nightly(string $channel, string $requestedBy, \Closure $say, string $action = self::NIGHTLY): array
     {
         $this->settings->validate();
+
+        if ($this->settings->readOnly) {
+            throw new BackupFailed('This server\'s key for the bucket only reads: it restores and lists backups, and makes none. A key that may write goes in with "quire-server backups:setup --existing".');
+        }
+
         $operation = $this->operations->start(self::ALL === $action ? self::ALL : self::NIGHTLY, null, [], $channel, $requestedBy);
 
         try {
@@ -224,6 +238,10 @@ final readonly class OffsiteBackups
     public function backUpNow(SiteName $name, string $channel, string $requestedBy, \Closure $say): string
     {
         $this->settings->validate();
+
+        if ($this->settings->readOnly) {
+            throw new BackupFailed('This server\'s key for the bucket only reads: it restores and lists backups, and makes none. A key that may write goes in with "quire-server backups:setup --existing".');
+        }
         $site = $this->registry->get($name);
 
         if (!$site instanceof Site || Site::RUNNING !== $site->status) {
