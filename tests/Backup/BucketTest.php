@@ -5,11 +5,13 @@ declare(strict_types=1);
 namespace Quire\Server\Tests\Backup;
 
 use PHPUnit\Framework\TestCase;
+use Quire\Server\Backup\BackupFailed;
 use Quire\Server\Backup\BackupProtection;
 use Quire\Server\Backup\BackupRecovery;
 use Quire\Server\Backup\BackupSettings;
 use Quire\Server\Backup\S3;
 use Symfony\Component\HttpClient\MockHttpClient;
+use Symfony\Component\HttpClient\Response\MockResponse;
 
 /**
  * The server's own S3 requests (D-37): signed as AWS signs them, the probe of what an attacker with
@@ -122,6 +124,22 @@ final class BucketTest extends TestCase
     private function probe(FakeBucket $bucket): array
     {
         return new BackupProtection($this->s3($bucket->client()), static fn (): \DateTimeImmutable => new \DateTimeImmutable($bucket->now))->probe();
+    }
+
+    /**
+     * Whether the keys may write, from the bucket's answer to one test write (SEC-0015): only a refusal
+     * says they may only read. A bucket that isn't there says nothing of the keys.
+     */
+    public function testWhetherTheKeysMayWriteIsTheAnswerToATestWrite(): void
+    {
+        foreach ([200 => true, 403 => false, 401 => false, 404 => true] as $status => $writable) {
+            $protection = new BackupProtection($this->s3(new MockHttpClient(new MockResponse('', ['http_code' => $status]))));
+            self::assertSame($writable, $protection->writable(), 'HTTP '.$status);
+        }
+
+        $this->expectException(BackupFailed::class);
+        $this->expectExceptionMessageIsOrContains('HTTP 500');
+        new BackupProtection($this->s3(new MockHttpClient(new MockResponse('', ['http_code' => 500]))))->writable();
     }
 
     private function s3(MockHttpClient $client): S3
