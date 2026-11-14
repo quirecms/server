@@ -50,6 +50,9 @@ explain() {
 	done
 }
 inside() { docker exec "$dind" sh -c "$1"; }
+# The names of the image a container runs. Its Config.Image is no name since YorvoGate 0.3: the gate
+# names the checked image to Docker by its ID ("<repository>@<ID>", or the ID on the classic store).
+image_names() { inside "docker image inspect --format '{{join .RepoTags \" \"}}' \$(docker inspect --format '{{.Image}}' $1)"; }
 # A site's files from quire/skeleton, with Composer in the machine (its folder $1, mounted from $2): tried
 # once more 30 s later, as the server itself does, when GitHub fails for a moment (HTTP 504s, 2026-11-07)
 skeleton() {
@@ -181,7 +184,7 @@ check 'it can'\''t reach the server'\''s PostgreSQL' "! inside 'docker exec demo
 check 'it was backed up first' "inside 'ls /srv/quire/backups/demo/before-server-*.tar'"
 check 'its settings as they were are kept (root only)' "[ \"\$(inside 'cat /srv/quire/sites/demo/prod.env.before-server')\" = \"\$demo_env\" ] && [ \"\$(inside 'stat -c %a /srv/quire/sites/demo/prod.env.before-server')\" = 600 ]"
 check 'two lines of its prod.env changed' "inside 'grep -c compose.server.yaml /srv/quire/sites/demo/prod.env' | grep -q 1 && inside 'grep -q \"^COMPOSE_PROJECT_NAME='\\''demo'\\''\" /srv/quire/sites/demo/prod.env'"
-check 'its image has its own name' "inside 'docker inspect demo-php-1 --format \"{{.Config.Image}}\"' | grep -q '^quire-sites/demo/php-prod'"
+check 'its image has its own name' "image_names demo-php-1 | grep -q 'quire-sites/demo/php-prod:'"
 check 'the adoption is recorded' "inside 'quire-server operations' | grep -q 'site.adopt.*succeeded'"
 check 'its versions are recorded in its folder' "inside 'test -f /srv/quire/sites/demo/composer.lock'"
 fi
@@ -804,7 +807,7 @@ commit 'printf "services: {}\n" > compose.server.yaml' 'Its own server file'
 inside 'quire-server site:deploy blog 2>&1' | tee "$logs"/git-tracked.log | sed 's/^/    /'
 check 'a commit with the server'\''s own files is refused, they stay' "grep -q 'the server.s own files' $logs/git-tracked.log && inside 'grep -q cap_drop /srv/quire/sites/blog/compose.server.yaml'"
 commit 'git revert --no-commit HEAD' 'Back again'
-check 'its image is named in its own namespace' "[ \"\$(inside 'docker inspect blog-php-1 --format \"{{.Config.Image}}\"')\" = quire-sites/blog/php-prod ]"
+check 'its image is named in its own namespace' "image_names blog-php-1 | grep -q 'quire-sites/blog/php-prod:'"
 # A commit building an image under another site's name (its next start would run this code)
 inside "printf '%s\n' '{print} /^services:\$/ && !done {print \"  squat:\"; print \"    build: .\"; print \"    image: quire-sites/jane/php-prod\"; done = 1}' > /root/squat.awk && docker cp /root/squat.awk git-server:/tmp/squat.awk"
 commit 'awk -f /tmp/squat.awk compose.prod.yaml > /tmp/c && cat /tmp/c > compose.prod.yaml' 'Squat'
@@ -854,8 +857,9 @@ echo '== A release a crash cut short, put back at the agent'\''s start'
 # As a power cut in the middle of a rebuild leaves it: its intent, naming the image it ran before (the
 # one kept to undo its update, which differs from the one it runs now)
 before=$(inside "docker image inspect quire-sites/jane/php-prod:before-update jane-php-prod:before-update --format '{{.Id}}' 2>/dev/null" | head -1)
-image=$(inside "docker inspect jane-php-1 --format '{{.Config.Image}}'")
-inside "printf '{\"operation\": \"x\", \"what\": \"rebuild\", \"image\": \"%s\", \"image_before\": \"%s\", \"backup\": null, \"put_back\": []}\n' '$image' '$before' > /srv/quire/backups/jane/release.json && chmod 600 /srv/quire/backups/jane/release.json"
+# The image's name, as the server writes it in an intent (SiteFiles::image): not Config.Image, an ID since 0.3
+intent_image=quire-sites/jane/php-prod
+inside "printf '{\"operation\": \"x\", \"what\": \"rebuild\", \"image\": \"%s\", \"image_before\": \"%s\", \"backup\": null, \"put_back\": []}\n' '$intent_image' '$before' > /srv/quire/backups/jane/release.json && chmod 600 /srv/quire/backups/jane/release.json"
 inside 'docker restart quire-server-agent-1 >/dev/null'
 waited=0
 until inside 'quire-server operations --site=jane' | grep site.recover | grep -qv running || [ $waited -ge 300 ]; do sleep 10; waited=$((waited + 10)); done
