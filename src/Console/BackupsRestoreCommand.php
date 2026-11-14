@@ -89,6 +89,12 @@ final readonly class BackupsRestoreCommand
         #[Option(description: 'Give it this server\'s mailer: it emails the original\'s users from this server')]
         bool $serverMailer = false,
     ): int {
+        if ($keepMailer && $serverMailer) {
+            $io->error('--keep-mailer or --server-mailer, not both.');
+
+            return Command::INVALID;
+        }
+
         if (($keepMailer || $serverMailer) && null === $as) {
             $io->error('--keep-mailer and --server-mailer are for a restore as a new site (--as): restored over itself, a site keeps its mailer.');
 

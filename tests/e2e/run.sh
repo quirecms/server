@@ -465,7 +465,7 @@ check 'with --keep-mailer, a real move keeps the backup'\''s mailer' "grep -q 'm
 check '--keep-mailer is refused for a restore over the site itself' "inside 'quire-server backups:restore moved --keep-mailer --yes 2>&1' | grep -q 'are for a restore as a new site'"
 inside "quire-server backups:restore jane --from-server=quire-server --signed-by='$public_key' --as=moved-server --domain=moved-server.test --server-mailer --yes 2>&1" > "$logs"/moved-server.log || sed 's/^/    /' "$logs"/moved-server.log
 check 'with --server-mailer, it gets this server'\''s' "inside 'quire-server site:mail moved-server' | grep -qF 'smtp://server:(password)@mail.server.test:25'"
-check 'not both' "inside 'quire-server backups:restore jane --from-server=quire-server --as=x --domain=x.test --keep-mailer --server-mailer --yes 2>&1' | grep -q 'not both'"
+check 'not both' "inside 'quire-server backups:restore jane --from-server=quire-server --as=both --domain=both.test --keep-mailer --server-mailer --yes 2>&1' | grep -q 'not both' && ! inside 'quire-server site:list' | grep -q both"
 inside 'quire-server site:remove moved-kept --yes >/dev/null 2>&1; quire-server site:remove moved-server --yes >/dev/null 2>&1' || true
 inside 'cp -p /root/server.env.before-mailer /srv/quire/server/server.env && quire-server up >/dev/null 2>&1' || true
 
