@@ -392,6 +392,11 @@ orders() { inside "docker exec $1-php-1 bin/console dbal:run-sql 'SELECT count(*
 inside "docker exec jane-php-1 bin/console dbal:run-sql -q 'CREATE TABLE public.app_order (id int PRIMARY KEY)' && docker exec jane-php-1 bin/console dbal:run-sql -q 'INSERT INTO public.app_order VALUES (1), (2)'" >/dev/null
 # What an earlier backup cut short left in the site's container, where 0.3.0 always wrote it
 inside "docker exec jane-php-1 sh -c 'echo partial > /tmp/quire-off-server-backup.tar'"
+# A mailer of the site's own, with a token (SEC-0014: a copy on another server must not send with it)
+inside "printf '%s\\n' 'smtp://own:prod-token@mail.own.test:25' | quire-server site:mail jane --set >/dev/null 2>&1" || true
+check 'jane sends email with a mailer of its own' "inside 'quire-server site:mail jane' | grep -qF 'smtp://own:(password)@mail.own.test:25'"
+# And its code names one too, in its own .env files (which a MAILER_DSN left out of prod.env would let decide)
+inside "printf '%s\\n' 'MAILER_DSN=smtp://from-code:code-token@mail.code.test:25' > /srv/quire/sites/jane/.env.prod.local"
 inside 'quire-server backups:now 2>&1' | tee "$logs"/now.log | sed 's/^/    /'
 check 'every site and the server are backed up off the server' "grep -q 'Backed up off the server: jane, server' $logs/now.log"
 check 'each site'\''s backups are listed on their own' "[ \"\$(inside 'quire-server backups jane' | grep -cE '^ +[0-9a-f]{8} ')\" = 1 ] && [ \"\$(inside 'quire-server backups server' | grep -cE '^ +[0-9a-f]{8} ')\" = 1 ]"
@@ -406,6 +411,7 @@ check 'another backup than the site'\''s own isn'\''t restored to it' "inside 'q
 inside 'quire-server backups:restore jane --yes 2>&1' | tee "$logs"/restore.log | sed 's/^/    /'
 check 'restoring it from off the server puts it back as it was' "grep -q 'is as it was on' $logs/restore.log && inside \"curl -sk $resolve https://jane.test/\" | grep -q 'Jane before'"
 check 'its application'\''s own tables too' "[ \"\$(orders jane)\" = 2 ]"
+check 'restored over itself, it keeps its mailer' "inside 'quire-server site:mail jane' | grep -qF 'smtp://own:(password)@mail.own.test:25'"
 check 'the restore is recorded, and it was backed up first' "inside 'quire-server operations' | grep -q 'site.restore.*succeeded' && inside 'ls /srv/quire/backups/jane/before-restore-*.tar'"
 check 'nothing of the restore is left on the server' "[ -z \"\$(inside 'ls -d /srv/quire/backups/jane/from-off-server-* /srv/quire/backups/jane/off-server-*.tar 2>/dev/null')\" ]"
 
@@ -446,8 +452,22 @@ check 'a name taken isn'\''t restored over' "inside 'quire-server backups:restor
 inside "QUIRE_SERVER_BACKUP_SETUP_SECRET_KEY=e2e-secret QUIRE_SERVER_BACKUP_SETUP_PASSWORD='$password' quire-server backups:setup $repository --existing --host=server-2 --yes >/dev/null 2>&1"
 check 'another server'\''s backups are listed by its name' "! inside 'quire-server backups jane' | grep -qE '^ +[0-9a-f]{8} ' && inside 'quire-server backups jane --from-server=quire-server' | grep -qE '^ +[0-9a-f]{8} '"
 check 'another server'\''s backups need its public key' "inside 'quire-server backups:restore jane --from-server=quire-server --as=moved --domain=moved.test --yes 2>&1' | tr -s ' \n' ' ' | grep -q 'signed-by' && ! inside 'quire-server site:list' | grep -q moved"
+# This server has a mailer of its own now: a copy mustn't get it by default either (SEC-0014)
+inside 'cp -p /srv/quire/server/server.env /root/server.env.before-mailer'
+inside "printf '%s' 'smtp://server:server-token@mail.server.test:25' | quire-server settings:set MAILER_DSN >/dev/null 2>&1" || true
 inside "quire-server backups:restore jane --from-server=quire-server --signed-by='$public_key' --as=moved --domain=moved.test --yes 2>&1" | tee "$logs"/moved.log | sed 's/^/    /'
 check 'a site moves from another server'\''s backups' "grep -q 'moved\" runs' $logs/moved.log && inside 'curl -sk --resolve moved.test:443:127.0.0.1 https://moved.test/' | grep -q 'Jane before'"
+check 'the copy sends no email, though this server has a mailer and its backup had one (SEC-0014)' "grep -q 'It sends no email' $logs/moved.log && inside 'quire-server site:mail moved' | grep -q 'nothing' && ! inside 'grep -qe prod-token -e server-token /srv/quire/sites/moved/prod.env'"
+check 'no email is what its containers run with, whatever its own .env files say' "[ \"\$(inside 'docker exec moved-php-1 printenv MAILER_DSN')\" = null://null ] && [ \"\$(inside 'docker exec moved-worker-1 printenv MAILER_DSN')\" = null://null ]"
+check 'its token is in none of the restore'\''s output' "! grep -q prod-token $logs/moved.log"
+inside "quire-server backups:restore jane --from-server=quire-server --signed-by='$public_key' --as=moved-kept --domain=moved-kept.test --keep-mailer --yes 2>&1" > "$logs"/moved-kept.log || sed 's/^/    /' "$logs"/moved-kept.log
+check 'with --keep-mailer, a real move keeps the backup'\''s mailer' "grep -q 'mailer, as asked' $logs/moved-kept.log && inside 'quire-server site:mail moved-kept' | grep -qF 'smtp://own:(password)@mail.own.test:25'"
+check '--keep-mailer is refused for a restore over the site itself' "inside 'quire-server backups:restore moved --keep-mailer --yes 2>&1' | grep -q 'are for a restore as a new site'"
+inside "quire-server backups:restore jane --from-server=quire-server --signed-by='$public_key' --as=moved-server --domain=moved-server.test --server-mailer --yes 2>&1" > "$logs"/moved-server.log || sed 's/^/    /' "$logs"/moved-server.log
+check 'with --server-mailer, it gets this server'\''s' "inside 'quire-server site:mail moved-server' | grep -qF 'smtp://server:(password)@mail.server.test:25'"
+check 'not both' "inside 'quire-server backups:restore jane --from-server=quire-server --as=x --domain=x.test --keep-mailer --server-mailer --yes 2>&1' | grep -q 'not both'"
+inside 'quire-server site:remove moved-kept --yes >/dev/null 2>&1; quire-server site:remove moved-server --yes >/dev/null 2>&1' || true
+inside 'cp -p /root/server.env.before-mailer /srv/quire/server/server.env && quire-server up >/dev/null 2>&1' || true
 
 echo '== A whole server from its backups (as a server that replaces it)'
 # The first server's sites, as its last backup lists them (only jane): gone from here first.
@@ -457,6 +477,7 @@ inside 'quire-server backups:restore-server --from-server=quire-server --yes 2>&
 check 'every site of the old server is restored, with its name and domains' "grep -Eq 'jane +restored' $logs/restore-server.log && inside \"curl -sk $resolve https://jane.test/\" | grep -q 'Jane before'"
 check 'with its application'\''s own tables' "[ \"\$(orders jane)\" = 2 ]"
 check 'with its update policy' "inside 'quire-server site:updates jane' | grep -q 'fix a known vulnerability'"
+check 'sending no email, as the summary says (SEC-0014)' "grep -Eq 'jane +restored.*sends email with nothing' $logs/restore-server.log && inside 'quire-server site:mail jane' | grep -q 'nothing'"
 check 'a server with no backups is refused' "inside 'quire-server backups:restore-server --from-server=no-such-server --yes 2>&1' | grep -q 'no backup of the server'"
 
 echo '== Backups that survive a stolen server.env (D-37): a bucket that keeps what is deleted, proved'

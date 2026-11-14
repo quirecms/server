@@ -415,6 +415,53 @@ final class SiteManagerTest extends RegistryTestCase
         $this->assertNothingLeft();
     }
 
+    public function testARestoredSiteKeepsItsBackupsMailerOnlyWhenAsked(): void
+    {
+        [$code, $backup] = $this->backedUpSite();
+        $said = [];
+        $this->manager()->restoreAsNew($this->name, $this->request()->domains, $code, $backup, ['snapshot' => '1a2b3c4d'], 'cli', 'darko', static function (string $step) use (&$said): void {
+            $said[] = $step;
+        }, mailer: SiteManager::MAILER_BACKUP);
+
+        self::assertStringContainsString("MAILER_DSN='smtp://mail.example.com:587'", (string) file_get_contents($this->paths->site($this->name).'/prod.env'), 'A real move: its own.');
+        self::assertContains('It sends email with its backup\'s mailer, as asked: smtp://mail.example.com:587', $said);
+    }
+
+    public function testARestoredSiteGetsThisServersMailerOnlyWhenAsked(): void
+    {
+        [$code, $backup] = $this->backedUpSite();
+        $this->manager()->restoreAsNew($this->name, $this->request()->domains, $code, $backup, ['snapshot' => '1a2b3c4d'], 'cli', 'darko', static fn (): null => null, mailer: SiteManager::MAILER_SERVER);
+
+        self::assertStringContainsString("MAILER_DSN='smtp://mailer:25'", (string) file_get_contents($this->paths->site($this->name).'/prod.env'));
+    }
+
+    /**
+     * Its code's own .env names a mailer (a Git mode site's, or one committed to its folder): with
+     * MAILER_DSN left out of prod.env, Symfony would take that one. "None" is written as none.
+     */
+    public function testNoneIsWrittenSoTheSitesOwnEnvFilesDontDecide(): void
+    {
+        [$code, $backup] = $this->backedUpSite();
+        new Filesystem()->dumpFile($code.'/.env.prod', "MAILER_DSN=smtp://original:token@smtp.original.example:587\n");
+        $this->manager()->restoreAsNew($this->name, $this->request()->domains, $code, $backup, ['snapshot' => '1a2b3c4d'], 'cli', 'darko', static fn (): null => null);
+
+        self::assertStringContainsString("MAILER_DSN='null://null'", (string) file_get_contents($this->paths->site($this->name).'/prod.env'), 'prod.env is the containers\' environment, which wins over .env.prod.');
+        self::assertSame('', $this->manager()->mailer($this->name), '"site:mail" says: nothing.');
+    }
+
+    public function testASiteRestoredOnAServerWithoutAMailerSendsNoEmail(): void
+    {
+        [$code, $backup] = $this->backedUpSite();
+        $said = [];
+        $this->manager(mailer: '')->restoreAsNew($this->name, $this->request()->domains, $code, $backup, ['snapshot' => '1a2b3c4d'], 'cli', 'darko', static function (string $step) use (&$said): void {
+            $said[] = $step;
+        }, mailer: SiteManager::MAILER_SERVER);
+
+        self::assertStringContainsString("MAILER_DSN='null://null'", (string) file_get_contents($this->paths->site($this->name).'/prod.env'), 'This server\'s, asked for: it has none.');
+        self::assertSame('', $this->manager(mailer: '')->mailer($this->name), '"site:mail" says: nothing.');
+        self::assertContains('It sends no email (this server has no mailer): "quire-server site:mail '.$this->name->value.'" gives it a mailer (--keep-mailer keeps its backup\'s, --server-mailer gives it this server\'s)', $said);
+    }
+
     public function testRestoringABackupAsANewSite(): void
     {
         [$code, $backup] = $this->backedUpSite();
@@ -424,7 +471,7 @@ final class SiteManagerTest extends RegistryTestCase
         });
 
         self::assertSame(Site::RUNNING, $site->status);
-        self::assertSame(['Recording the site', 'Putting its code in place, as the backup has it', 'Creating its database', 'Writing its settings', 'Checking and building it (a few minutes)', 'Starting it', 'Restoring its database and files from the backup', 'Opening it to visitors'], $said);
+        self::assertSame(['Recording the site', 'Putting its code in place, as the backup has it', 'Creating its database', 'Writing its settings', 'It sends no email: "quire-server site:mail '.$this->name->value.'" gives it a mailer (--keep-mailer keeps its backup\'s, --server-mailer gives it this server\'s)', 'Checking and building it (a few minutes)', 'Starting it', 'Restoring its database and files from the backup', 'Opening it to visitors'], $said);
         $directory = $this->paths->site($this->name);
         self::assertSame('<?php // the site\'s own code', file_get_contents($directory.'/src/Kernel.php'), 'Its code, as backed up.');
         self::assertFileDoesNotExist($directory.'/prod.env.before-server');
@@ -437,8 +484,10 @@ final class SiteManagerTest extends RegistryTestCase
         self::assertStringNotContainsString('elsewhere', $env);
         // Its owner's own settings, as they were
         self::assertStringContainsString("QUIRE_STORAGE_BUCKET='jane-files'", $env);
-        self::assertStringContainsString("MAILER_DSN='smtp://mail.example.com:587'", $env, 'Its own, over the server\'s default.');
-        self::assertStringNotContainsString('smtp://mailer:25', $env);
+        // No email at all, written as such (SEC-0014): a copy mustn't email the original's users, from any sender
+        self::assertStringContainsString("MAILER_DSN='null://null'", $env);
+        self::assertStringNotContainsString('mail.example.com', $env);
+        self::assertStringNotContainsString('smtp://mailer:25', $env, 'Not this server\'s either, though it has one.');
         self::assertMatchesRegularExpression("/^APP_SECRET='[0-9a-f]{64}'\$/m", $env);
         self::assertStringNotContainsString('old-site', (string) file_get_contents($directory.'/compose.server.yaml'));
         self::assertTrue($this->databases->exists($this->name));
@@ -1394,7 +1443,7 @@ final class SiteManagerTest extends RegistryTestCase
         self::assertFileDoesNotExist($this->root.'/gate/scopes/'.$this->name->value.'.json', 'Its socket on the gate too.');
     }
 
-    private function manager(bool $checksCode = false, ?\Quire\Server\Host\Memory $memory = null): SiteManager
+    private function manager(bool $checksCode = false, ?\Quire\Server\Host\Memory $memory = null, string $mailer = 'smtp://mailer:25'): SiteManager
     {
         $runner = new readonly class($this) implements ProcessRunner {
             public function __construct(private SiteManagerTest $test)
@@ -1430,7 +1479,7 @@ final class SiteManagerTest extends RegistryTestCase
             new SiteDatabaseDumps($runner, $compose, GateFixture::TRUSTED),
             GateFixture::links($runner, $this->connection, $this->schema),
             new SiteNetworks($this->connection, $this->schema),
-            'smtp://mailer:25',
+            $mailer,
             memory: $memory,
         );
     }

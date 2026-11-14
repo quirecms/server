@@ -23,6 +23,7 @@ use Quire\Server\Registry\SiteGit;
 use Quire\Server\Registry\SiteLock;
 use Quire\Server\Registry\SiteNetworks;
 use Quire\Server\Registry\SiteRegistry;
+use Quire\Server\ServerUpdate\ServerSettings;
 use Quire\Server\Site\Domain;
 use Quire\Server\Site\EnvFile;
 use Quire\Server\Site\ServerPaths;
@@ -41,6 +42,15 @@ use Symfony\Component\Filesystem\Filesystem;
 final readonly class SiteManager
 {
     private const string PHP = 'php';
+
+    /** A site restored as a new one sends no email (the default, SEC-0014) */
+    public const string MAILER_NONE = 'none';
+
+    /** … or with the mailer its backup had (a real move, or one of this server's own sites brought back) */
+    public const string MAILER_BACKUP = 'backup';
+
+    /** … or with this server's */
+    public const string MAILER_SERVER = 'server';
 
     public function __construct(
         private SiteRegistry $registry,
@@ -163,7 +173,7 @@ final readonly class SiteManager
                     'QUIRE_DATABASE_PASSWORD' => $databasePassword,
                     // Asked for by the skeleton's production setup; its own PostgreSQL doesn't run here.
                     'POSTGRES_PASSWORD' => bin2hex(random_bytes(24)),
-                    'MAILER_DSN' => $this->mailerDsn,
+                    'MAILER_DSN' => '' === $this->mailerDsn ? SiteFiles::NO_MAIL : $this->mailerDsn,
                 ], static fn (string $value): bool => '' !== $value));
                 $subnets = $this->links->ensure($request->name, $request->name->value, true);
                 $undo[] = fn () => $this->links->remove($request->name, $request->name->value);
@@ -216,15 +226,24 @@ final readonly class SiteManager
      * settings written anew (its own database and password, a new secret); its database and stored
      * files restored from the backup. If anything fails, everything done is undone.
      *
+     * It sends no email unless asked (SEC-0014): a copy is usually a test or a rehearsal while the
+     * original still runs, and its database holds the original's users, whom it must not email
+     * (password resets, notifications, scheduled mail) from any sender.
+     *
      * @param list<Domain>           $domains
      * @param string|Repository      $code    The site's folder, as backed up, or its repository
      * @param string                 $backup  Its quire:backup file
      * @param array<string, scalar>  $from    What's recorded of where it came from
      * @param \Closure(string): void $say
+     * @param string                 $mailer  One of MAILER_*: none, its backup's (a real move, a site of this server's brought back) or this server's
      */
-    public function restoreAsNew(SiteName $name, array $domains, string|Repository $code, string $backup, array $from, string $channel, string $requestedBy, \Closure $say, bool $poll = false): Site
+    public function restoreAsNew(SiteName $name, array $domains, string|Repository $code, string $backup, array $from, string $channel, string $requestedBy, \Closure $say, bool $poll = false, string $mailer = self::MAILER_NONE): Site
     {
-        return $this->lock->run($name, function () use ($name, $domains, $code, $backup, $from, $channel, $requestedBy, $say, $poll): Site {
+        if (!\in_array($mailer, [self::MAILER_NONE, self::MAILER_BACKUP, self::MAILER_SERVER], true)) {
+            throw new \InvalidArgumentException(\sprintf('"%s" isn\'t a choice of mailer.', $mailer));
+        }
+
+        return $this->lock->run($name, function () use ($name, $domains, $code, $backup, $from, $channel, $requestedBy, $say, $poll, $mailer): Site {
             $this->memory?->ensureRoomToBuild();
             $operation = $this->operations->start('site.restore_as_new', $name, ['domains' => array_map(static fn (Domain $domain): string => $domain->value, $domains), ...$from], $channel, $requestedBy);
             $directory = $this->paths->site($name);
@@ -260,6 +279,7 @@ final readonly class SiteManager
                 $undo[] = fn () => $this->archive($name, $directory);
 
                 $own = [];
+                $backupMailer = '';
 
                 if (\is_string($code)) {
                     $step('Putting its code in place, as the backup has it');
@@ -271,6 +291,9 @@ final readonly class SiteManager
                     foreach ($own as $value) {
                         $operation->secret($value);
                     }
+
+                    $backupMailer = SiteFiles::NO_MAIL === ($own['MAILER_DSN'] ?? '') ? '' : $own['MAILER_DSN'] ?? '';
+                    unset($own['MAILER_DSN']);
 
                     $this->filesystem->remove(array_map(static fn (string $file): string => $directory.'/'.$file, [SiteFiles::ENV_FILE, SiteFiles::ENV_FILE.'.before-server', SiteFiles::OVERRIDE]));
                 } else {
@@ -288,9 +311,23 @@ final readonly class SiteManager
                 $step('Writing its settings');
                 $secret = bin2hex(random_bytes(32));
                 $operation->secret($secret);
+                $dsn = match ($mailer) {
+                    self::MAILER_BACKUP => $backupMailer,
+                    self::MAILER_SERVER => $this->mailerDsn,
+                    default => '',
+                };
+                $say('' === $dsn
+                    ? \sprintf('It sends no email%s: "quire-server site:mail %s" gives it a mailer (--keep-mailer keeps its backup\'s, --server-mailer gives it this server\'s)', match ($mailer) {
+                        self::MAILER_BACKUP => ' (its backup had no mailer)',
+                        self::MAILER_SERVER => ' (this server has no mailer)',
+                        default => '',
+                    }, $name->value)
+                    : \sprintf('It sends email with %s, as asked: %s', self::MAILER_BACKUP === $mailer ? 'its backup\'s mailer' : 'this server\'s mailer', ServerSettings::dsnShown($dsn)));
+                $operation->line('Its mailer: '.('' === $dsn ? 'none' : ServerSettings::dsnShown($dsn)));
                 $this->files->writeEnv($directory, $name, $domains[0], array_filter([
-                    'MAILER_DSN' => $this->mailerDsn,
                     ...$own,
+                    // Written even for none: left out, the site's own .env files would decide
+                    'MAILER_DSN' => '' === $dsn ? SiteFiles::NO_MAIL : $dsn,
                     'APP_SECRET' => $secret,
                     'QUIRE_DATABASE_PASSWORD' => $databasePassword,
                     'POSTGRES_PASSWORD' => bin2hex(random_bytes(24)),
@@ -663,7 +700,7 @@ final readonly class SiteManager
 
             $envBefore = (string) file_get_contents($envPath);
 
-            if (EnvFile::parse($envBefore)->get('MAILER_DSN') === $dsn) {
+            if (EnvFile::parse($envBefore)->get('MAILER_DSN') === ('' === $dsn ? SiteFiles::NO_MAIL : $dsn)) {
                 $say('Its mailer is that one already: nothing changed.');
 
                 return;
@@ -674,7 +711,7 @@ final readonly class SiteManager
             try {
                 $operation->line('== Writing its mailer');
                 $say('Writing its mailer');
-                $this->files->write($envPath, EnvFile::parse($envBefore)->with(['MAILER_DSN' => $dsn])->content(), 0o600);
+                $this->files->write($envPath, EnvFile::parse($envBefore)->with(['MAILER_DSN' => '' === $dsn ? SiteFiles::NO_MAIL : $dsn])->content(), 0o600);
                 $operation->line('== Starting it again with it (a few seconds offline)');
                 $say('Starting it again with it (a few seconds offline)');
                 $this->compose->up($this->projectOf($site), $operation->output(...));
@@ -740,7 +777,13 @@ final readonly class SiteManager
     {
         $envPath = $this->paths->site($name).'/'.SiteFiles::ENV_FILE;
 
-        return is_file($envPath) && !is_link($envPath) ? (EnvFile::read($envPath)->get('MAILER_DSN') ?? '') : null;
+        if (!is_file($envPath) || is_link($envPath)) {
+            return null;
+        }
+
+        $dsn = EnvFile::read($envPath)->get('MAILER_DSN') ?? '';
+
+        return SiteFiles::NO_MAIL === $dsn ? '' : $dsn;
     }
 
     /** The server's own mailer, which new sites get */
@@ -859,7 +902,8 @@ final readonly class SiteManager
             throw new \DomainException('Its domains aren\'t known from its folder: give them, --domain=… (repeatable).');
         }
 
-        $restored = $this->restoreAsNew($name, $domains, $folder, $backup, ['from' => 'removed', 'archive' => basename($folder), 'backup' => basename($backup)], $channel, $requestedBy, $say);
+        // One of this server's own sites, brought back: as it was, its mailer too
+        $restored = $this->restoreAsNew($name, $domains, $folder, $backup, ['from' => 'removed', 'archive' => basename($folder), 'backup' => basename($backup)], $channel, $requestedBy, $say, mailer: self::MAILER_BACKUP);
 
         return ['site' => $restored, 'folder' => $folder, 'backup' => $backup];
     }
