@@ -168,21 +168,29 @@ final class SiteOverridesTest extends RegistryTestCase
     /**
      * Before any site is brought up to date, every site's scope is as this release writes it: one of
      * the release before may hold a name the gate now gives another site, and it would refuse that
-     * site's scope (both sites') until it's rewritten. And one left by a site that's gone is removed.
+     * site's scope (both sites') until it's rewritten. None is removed here: a registered site whose
+     * project can't be made now keeps its scope as it is, and so does any other (the agent's start
+     * removes those of sites that are gone).
      */
-    public function testEverySitesScopeIsWrittenAnewFirst(): void
+    public function testEverySitesScopeIsWrittenAnewFirstAndNoneRemoved(): void
     {
         $this->site('jane', 'jane', Site::SHARED_DATABASE);
         $this->site('demo-x', 'demo-x', Site::SHARED_DATABASE);
         // As a release before 0.6 wrote it: the name of before only
         new Filesystem()->dumpFile($this->root.'/gate/scopes/jane.json', '{"networks": {"quire-link-jane": {"aliases": ["jane.example.quire.internal"]}}}');
+        // A registered site without its folder now: its scope can't be made
+        $this->registry->add(new SiteName('kim'), [new Domain('kim.example')], Site::SHARED_DATABASE, 'kim');
+        $this->registry->setStatus(new SiteName('kim'), Site::RUNNING);
+        $kims = '{"as": "it was"}';
+        new Filesystem()->dumpFile($this->root.'/gate/scopes/kim.json', $kims);
         new Filesystem()->dumpFile($this->root.'/gate/scopes/gone.json', '{}');
 
         self::assertSame([], $this->subject()->refresh());
 
         self::assertContains(SiteFiles::edgeName('jane.example'), LinkAliases::in(json_decode((string) file_get_contents($this->root.'/gate/scopes/jane.json'), true), 'quire-link-jane'));
         self::assertFileExists($this->root.'/gate/scopes/demo-x.json');
-        self::assertFileDoesNotExist($this->root.'/gate/scopes/gone.json');
+        self::assertSame($kims, file_get_contents($this->root.'/gate/scopes/kim.json'), 'Kept byte for byte: its socket stays open.');
+        self::assertFileExists($this->root.'/gate/scopes/gone.json', 'Left to the agent\'s start.');
     }
 
     public function testContainersMadeBeforeTheGateHardenedThemAreMadeAgain(): void

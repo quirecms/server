@@ -120,7 +120,26 @@ final readonly class Gate
             }
         }
 
-        // Every file first, then the gate's word on each: the scans they need overlap.
+        return ['removed' => $removed, 'failed' => $this->apply(array_values($keep))];
+    }
+
+    /**
+     * These sites' scopes as the server allows them now, written and in effect (every file first, then
+     * the gate's word on each: the scans they need overlap). Removes none: a site left out keeps its
+     * scope as it is. A site whose scope can't be made is said, and the others go on.
+     *
+     * @param list<SiteProject> $projects
+     *
+     * @return array<string, string> The sites without their scope in effect, and why
+     */
+    public function apply(array $projects): array
+    {
+        $keep = [];
+
+        foreach ($projects as $project) {
+            $keep[$project->name()] = $project;
+        }
+
         $failed = [];
         $written = [];
 
@@ -144,7 +163,7 @@ final readonly class Gate
             }
         }
 
-        return ['removed' => $removed, 'failed' => $failed];
+        return $failed;
     }
 
     /**

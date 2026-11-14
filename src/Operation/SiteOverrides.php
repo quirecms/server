@@ -44,17 +44,24 @@ final readonly class SiteOverrides
     }
 
     /**
-     * Each registered site's scope on the gate, as the agent's start writes them (Gate::reconcile).
+     * Each registered site's scope on the gate, as this release writes them, removing none: a site
+     * whose project can't be made now (its folder missing, say) keeps its scope as it is, and is said.
+     * The agent's start removes the scopes of sites that are gone (Gate::reconcile).
      *
      * @return array<string, string> Site => why its scope couldn't be written, or the gate refused it
      */
     private function scopes(): array
     {
-        $sites = array_values(array_filter($this->registry->all(), fn (Site $site): bool => Site::REMOVED !== $site->status && is_dir($this->paths->site($site->name))));
+        $sites = array_values(array_filter($this->registry->all(), static fn (Site $site): bool => Site::REMOVED !== $site->status));
         $projects = [];
         $failed = [];
 
         foreach ($sites as $site) {
+            if (!is_dir($this->paths->site($site->name))) {
+                // One whose add was cut short has no folder yet: nothing to write for it
+                continue;
+            }
+
             try {
                 $others = array_values(array_map(static fn (Site $other): string => $other->project, array_filter($sites, static fn (Site $other): bool => $other->name->value !== $site->name->value)));
                 $projects[] = SiteProject::of($this->paths, $site->name, $site->domains, $site->project, $site->databaseMode, $this->networks->find($site->name), $others);
@@ -63,7 +70,7 @@ final readonly class SiteOverrides
             }
         }
 
-        foreach ($this->gate->reconcile($projects)['failed'] as $project => $why) {
+        foreach ($this->gate->apply($projects) as $project => $why) {
             $failed[$project] = $why;
         }
 
