@@ -52,6 +52,11 @@ final readonly class SiteManager
     /** … or with this server's */
     public const string MAILER_SERVER = 'server';
 
+    /** quire/analytics, and the setting that turns it on: its measurement ID (empty: off) */
+    private const string ANALYTICS = 'quire/analytics';
+
+    private const string ANALYTICS_ID = 'quire-analytics.ga4_id';
+
     public function __construct(
         private SiteRegistry $registry,
         private OperationLog $operations,
@@ -231,19 +236,26 @@ final readonly class SiteManager
      * (password resets, notifications, scheduled mail) from any sender.
      *
      * @param list<Domain>           $domains
-     * @param string|Repository      $code    The site's folder, as backed up, or its repository
-     * @param string                 $backup  Its quire:backup file
-     * @param array<string, scalar>  $from    What's recorded of where it came from
+     * @param string|Repository      $code          The site's folder, as backed up, or its repository
+     * @param string                 $backup        Its quire:backup file
+     * @param array<string, scalar>  $from          What's recorded of where it came from
      * @param \Closure(string): void $say
-     * @param string                 $mailer  One of MAILER_*: none, its backup's (a real move, a site of this server's brought back) or this server's
+     *                                              It doesn't act on the original's other services either: its Google Analytics is turned off (its
+     *                                              visits would count as the original's), unless $keepAnalytics; and it isn't made at all while its
+     *                                              stored files are on storage outside the site (an S3 bucket, an application's service), which is the
+     *                                              original's, unless $sharedStorage: the copy would change and delete the original's files, and the
+     *                                              restore would write the backup's files there first
+     * @param string                 $mailer        One of MAILER_*: none, its backup's (a real move, a site of this server's brought back) or this server's
+     * @param bool                   $keepAnalytics It keeps the original's analytics (a real move)
+     * @param bool                   $sharedStorage It may use the original's storage (a real move, the original gone)
      */
-    public function restoreAsNew(SiteName $name, array $domains, string|Repository $code, string $backup, array $from, string $channel, string $requestedBy, \Closure $say, bool $poll = false, string $mailer = self::MAILER_NONE): Site
+    public function restoreAsNew(SiteName $name, array $domains, string|Repository $code, string $backup, array $from, string $channel, string $requestedBy, \Closure $say, bool $poll = false, string $mailer = self::MAILER_NONE, bool $keepAnalytics = false, bool $sharedStorage = false): Site
     {
         if (!\in_array($mailer, [self::MAILER_NONE, self::MAILER_BACKUP, self::MAILER_SERVER], true)) {
             throw new \InvalidArgumentException(\sprintf('"%s" isn\'t a choice of mailer.', $mailer));
         }
 
-        return $this->lock->run($name, function () use ($name, $domains, $code, $backup, $from, $channel, $requestedBy, $say, $poll, $mailer): Site {
+        return $this->lock->run($name, function () use ($name, $domains, $code, $backup, $from, $channel, $requestedBy, $say, $poll, $mailer, $keepAnalytics, $sharedStorage): Site {
             $this->memory?->ensureRoomToBuild();
             $operation = $this->operations->start('site.restore_as_new', $name, ['domains' => array_map(static fn (Domain $domain): string => $domain->value, $domains), ...$from], $channel, $requestedBy);
             $directory = $this->paths->site($name);
@@ -347,10 +359,17 @@ final readonly class SiteManager
                 $step('Starting it');
                 $this->compose->up($project, $operation->output(...));
                 $this->ensureContractKept($project);
+                // Before its files are restored: there, on the original's bucket
+                $about = $this->about($project);
+                $this->ensureOwnStorage($directory, $about, $sharedStorage, $operation, $say);
 
                 $step('Restoring its database and files from the backup');
                 $this->compose->exec($project, self::PHP, ['bin/console', 'quire:restore', '-', '--force', '--no-interaction'], $operation->output(...), 3600, $backup)->orFail('Restoring the backup');
                 $this->restoreDatabase($name, $project, $backup, $operation->output(...));
+
+                if (!$keepAnalytics) {
+                    $this->analyticsOff($project, $about, $operation, $say);
+                }
 
                 if ($code instanceof Repository) {
                     $this->repositories->deployed($name, $this->git->head($code, $name, $directory));
@@ -903,7 +922,8 @@ final readonly class SiteManager
         }
 
         // One of this server's own sites, brought back: as it was, its mailer too
-        $restored = $this->restoreAsNew($name, $domains, $folder, $backup, ['from' => 'removed', 'archive' => basename($folder), 'backup' => basename($backup)], $channel, $requestedBy, $say, mailer: self::MAILER_BACKUP);
+        // The site itself, brought back: no original runs beside it.
+        $restored = $this->restoreAsNew($name, $domains, $folder, $backup, ['from' => 'removed', 'archive' => basename($folder), 'backup' => basename($backup)], $channel, $requestedBy, $say, mailer: self::MAILER_BACKUP, keepAnalytics: true, sharedStorage: true);
 
         return ['site' => $restored, 'folder' => $folder, 'backup' => $backup];
     }
@@ -1078,6 +1098,95 @@ final readonly class SiteManager
      *
      * @throws ContractNotKept
      */
+    /**
+     * What a running site says of itself (quire:about), or null when it says nothing it can be read by.
+     *
+     * @return array<mixed>|null
+     */
+    private function about(SiteProject $project): ?array
+    {
+        try {
+            $result = $this->compose->exec($project, self::PHP, ['bin/console', 'quire:about', '--format=json'], timeout: 120);
+        } catch (\Throwable) {
+            return null;
+        }
+
+        if (!$result->successful() || \strlen($result->output) > SiteContract::MAX_REPORT) {
+            return null;
+        }
+
+        $about = json_decode($result->output, true, 64);
+
+        return \is_array($about) ? $about : null;
+    }
+
+    /**
+     * Refuses a copy whose stored files are on storage outside the site, unless asked: its disks as its
+     * quire:about says (Quire 0.3.2 and later), or, from a Quire that doesn't say, what its code holds
+     * (the S3 adapter's package in its lock, or a disk's adapter other than "local" in its config).
+     *
+     * @param array<mixed>|null      $about
+     * @param \Closure(string): void $say
+     */
+    private function ensureOwnStorage(string $directory, ?array $about, bool $shared, Operation $operation, \Closure $say): void
+    {
+        $outside = \is_array($about) && \is_array($about['storage'] ?? null)
+            ? SiteFiles::storageOutside($about['storage'])
+            : SiteFiles::storageOutsideInCode($directory);
+
+        if ([] === $outside) {
+            return;
+        }
+
+        if (!$shared) {
+            throw new \DomainException(\sprintf('Its stored files are on storage outside the site, which the original uses too: %s. A copy would change and delete the original\'s files there, and restoring it would write the backup\'s files there first. Nothing was restored. Restore it where its disks are its own, or with --shared-storage when that\'s meant (a real move, the original gone).', implode('; ', $outside)));
+        }
+
+        $say(\sprintf('Its stored files stay on storage it shares with the original, as asked (--shared-storage): %s', implode('; ', $outside)));
+        $operation->line('Its storage, shared with the original: '.implode('; ', $outside));
+    }
+
+    /**
+     * Turns off the copy's Google Analytics (quire/analytics), so that its visits don't count as the
+     * original's. A site without the extension has nothing to turn off.
+     *
+     * @param array<mixed>|null      $about
+     * @param \Closure(string): void $say
+     */
+    private function analyticsOff(SiteProject $project, ?array $about, Operation $operation, \Closure $say): void
+    {
+        $extensions = \is_array($about) && \is_array($about['extensions'] ?? null) ? $about['extensions'] : null;
+        $analytics = array_values(array_filter($extensions ?? [], static fn (mixed $extension): bool => \is_array($extension) && self::ANALYTICS === ($extension['package'] ?? null)));
+
+        // Not known: turned off anyway, if there's anything to turn off.
+        if (null !== $extensions && [] === $analytics) {
+            return;
+        }
+
+        $result = $this->compose->exec($project, self::PHP, ['bin/console', 'quire:settings:set', self::ANALYTICS_ID, '', '--no-interaction'], $operation->output(...), 120);
+
+        if (!$result->successful()) {
+            $undeclared = str_contains($result->output.$result->errorOutput, \sprintf('No setting "%s"', self::ANALYTICS_ID));
+
+            if ($undeclared && null === $extensions) {
+                return; // Its Quire has no such setting: no analytics.
+            }
+
+            // Installed, not enabled: its settings aren't declared, and its ID stays in the database.
+            if ($undeclared && 'enabled' !== ($analytics[0]['status'] ?? null)) {
+                $say('Its Google Analytics extension isn\'t enabled, so its measurement ID (the original\'s, if it had one) stays in its database: clear it in its admin before enabling the extension');
+                $operation->line('Its Google Analytics: not enabled, its ID kept');
+
+                return;
+            }
+
+            $result->orFail('Turning its Google Analytics off');
+        }
+
+        $say('Its Google Analytics is off, so its visits don\'t count as the original\'s: set its measurement ID in its admin (Analytics), or restore with --keep-analytics to keep it');
+        $operation->line('Its Google Analytics: off');
+    }
+
     public function ensureContractKept(SiteProject $project): int
     {
         $contract = SiteContract::of($this->compose->exec($project, self::PHP, ['bin/console', 'quire:about', '--format=json'], timeout: 120));

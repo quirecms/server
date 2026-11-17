@@ -36,7 +36,10 @@ use Symfony\Component\Console\Style\SymfonyStyle;
 
         The new site sends no email: a copy or a rehearsal holds the original's users, and must not
         email them. For a real move, --keep-mailer keeps the backup's mailer; --server-mailer gives it
-        this server's (it then emails those users from this server).
+        this server's (it then emails those users from this server). Nor does it act on the
+        original's other services: its Google Analytics is off (--keep-analytics keeps it), and it
+        isn't restored while its stored files are on storage outside it, such as a bucket, which the
+        original uses too (--shared-storage, once the original is gone).
 
         A Git mode site's code is in its repository, not its backups: add it from there, then restore
         its data in place.
@@ -88,6 +91,10 @@ final readonly class BackupsRestoreCommand
         bool $keepMailer = false,
         #[Option(description: 'Give it this server\'s mailer: it emails the original\'s users from this server')]
         bool $serverMailer = false,
+        #[Option(description: 'Keep its Google Analytics: its visits count as the original\'s (a real move)')]
+        bool $keepAnalytics = false,
+        #[Option(description: 'Restore it though its stored files are on storage outside it (a bucket) that the original uses too: only once the original is gone')]
+        bool $sharedStorage = false,
     ): int {
         if ($keepMailer && $serverMailer) {
             $io->error('--keep-mailer or --server-mailer, not both.');
@@ -95,8 +102,8 @@ final readonly class BackupsRestoreCommand
             return Command::INVALID;
         }
 
-        if (($keepMailer || $serverMailer) && null === $as) {
-            $io->error('--keep-mailer and --server-mailer are for a restore as a new site (--as): restored over itself, a site keeps its mailer.');
+        if (($keepMailer || $serverMailer || $keepAnalytics || $sharedStorage) && null === $as) {
+            $io->error('--keep-mailer, --server-mailer, --keep-analytics and --shared-storage are for a restore as a new site (--as): restored over itself, a site keeps its mailer, analytics and storage.');
 
             return Command::INVALID;
         }
@@ -112,7 +119,7 @@ final readonly class BackupsRestoreCommand
         }
 
         if (null !== $as || null !== $fromServer || [] !== $domain) {
-            return $this->asNew($io, $name, $snapshot, $as, $domain, $fromServer, $yes, $signedBy, $unsigned, $keepMailer, $serverMailer);
+            return $this->asNew($io, $name, $snapshot, $as, $domain, $fromServer, $yes, $signedBy, $unsigned, $keepMailer, $serverMailer, $keepAnalytics, $sharedStorage);
         }
 
         try {
@@ -187,7 +194,7 @@ final readonly class BackupsRestoreCommand
     /**
      * @param list<string> $domains
      */
-    private function asNew(SymfonyStyle $io, string $name, string $snapshot, ?string $as, array $domains, ?string $fromServer, bool $yes, ?string $signedBy, bool $unsigned, bool $keepMailer, bool $serverMailer): int
+    private function asNew(SymfonyStyle $io, string $name, string $snapshot, ?string $as, array $domains, ?string $fromServer, bool $yes, ?string $signedBy, bool $unsigned, bool $keepMailer, bool $serverMailer, bool $keepAnalytics, bool $sharedStorage): int
     {
         try {
             $source = new SiteName($name);
@@ -204,7 +211,7 @@ final readonly class BackupsRestoreCommand
                 return Command::SUCCESS;
             }
 
-            $restored = $this->backups->restoreAsNew($source, $snapshot, $target, $domains, $fromServer, Requester::CHANNEL, Requester::name(), static fn (string $step) => $io->writeln('  '.$step.'…'), $signedBy, $unsigned, $this->mailer($keepMailer, $serverMailer));
+            $restored = $this->backups->restoreAsNew($source, $snapshot, $target, $domains, $fromServer, Requester::CHANNEL, Requester::name(), static fn (string $step) => $io->writeln('  '.$step.'…'), $signedBy, $unsigned, $this->mailer($keepMailer, $serverMailer), $keepAnalytics, $sharedStorage);
         } catch (\Throwable $e) {
             $io->error(['The site wasn\'t added (everything done was undone):', $e->getMessage()]);
 

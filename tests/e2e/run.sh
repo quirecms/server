@@ -392,6 +392,11 @@ orders() { inside "docker exec $1-php-1 bin/console dbal:run-sql 'SELECT count(*
 inside "docker exec jane-php-1 bin/console dbal:run-sql -q 'CREATE TABLE public.app_order (id int PRIMARY KEY)' && docker exec jane-php-1 bin/console dbal:run-sql -q 'INSERT INTO public.app_order VALUES (1), (2)'" >/dev/null
 # What an earlier backup cut short left in the site's container, where 0.3.0 always wrote it
 inside "docker exec jane-php-1 sh -c 'echo partial > /tmp/quire-off-server-backup.tar'"
+# Google Analytics with the site's own measurement ID: a copy's visits mustn't count as its own
+inside 'quire-server site:packages jane add quire/analytics --yes' > "$logs"/backup-analytics.log 2>&1 || sed 's/^/    /' "$logs"/backup-analytics.log
+inside 'docker exec jane-php-1 bin/console quire:extension:enable quire-analytics --no-interaction >/dev/null && docker exec jane-php-1 bin/console quire:settings:set quire-analytics.ga4_id G-E2EORIGINAL1 --no-interaction >/dev/null' 2>&1 | sed 's/^/    /'
+ga4() { inside "docker exec $1-php-1 bin/console quire:settings:list --no-interaction" 2>/dev/null | grep 'quire-analytics.ga4_id' | grep -o 'G-[A-Z0-9]*' || true; }
+check 'jane counts its visits in its own Google Analytics' "[ \"\$(ga4 jane)\" = G-E2EORIGINAL1 ]"
 # A mailer of the site's own, with a token (SEC-0014: a copy on another server must not send with it)
 inside "printf '%s\\n' 'smtp://own:prod-token@mail.own.test:25' | quire-server site:mail jane --set >/dev/null 2>&1" || true
 check 'jane sends email with a mailer of its own' "inside 'quire-server site:mail jane' | grep -qF 'smtp://own:(password)@mail.own.test:25'"
@@ -460,7 +465,9 @@ check 'a site moves from another server'\''s backups' "grep -q 'moved\" runs' $l
 check 'the copy sends no email, though this server has a mailer and its backup had one (SEC-0014)' "grep -q 'It sends no email' $logs/moved.log && inside 'quire-server site:mail moved' | grep -q 'nothing' && ! inside 'grep -qe prod-token -e server-token /srv/quire/sites/moved/prod.env'"
 check 'no email is what its containers run with, whatever its own .env files say' "[ \"\$(inside 'docker exec moved-php-1 printenv MAILER_DSN')\" = null://null ] && [ \"\$(inside 'docker exec moved-worker-1 printenv MAILER_DSN')\" = null://null ]"
 check 'its token is in none of the restore'\''s output' "! grep -q prod-token $logs/moved.log"
-inside "quire-server backups:restore jane --from-server=quire-server --signed-by='$public_key' --as=moved-kept --domain=moved-kept.test --keep-mailer --yes 2>&1" > "$logs"/moved-kept.log || sed 's/^/    /' "$logs"/moved-kept.log
+check 'the copy'\''s Google Analytics is off, and the original'\''s as it was' "grep -q 'Its Google Analytics is off' $logs/moved.log && [ -z \"\$(ga4 moved)\" ] && [ \"\$(ga4 jane)\" = G-E2EORIGINAL1 ]"
+inside "quire-server backups:restore jane --from-server=quire-server --signed-by='$public_key' --as=moved-kept --domain=moved-kept.test --keep-mailer --keep-analytics --yes 2>&1" > "$logs"/moved-kept.log || sed 's/^/    /' "$logs"/moved-kept.log
+check 'with --keep-analytics, a real move keeps it' "[ \"\$(ga4 moved-kept)\" = G-E2EORIGINAL1 ]"
 check 'with --keep-mailer, a real move keeps the backup'\''s mailer' "grep -q 'mailer, as asked' $logs/moved-kept.log && inside 'quire-server site:mail moved-kept' | grep -qF 'smtp://own:(password)@mail.own.test:25'"
 check '--keep-mailer is refused for a restore over the site itself' "inside 'quire-server backups:restore moved --keep-mailer --yes 2>&1' | grep -q 'are for a restore as a new site'"
 inside "quire-server backups:restore jane --from-server=quire-server --signed-by='$public_key' --as=moved-server --domain=moved-server.test --server-mailer --yes 2>&1" > "$logs"/moved-server.log || sed 's/^/    /' "$logs"/moved-server.log

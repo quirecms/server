@@ -271,4 +271,65 @@ final readonly class SiteFiles
             @unlink($temporary);
         }
     }
+
+    /**
+     * A copy's disks outside the site, from its quire:about "storage": anything but "local".
+     *
+     * @param array<mixed> $disks
+     *
+     * @return list<string> Each as "<disk> (<location>)"
+     */
+    public static function storageOutside(array $disks): array
+    {
+        $outside = [];
+
+        foreach ($disks as $disk) {
+            if (!\is_array($disk) || 'local' === ($disk['adapter'] ?? 'local')) {
+                continue;
+            }
+
+            $outside[] = \sprintf('the disk "%s" (%s)', \is_string($disk['name'] ?? null) ? $disk['name'] : '?', \is_string($disk['location'] ?? null) ? $disk['location'] : (\is_string($disk['adapter']) ? $disk['adapter'] : '?'));
+        }
+
+        return $outside;
+    }
+
+    /**
+     * The same from a site's code, for a Quire whose quire:about doesn't say (before 0.3.2): the S3
+     * adapter's package in its lock, or a disk adapter other than "local" in its configuration.
+     *
+     * @return list<string> What says so
+     */
+    public static function storageOutsideInCode(string $directory): array
+    {
+        $found = [];
+        $lock = @file_get_contents($directory.'/composer.lock');
+
+        if (\is_string($lock) && 1 === preg_match('#"name"\s*:\s*"league/flysystem-async-aws-s3"#', $lock)) {
+            $found[] = 'its composer.lock has league/flysystem-async-aws-s3, the S3 adapter';
+        }
+
+        $files = [$directory.'/extend.php'];
+
+        if (is_dir($directory.'/config')) {
+            foreach (new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator($directory.'/config', \FilesystemIterator::SKIP_DOTS)) as $file) {
+                if ($file instanceof \SplFileInfo && !$file->isLink() && \in_array($file->getExtension(), ['yaml', 'yml', 'php'], true)) {
+                    $files[] = $file->getPathname();
+                }
+            }
+        }
+
+        sort($files);
+
+        foreach ($files as $file) {
+            $content = is_file($file) && !is_link($file) ? (string) @file_get_contents($file, length: 1_048_576) : '';
+
+            // "adapter: s3", "'adapter' => 'service'", or one the environment chooses
+            if (1 === preg_match('/\badapter[\'"]?\s*(?::|=>)\s*[\'"]?(s3|service|%env\()/i', $content, $match)) {
+                $found[] = \sprintf('%s has a disk on "%s"', substr($file, \strlen(rtrim($directory, '/')) + 1), rtrim($match[1], '('));
+            }
+        }
+
+        return $found;
+    }
 }

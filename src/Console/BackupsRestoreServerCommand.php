@@ -32,7 +32,9 @@ use Symfony\Component\Console\Style\SymfonyStyle;
 
         The sites send no email, so a rehearsal can't email the old server's users. For a real move,
         --keep-mailer keeps the mailers their backups had; --server-mailer gives them this server's.
-        The summary says which mailer each site has.
+        The summary says which mailer each site has. Their Google Analytics is off (--keep-analytics
+        keeps it), and a site whose stored files are on storage outside it, such as a bucket, isn't
+        restored while the old server's site may still use it (--shared-storage, once it's gone).
         HELP,
 )]
 final readonly class BackupsRestoreServerCommand
@@ -56,6 +58,10 @@ final readonly class BackupsRestoreServerCommand
         bool $keepMailer = false,
         #[Option(description: 'Give them this server\'s mailer: they email the old server\'s users from this server')]
         bool $serverMailer = false,
+        #[Option(description: 'Keep their Google Analytics: their visits count as the old server\'s sites\' (a real move)')]
+        bool $keepAnalytics = false,
+        #[Option(description: 'Restore sites whose stored files are on storage outside them (a bucket): the old server\'s sites use it too, so only once those are gone')]
+        bool $sharedStorage = false,
     ): int {
         if ($keepMailer && $serverMailer) {
             $io->error('--keep-mailer or --server-mailer, not both.');
@@ -100,7 +106,7 @@ final readonly class BackupsRestoreServerCommand
             return Command::SUCCESS;
         }
 
-        $outcomes = $this->backups->restoreServer($fromServer, Requester::CHANNEL, Requester::name(), static fn (string $line) => $io->writeln('  '.$line), $signedBy, $unsigned, $this->mailer($keepMailer, $serverMailer));
+        $outcomes = $this->backups->restoreServer($fromServer, Requester::CHANNEL, Requester::name(), static fn (string $line) => $io->writeln('  '.$line), $signedBy, $unsigned, $this->mailer($keepMailer, $serverMailer), $keepAnalytics, $sharedStorage);
         $io->table(['Site', 'Outcome', ''], array_map(array_values(...), $outcomes));
 
         if (\in_array('failed', array_column($outcomes, 'outcome'), true)) {

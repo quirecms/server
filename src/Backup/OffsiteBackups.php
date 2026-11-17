@@ -334,7 +334,7 @@ final readonly class OffsiteBackups
      *
      * @return array{id: string, time: string} The snapshot restored
      */
-    public function restoreAsNew(SiteName $source, string $snapshot, SiteName $name, array $domains, ?string $server, string $channel, string $requestedBy, \Closure $say, ?string $signedBy = null, bool $unsigned = false, string $mailer = SiteManager::MAILER_NONE): array
+    public function restoreAsNew(SiteName $source, string $snapshot, SiteName $name, array $domains, ?string $server, string $channel, string $requestedBy, \Closure $say, ?string $signedBy = null, bool $unsigned = false, string $mailer = SiteManager::MAILER_NONE, bool $keepAnalytics = false, bool $sharedStorage = false): array
     {
         $this->settings->validate();
 
@@ -352,7 +352,7 @@ final readonly class OffsiteBackups
             throw new \DomainException(\sprintf('"%s" follows a Git repository: its code is there, not in its backups. Add it from its repository ("site:add %s --git=…"), then restore its data ("backups:restore %2$s"); or restore its whole server ("backups:restore-server").', $source, $name));
         }
 
-        $this->restoreSite($source, $chosen, $name, $domains, null, false, $server, $channel, $requestedBy, $say, $mailer);
+        $this->restoreSite($source, $chosen, $name, $domains, null, false, $server, $channel, $requestedBy, $say, $mailer, $keepAnalytics, $sharedStorage);
 
         return ['id' => $chosen['id'], 'time' => $chosen['time']];
     }
@@ -367,7 +367,7 @@ final readonly class OffsiteBackups
      *
      * @return list<array{site: string, outcome: string, detail: string}>
      */
-    public function restoreServer(string $server, string $channel, string $requestedBy, \Closure $say, ?string $signedBy = null, bool $unsigned = false, string $mailer = SiteManager::MAILER_NONE): array
+    public function restoreServer(string $server, string $channel, string $requestedBy, \Closure $say, ?string $signedBy = null, bool $unsigned = false, string $mailer = SiteManager::MAILER_NONE, bool $keepAnalytics = false, bool $sharedStorage = false): array
     {
         $manifest = $this->manifest($server, $signedBy, $unsigned, $say);
         $outcomes = [];
@@ -397,7 +397,7 @@ final readonly class OffsiteBackups
                         $installedKey = $this->restoreKey($manifest['keys'], $name);
                     }
 
-                    $this->restoreSite($name, $chosen, $name, array_map(static fn (string $domain): Domain => new Domain($domain), $entry['domains']), $repository, $entry['git']['poll'] ?? false, $server, $channel, $requestedBy, static fn (string $step) => $say('  '.$step), $mailer);
+                    $this->restoreSite($name, $chosen, $name, array_map(static fn (string $domain): Domain => new Domain($domain), $entry['domains']), $repository, $entry['git']['poll'] ?? false, $server, $channel, $requestedBy, static fn (string $step) => $say('  '.$step), $mailer, $keepAnalytics, $sharedStorage);
                     $this->policies->set($name, $entry['updates']);
                     $sends = $this->sites->mailer($name);
                     $outcomes[] = ['site' => $name->value, 'outcome' => 'restored', 'detail' => 'as of '.$chosen['time'].'; sends email with '.(null === $sends || '' === $sends ? 'nothing' : ServerSettings::dsnShown($sends))];
@@ -628,7 +628,7 @@ final readonly class OffsiteBackups
      * @param list<Domain>                                                             $domains
      * @param \Closure(string): void                                                   $say
      */
-    private function restoreSite(SiteName $source, array $chosen, SiteName $name, array $domains, ?Repository $repository, bool $poll, ?string $server, string $channel, string $requestedBy, \Closure $say, string $mailer): void
+    private function restoreSite(SiteName $source, array $chosen, SiteName $name, array $domains, ?Repository $repository, bool $poll, ?string $server, string $channel, string $requestedBy, \Closure $say, string $mailer, bool $keepAnalytics, bool $sharedStorage): void
     {
         $file = $this->backupFile($chosen['paths']);
         $folder = null;
@@ -653,7 +653,7 @@ final readonly class OffsiteBackups
             $this->sayIfIncomplete($chosen, $say);
             $this->restic->restorePaths($chosen['id'], [$file, ...$this->dumpOf($chosen['paths'], $file), ...($repository instanceof Repository ? [] : [$folder])], $into);
             $from = ['snapshot' => $chosen['id'], 'from_site' => $source->value, 'from_server' => $server ?? $this->settings->host];
-            $this->sites->restoreAsNew($name, $domains, $repository ?? $into.$folder, $into.$file, $from, $channel, $requestedBy, $say, $poll, $mailer);
+            $this->sites->restoreAsNew($name, $domains, $repository ?? $into.$folder, $into.$file, $from, $channel, $requestedBy, $say, $poll, $mailer, $keepAnalytics, $sharedStorage);
         } finally {
             $this->filesystem->remove($into);
         }
