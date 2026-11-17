@@ -111,6 +111,54 @@ final class UpdatePlannerTest extends TestCase
         self::assertSame(['update', 'symfony/yaml', '--with-all-dependencies'], \array_slice($update, $at, 3));
     }
 
+    public function testThirdPartyPackagesDontMoveInAnUpdate(): void
+    {
+        // G1: added with "site:packages … --third-party", held in every update, automatic or not
+        $site = $this->paths->site($this->name);
+        new Filesystem()->dumpFile($site.'/composer.json', (string) json_encode([
+            'require' => ['php' => '>=8.5', 'acme/reviews' => '^1.2', 'quire/core' => '^0.1', 'symfony/yaml' => '8.1.*'],
+            'extra' => ['quire-server' => ['packages' => ['acme/reviews' => ['third-party' => true]]]],
+        ]));
+        new Filesystem()->dumpFile($site.'/composer.lock', LockTest::packages([
+            LockTest::package('acme/reviews', '1.2.0', 'quire-extension', ['quire/core' => '^0.1', 'acme/reviews-core' => '^1.0', 'symfony/yaml' => '^8.1']),
+            LockTest::package('acme/reviews-core', '1.0.4'),
+            LockTest::package('quire/core', 'v0.1.0', 'symfony-bundle', ['symfony/yaml' => '^8.1']),
+            LockTest::package('symfony/yaml', 'v8.1.0'),
+        ])->content);
+
+        foreach ([[], ['acme/reviews']] as $only) {
+            $plan = $this->planner()->plan($this->name, only: $only);
+            $update = $this->command('composer update');
+
+            self::assertContains('--with=acme/reviews:1.2.0', $update, 'Held at its version, even when it\'s the vulnerable one.');
+            self::assertContains('--with=acme/reviews-core:1.0.4', $update, 'And what only it needs.');
+            self::assertNotContains('--with=symfony/yaml:v8.1.0', $update, 'Not what Quire needs too.');
+            self::assertSame(['acme/reviews' => '1.2.0', 'acme/reviews-core' => '1.0.4'], $plan->held);
+            $plan->discard();
+            $this->runner->runs = [];
+        }
+    }
+
+    public function testThePlanHoldsForTheFilesItWasMadeFrom(): void
+    {
+        // Another update applied while this one is worked out: the plan isn't for the files it left.
+        $site = $this->paths->site($this->name);
+        $before = UpdatePlanner::siteFiles($site);
+        $update = $this->runner->script['composer update'];
+        $script = static function (array $command, ?string $directory) use ($update, $site): \Quire\Server\Process\ProcessResult {
+            file_put_contents($site.'/composer.lock', LockTest::lock(['quire/core' => 'v0.1.5'])->content);
+
+            return $update(array_values(array_filter($command, \is_string(...))), $directory, null);
+        };
+        $this->runner->script['composer update'] = $script;
+
+        $plan = $this->planner()->plan($this->name);
+
+        self::assertSame($before, $plan->siteFiles);
+        self::assertNotSame($plan->siteFiles, UpdatePlanner::siteFiles($site), 'So SiteUpdater refuses it.');
+        $plan->discard();
+    }
+
     public function testOnlyPackageNamesAreNamed(): void
     {
         $this->expectException(\InvalidArgumentException::class);

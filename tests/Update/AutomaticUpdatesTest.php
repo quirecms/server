@@ -43,6 +43,8 @@ final class AutomaticUpdatesTest extends TestCase
         yield 'a new Quire the feed doesn\'t vouch for' => [$quire, UpdatePolicies::SECURITY, ['vouched' => false, 'blocked' => [], 'notes' => [], 'security' => []], 'isn\'t vouched for'];
         yield 'a new Quire this server can\'t run' => [$quire, UpdatePolicies::ALL, ['vouched' => false, 'blocked' => ['Quire 0.1.2 keeps server contract 2.'], 'notes' => [], 'security' => []], 'server contract 2'];
         yield 'a site not in the registry' => [$plain, UpdatePolicies::ALL, null, 'isn\'t in the registry'];
+        $held = self::plan(['symfony/console' => ['v8.1.0', 'v8.1.1']], before: ['acme/reviews' => self::VULNERABLE['symfony/yaml']], after: ['acme/reviews' => self::VULNERABLE['symfony/yaml']], held: ['acme/reviews' => '1.2.0']);
+        yield 'security: the vulnerable package is held (G1)' => [$held, UpdatePolicies::SECURITY, self::VOUCHED, '"site:packages jane update <package> --third-party"'];
     }
 
     /**
@@ -65,8 +67,9 @@ final class AutomaticUpdatesTest extends TestCase
      * @param array<string, list<array{title: string, cve: ?string, link: ?string, severity: ?string}>> $before
      * @param array<string, list<array{title: string, cve: ?string, link: ?string, severity: ?string}>> $after
      * @param list<array{path: string, action: string}>                                                 $skeleton
+     * @param array<string, string>                                                                     $held
      */
-    private static function plan(array $changes, array $before = [], array $after = [], array $skeleton = []): UpdatePlan
+    private static function plan(array $changes, array $before = [], array $after = [], array $skeleton = [], array $held = []): UpdatePlan
     {
         $from = ['quire/core' => 'v0.1.1'];
         $to = ['quire/core' => 'v0.1.1'];
@@ -78,7 +81,7 @@ final class AutomaticUpdatesTest extends TestCase
             $packages[] = ['package' => $package, 'from' => $old, 'to' => $new];
         }
 
-        return new UpdatePlan(new SiteName('jane'), sys_get_temp_dir(), LockTest::lock($from), LockTest::lock($to), '{}', $packages, $skeleton, null, true, $before, $after, '');
+        return new UpdatePlan(new SiteName('jane'), sys_get_temp_dir(), LockTest::lock($from), LockTest::lock($to), '{}', $packages, $skeleton, null, true, $before, $after, '', $held);
     }
 
     public function testTheHourIsAnHourOrOff(): void

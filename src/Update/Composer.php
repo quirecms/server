@@ -17,6 +17,12 @@ final readonly class Composer
 {
     private const string PACKAGE = '#^[a-z0-9]([_.-]?[a-z0-9]+)*/[a-z0-9](([_.]|-{1,2})?[a-z0-9]+)*\z#';
 
+    /**
+     * A constraint on releases ("^1.2", "1.2.*", ">=1.0 <2.0", "v1.2.0"): no branch ("dev-main"), no
+     * commit ("#abc…"), no stability flag ("@beta"), so nothing a push to a branch moves.
+     */
+    private const string CONSTRAINT = '#^[0-9v.*^~<>=|, -]{1,100}\z#';
+
     public function __construct(
         private ProcessRunner $runner,
     ) {
@@ -31,12 +37,10 @@ final readonly class Composer
      * @param (\Closure(string): void)|null $output
      * @param list<string>                  $packages
      */
-    public function update(string $directory, array $with, ?\Closure $output = null, array $packages = []): void
+    public function update(string $directory, array $with, ?\Closure $output = null, array $packages = [], bool $allDependencies = true): void
     {
         foreach ($packages as $package) {
-            if (1 !== preg_match(self::PACKAGE, $package)) {
-                throw new \InvalidArgumentException(\sprintf('"%s" isn\'t a package name.', $package));
-            }
+            $this->checkName($package);
         }
 
         foreach ($with as $constraint) {
@@ -46,11 +50,67 @@ final readonly class Composer
         }
 
         $this->composer($directory, [
-            'update', ...$packages, '--with-all-dependencies', '--no-install', '--no-scripts', '--no-plugins', '--no-audit', '--no-progress',
+            // Only these packages and what they need, but not what the site itself requires: Composer's
+            // "minimal changes" (--with-dependencies), or anything they need (--with-all-dependencies)
+            'update', ...$packages, $allDependencies ? '--with-all-dependencies' : '--with-dependencies', '--no-install', '--no-scripts', '--no-plugins', '--no-audit', '--no-progress',
             // The site's image has the extensions (the agent doesn't); its build checks them.
             '--ignore-platform-req=ext-*',
             ...array_map(static fn (string $constraint): string => '--with='.$constraint, $with),
         ], 900, $output)->orFail('Working out the update (composer update)');
+    }
+
+    /**
+     * Adds a package to this folder's composer.json, without resolving anything: "acme/reviews", or
+     * with a constraint ("acme/reviews:^1.2"). Without one, Composer writes "^" and the newest stable
+     * release (resolved by update() afterwards).
+     *
+     * @param (\Closure(string): void)|null $output
+     */
+    public function require(string $directory, string $package, ?string $constraint, ?\Closure $output = null): void
+    {
+        $this->checkName($package);
+
+        if (null !== $constraint && 1 !== preg_match(self::CONSTRAINT, $constraint)) {
+            throw new \InvalidArgumentException(\sprintf('"%s" isn\'t a version constraint, e.g. "^1.2".', $constraint));
+        }
+
+        $this->composer($directory, [
+            'require', null === $constraint ? $package : $package.':'.$constraint, '--no-update', '--no-scripts', '--no-plugins', '--no-audit', '--no-progress',
+            '--ignore-platform-req=ext-*',
+        ], 300, $output)->orFail(\sprintf('Adding %s (composer require)', $package));
+    }
+
+    /**
+     * Removes a package from this folder's composer.json and lock, with what only it needed.
+     *
+     * @param (\Closure(string): void)|null $output
+     */
+    public function remove(string $directory, string $package, ?\Closure $output = null): void
+    {
+        $this->checkName($package);
+
+        $this->composer($directory, [
+            'remove', $package, '--no-install', '--no-scripts', '--no-plugins', '--no-audit', '--no-progress',
+            '--ignore-platform-req=ext-*',
+        ], 900, $output)->orFail(\sprintf('Removing %s (composer remove)', $package));
+    }
+
+    /**
+     * Why the lock in this folder has a package: Composer's own answer ("composer why"), its lines.
+     *
+     * @return list<string>
+     */
+    public function why(string $directory, string $package): array
+    {
+        $this->checkName($package);
+        $result = $this->composer($directory, ['why', $package, '--locked', '--no-plugins'], 120);
+
+        return array_values(array_filter(array_map(trim(...), explode("\n", $result->output)), static fn (string $line): bool => '' !== $line));
+    }
+
+    public static function isName(string $package): bool
+    {
+        return 1 === preg_match(self::PACKAGE, $package);
     }
 
     /**
@@ -91,6 +151,13 @@ final readonly class Composer
         ksort($advisories);
 
         return $advisories;
+    }
+
+    private function checkName(string $package): void
+    {
+        if (!self::isName($package)) {
+            throw new \InvalidArgumentException(\sprintf('"%s" isn\'t a package name, e.g. "acme/reviews".', mb_substr($package, 0, 100)));
+        }
     }
 
     /**

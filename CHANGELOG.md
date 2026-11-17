@@ -14,6 +14,10 @@ All notable changes to Quire Server. The format follows [Keep a Changelog](https
 
 - The front door's log no longer holds visitors' full IP addresses (SEC-0010), neither in visits nor in Caddy's own messages (such as a certificate obtained at a site's first visit): each is cut to its network (/24 for IPv4, /48 for IPv6) as the line is written, and headers that can carry an address (`X-Forwarded-For`, `Forwarded`, `X-Real-Ip`, `Cf-Connecting-Ip`, `True-Client-Ip`) are left out. The log has a set size, 3 files of 10 MB, whatever the machine's Docker defaults are. Lines written before the update keep their addresses until the front door is replaced, which the update does.
 
+### Added
+
+- `site:packages`: a managed site's Quire extensions and themes, from Packagist, added, moved and removed by its owner, as updates are made (worked out on a copy and shown first, built beside, backed up, checked, rolled back by itself, undone with `site:undo`). A package is installed, not enabled. Adding one moves nothing else, and brings no Composer plugin, nothing that stands in for one of the site's packages or Quire's, and no known vulnerability. Quire's own follow the site's updates. Anyone else's needs `--third-party`, is shown with the commit its code is, and never moves in an update after, automatic or not: only `site:packages <site> update <package> --third-party` moves it. A package is removed only once the site runs neither it nor what would go with it. What was added is recorded in the site's `composer.json`, so a restore or an undo brings the record back with the packages.
+
 ### Changed
 
 - The agent waits for the gate to read a site's scope (YorvoGate 0.3's scope status) instead of sleeping past its scan. A scope the gate refuses stops the operation, with the gate's reason.

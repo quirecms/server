@@ -51,9 +51,18 @@ final readonly class UpdatePlanner
         try {
             $this->filesystem->copy($site.'/composer.json', $workspace.'/composer/composer.json');
             $this->filesystem->copy($site.'/composer.lock', $workspace.'/composer/composer.lock');
+            // The files this plan is made from, as they were copied: the apply refuses any others. (Not
+            // the site's own at the end: an update applied while this one was worked out would pass.)
+            $siteFiles = self::siteFiles($workspace.'/composer');
             $from = Lock::read($workspace.'/composer/composer.lock');
             $advisoriesBefore = $this->composer->audit($workspace.'/composer');
-            $with = [...$this->moveTo($workspace.'/composer/composer.json', $to), ...$this->symfonyMinor($workspace.'/composer/composer.json', $from)];
+            // Third-party packages stay where they are (G1): "site:packages <site> update" moves them.
+            $held = AddedPackages::held(AddedPackages::read($workspace.'/composer/composer.json'), $from);
+            $with = [
+                ...$this->moveTo($workspace.'/composer/composer.json', $to),
+                ...$this->symfonyMinor($workspace.'/composer/composer.json', $from),
+                ...array_map(static fn (string $package, string $version): string => $package.':'.$version, array_keys($held), $held),
+            ];
 
             $this->composer->update($workspace.'/composer', $with, $output, $only);
 
@@ -88,7 +97,7 @@ final readonly class UpdatePlanner
                 $skeletonFiles = SkeletonFiles::changes($site, $base, $skeletonTarget);
             }
 
-            return new UpdatePlan($name, $workspace, $from, $toLock, $composerJson, $from->changesTo($toLock), $skeletonFiles, $skeletonTarget, $baseKnown, $advisoriesBefore, $advisoriesAfter, self::siteFiles($site));
+            return new UpdatePlan($name, $workspace, $from, $toLock, $composerJson, $from->changesTo($toLock), $skeletonFiles, $skeletonTarget, $baseKnown, $advisoriesBefore, $advisoriesAfter, $siteFiles, $held);
         } catch (\Throwable $e) {
             $this->filesystem->remove($workspace);
 

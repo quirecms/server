@@ -22,7 +22,7 @@ services:
             - '../src/Notify/{Problem,EmailChannel,WebhookChannel}.php'
             - '../src/Operation/{Operation,SiteRequest,AddedSite}.php'
             - '../src/Process/{ProcessResult,ProcessFailed,ProcessTimedOut,Failures}.php'
-            - '../src/Update/{Lock,UpdatePlan,SkeletonFiles,UpdateFailed,CodeNotReleased}.php'
+            - '../src/Update/{Lock,UpdatePlan,PackagePlan,AddedPackages,SkeletonFiles,UpdateFailed,CodeNotReleased}.php'
             - '../src/Git/Repository.php'
             - '../src/Network/{Ipv4Cidr,SiteSubnets}.php'
             - '../src/Release/{Release,Version,ReleaseVerificationFailed,Feed}.php'
@@ -45,6 +45,8 @@ services:
             $dockerHost: '%env(DOCKER_HOST)%'
 
     Quire\Server\Docker\ScopeStatus: '@Quire\Server\Docker\GateScopeStatus'
+
+    Quire\Server\Update\SiteExtensions: '@Quire\Server\Update\QuireAboutExtensions'
 
     Quire\Server\Docker\Gate:
         arguments:

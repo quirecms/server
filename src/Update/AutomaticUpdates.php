@@ -233,6 +233,7 @@ final readonly class AutomaticUpdates
         return match (true) {
             !$plan->changesAnything() => 'nothing to update',
             UpdatePolicies::OFF === $policy => 'its automatic updates are off',
+            UpdatePolicies::SECURITY === $policy && [] === $plan->fixedAdvisories() && [] !== array_intersect_key($plan->advisoriesBefore, $plan->held) => \sprintf('a third-party package it added has a known vulnerability (%s): those move only with "site:packages %s update <package> --third-party"', implode(', ', array_keys(array_intersect_key($plan->advisoriesBefore, $plan->held))), $plan->site),
             UpdatePolicies::SECURITY === $policy && [] === $plan->fixedAdvisories() => 'no update fixes its known vulnerabilities yet',
             [] !== $plan->conflicts() => 'it edited files of the skeleton the new version changes: "site:update" shows them',
             null === $check => 'it isn\'t in the registry',

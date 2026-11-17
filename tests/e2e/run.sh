@@ -786,6 +786,50 @@ check 'that container doesn'\''t reach the database (nor the gate, which has no 
 inside 'cp /srv/quire/sites/jane/composer.json /root/jane-composer.json && sed -i "s#^    \"type\": \"project\",#    \"type\": \"project\", \"repositories\": [{\"type\": \"composer\", \"url\": \"http://docker-proxy:2375\", \"options\": {\"http\": {\"method\": \"POST\"}}}], \"config\": {\"secure-http\": false},#" /srv/quire/sites/jane/composer.json'
 check 'a composer.json fetching other than over HTTPS is refused' "inside 'quire-server site:audit jane 2>&1' | tr -s ' \\n' ' ' | grep -q 'over HTTPS only' && inside 'quire-server site:update jane --dry-run 2>&1' | tr -s ' \\n' ' ' | grep -q 'over HTTPS only'"
 inside 'cp /root/jane-composer.json /srv/quire/sites/jane/composer.json'
+
+echo '== A site'\''s packages (site:packages)'
+lock=/srv/quire/sites/jane/composer.lock
+# A package's version in the site's lock, and how many packages it has
+locked() { inside "grep -A1 '\"name\": \"$1\"' $lock" | sed -n 's/.*"version": "\(.*\)".*/\1/p'; }
+count() { inside "grep -c '^            \"name\": ' $lock"; }
+yaml_before=$(locked symfony/yaml)
+packages_before=$(count)
+inside 'quire-server site:packages jane 2>&1' > "$logs"/packages.log || true
+check 'it lists what the site came with' "grep -Eq 'quire/core .*with the site' $logs/packages.log"
+check 'a package that isn'\''t Quire'\''s is added only with --third-party' "inside 'quire-server site:packages jane add psr/clock --yes 2>&1' | tr -s ' \\n' ' ' | grep -q 'with --third-party'"
+check 'only Quire extensions and themes are added (Packagist says psr/clock is a library)' "inside 'quire-server site:packages jane add psr/clock --third-party --yes 2>&1' | tr -s ' \\n' ' ' | grep -q 'not a Quire extension or theme' && ! inside 'grep -q psr/clock /srv/quire/sites/jane/composer.json'"
+inside 'quire-server site:packages jane add quire/analytics --dry-run 2>&1' > "$logs"/packages-plan.log || true
+check 'the plan shows what it adds, and where from, and changes nothing' "grep -q 'New quire/analytics' $logs/packages-plan.log && grep -q 'New quire/privacy' $logs/packages-plan.log && grep -q 'Nothing changed' $logs/packages-plan.log && [ -z \"\$(locked quire/analytics)\" ]"
+inside 'quire-server site:packages jane add quire/analytics --yes 2>&1' | tee "$logs"/packages-add.log | sed 's/^/    /'
+check 'Quire'\''s analytics is added: installed, not enabled' "grep -q 'installed, not enabled' $logs/packages-add.log && [ -n \"\$(locked quire/analytics)\" ] && inside 'docker exec jane-php-1 bin/console quire:about --format=json' | grep -A3 '\"package\": \"quire/analytics\"' | grep -q '\"status\": \"disabled\"'"
+check 'nothing else moved: it and what it needs (quire/privacy), no more' "[ \"\$(count)\" = \$((packages_before + 2)) ] && [ \"\$(locked symfony/yaml)\" = '$yaml_before' ]"
+check 'it is recorded with the site'\''s composer.json, and logged' "inside 'grep -A2 \"\\\"quire-server\\\"\" /srv/quire/sites/jane/composer.json' | grep -q 'quire/analytics' && inside 'quire-server operations' | grep site.packages | head -1 | grep -q succeeded"
+check 'it answers after its package is added' "[ \"\$(inside \"curl -sk $resolve -o /dev/null -w '%{http_code}' https://jane.test/\")\" = 200 ]"
+inside 'docker exec jane-php-1 bin/console quire:extension:enable quire-analytics --no-interaction' > "$logs"/packages-enable.log 2>&1 || sed 's/^/    /' "$logs"/packages-enable.log
+check 'it isn'\''t removed while the site runs it' "inside 'quire-server site:packages jane remove quire/analytics --yes 2>&1' | tr -s ' \\n' ' ' | grep -q 'runs quire/analytics' && [ -n \"\$(locked quire/analytics)\" ]"
+inside 'docker exec jane-php-1 bin/console quire:extension:disable quire-analytics --no-interaction' > /dev/null 2>&1 || true
+check 'nor while it runs what would go with it' "inside 'quire-server site:packages jane remove quire/analytics --yes 2>&1' | tr -s ' \\n' ' ' | grep -q 'runs quire/privacy' && [ -n \"\$(locked quire/analytics)\" ]"
+inside 'docker exec jane-php-1 bin/console quire:extension:disable quire-privacy --no-interaction' > /dev/null 2>&1 || true
+
+# G1, with Packagist's real releases: the record says quire/analytics is a third party's (as an
+# added acme/reviews would be), and the site runs its older 0.3.0. No update moves it, automatic or not.
+inside "sed -i 's/\"third-party\": false/\"third-party\": true/' /srv/quire/sites/jane/composer.json"
+inside 'docker exec quire-server-agent-1 composer update quire/analytics --with=quire/analytics:0.3.0 --no-install --no-scripts --no-plugins --ignore-platform-req=ext-* --no-interaction -q --working-dir=/srv/quire/sites/jane' 2>&1 | sed 's/^/    /'
+check 'the site has the older release of a "third party'\''s" package' "[ \"\$(locked quire/analytics)\" = v0.3.0 ]"
+inside 'quire-server site:update jane --dry-run 2>&1' > "$logs"/packages-held.log || true
+check 'an update holds it where it is, and says how it moves' "grep -q 'Held.*quire/analytics v0.3.0' $logs/packages-held.log && ! grep -Eq '^ *quire/analytics +v0.3.0 +v0.3.1' $logs/packages-held.log"
+inside 'quire-server site:updates jane all >/dev/null'
+inside 'quire-server site:update --all --automatic 2>&1' > "$logs"/packages-automatic.log || true
+check 'nor does the night'\''s, everything allowed' "grep -q jane $logs/packages-automatic.log && [ \"\$(locked quire/analytics)\" = v0.3.0 ]"
+inside 'quire-server site:updates jane security >/dev/null'
+check 'moving it asks for --third-party again' "inside 'quire-server site:packages jane update quire/analytics --yes 2>&1' | tr -s ' \\n' ' ' | grep -q 'with --third-party' && [ \"\$(locked quire/analytics)\" = v0.3.0 ]"
+inside 'quire-server site:packages jane update quire/analytics --third-party --yes 2>&1' | tee "$logs"/packages-update.log | sed 's/^/    /'
+check 'only "site:packages … update" moves it' "grep -q 'runs quire/analytics v0.3.1' $logs/packages-update.log && [ \"\$(locked quire/analytics)\" = v0.3.1 ] && [ \"\$(locked symfony/yaml)\" = '$yaml_before' ]"
+
+inside 'quire-server site:packages jane remove quire/analytics --yes 2>&1' | tee "$logs"/packages-remove.log | sed 's/^/    /'
+check 'once the site runs neither, it is removed with what only it needed' "grep -q 'have quire/analytics any more' $logs/packages-remove.log && [ -z \"\$(locked quire/analytics)\" ] && [ -z \"\$(locked quire/privacy)\" ] && [ \"\$(count)\" = $packages_before ] && ! inside 'grep -q quire-server /srv/quire/sites/jane/composer.json'"
+check 'it answers after its package is removed' "[ \"\$(inside \"curl -sk $resolve -o /dev/null -w '%{http_code}' https://jane.test/\")\" = 200 ]"
+check 'what the site came with isn'\''t removed here' "inside 'quire-server site:packages jane remove quire/theme-default --yes 2>&1' | tr -s ' \\n' ' ' | grep -q 'came with the site'"
 fi
 
 if want git; then

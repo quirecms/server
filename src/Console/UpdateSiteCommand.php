@@ -305,6 +305,10 @@ final readonly class UpdateSiteCommand
             }
         }
 
+        if ([] !== $plan->held) {
+            $io->writeln(\sprintf('  <comment>Held</comment> %s: third-party packages and what only they need don\'t move in updates; "site:packages %s update <package> --third-party" moves one.', implode(', ', array_map(static fn (string $package, string $version): string => $package.' '.$version, array_keys($plan->held), $plan->held)), $plan->site));
+        }
+
         if ([] !== $plan->skeletonFiles) {
             $io->section('Files from the skeleton');
             $io->listing(array_map(static fn (array $change): string => \sprintf('%s: %s', $change['path'], match ($change['action']) {

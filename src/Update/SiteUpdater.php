@@ -448,7 +448,7 @@ final readonly class SiteUpdater
             throw new \DomainException('The site is up to date.');
         }
 
-        $operation = $this->operations->start('site.update', $name, ['from' => $plan->quireFrom(), 'to' => $plan->quireTo(), 'packages' => \count($plan->packages)], $channel, $requestedBy);
+        $operation = $this->operations->start($plan->operation, $name, $plan->details ?? ['from' => $plan->quireFrom(), 'to' => $plan->quireTo(), 'packages' => \count($plan->packages)], $channel, $requestedBy);
         $step = $this->stepper($operation, $say);
         $saved = $this->paths->backups($name).'/update-'.date('Ymd-His').'/files';
         $skeletonPaths = array_column($plan->appliedSkeletonFiles(), 'path');
