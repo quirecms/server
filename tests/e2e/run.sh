@@ -796,8 +796,8 @@ yaml_before=$(locked symfony/yaml)
 packages_before=$(count)
 inside 'quire-server site:packages jane 2>&1' > "$logs"/packages.log || true
 check 'it lists what the site came with' "grep -Eq 'quire/core .*with the site' $logs/packages.log"
-check 'a package that isn'\''t Quire'\''s is added only with --third-party' "inside 'quire-server site:packages jane add psr/clock --yes 2>&1' | tr -s ' \\n' ' ' | grep -q 'with --third-party'"
-check 'only Quire extensions and themes are added (Packagist says psr/clock is a library)' "inside 'quire-server site:packages jane add psr/clock --third-party --yes 2>&1' | tr -s ' \\n' ' ' | grep -q 'not a Quire extension or theme' && ! inside 'grep -q psr/clock /srv/quire/sites/jane/composer.json'"
+check 'a package that isn'\''t Quire'\''s is added only with --third-party' "inside 'quire-server site:packages jane add psr/simple-cache --yes 2>&1' | tr -s ' \\n' ' ' | grep -q 'with --third-party'"
+check 'only Quire extensions and themes are added (Packagist says psr/simple-cache is a library)' "inside 'quire-server site:packages jane add psr/simple-cache --third-party --yes 2>&1' | tr -s ' \\n' ' ' | grep -q 'not a Quire extension or theme' && ! inside 'grep -q psr/simple-cache /srv/quire/sites/jane/composer.json'"
 inside 'quire-server site:packages jane add quire/analytics --dry-run 2>&1' > "$logs"/packages-plan.log || true
 check 'the plan shows what it adds, and where from, and changes nothing' "grep -q 'New quire/analytics' $logs/packages-plan.log && grep -q 'New quire/privacy' $logs/packages-plan.log && grep -q 'Nothing changed' $logs/packages-plan.log && [ -z \"\$(locked quire/analytics)\" ]"
 inside 'quire-server site:packages jane add quire/analytics --yes 2>&1' | tee "$logs"/packages-add.log | sed 's/^/    /'
@@ -814,7 +814,8 @@ inside 'docker exec jane-php-1 bin/console quire:extension:disable quire-privacy
 # G1, with Packagist's real releases: the record says quire/analytics is a third party's (as an
 # added acme/reviews would be), and the site runs its older 0.3.0. No update moves it, automatic or not.
 inside "sed -i 's/\"third-party\": false/\"third-party\": true/' /srv/quire/sites/jane/composer.json"
-inside 'docker exec quire-server-agent-1 composer update quire/analytics --with=quire/analytics:0.3.0 --no-install --no-scripts --no-plugins --ignore-platform-req=ext-* --no-interaction -q --working-dir=/srv/quire/sites/jane' 2>&1 | sed 's/^/    /'
+# With Composer in the machine, as the site's owner (the agent has no Composer and no network of its own)
+inside "docker run --rm --user \$(stat -c %u:%g $lock) -e COMPOSER_HOME=/tmp/composer -v /srv/quire/sites/jane:/srv/quire/sites/jane -w /srv/quire/sites/jane composer:2.10.3 update quire/analytics --with=quire/analytics:0.3.0 --no-install --no-scripts --no-plugins --ignore-platform-reqs --no-interaction --no-progress" 2>&1 | sed 's/^/    /'
 check 'the site has the older release of a "third party'\''s" package' "[ \"\$(locked quire/analytics)\" = v0.3.0 ]"
 inside 'quire-server site:update jane --dry-run 2>&1' > "$logs"/packages-held.log || true
 check 'an update holds it where it is, and says how it moves' "grep -q 'Held.*quire/analytics v0.3.0' $logs/packages-held.log && ! grep -Eq '^ *quire/analytics +v0.3.0 +v0.3.1' $logs/packages-held.log"
