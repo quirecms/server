@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Quire\Server\ServerUpdate;
 
+use Quire\Server\Console\ThirdPartySitesCommand;
 use Quire\Server\Process\ProcessResult;
 use Quire\Server\Process\ProcessRunner;
 
@@ -125,6 +126,32 @@ final readonly class ServerStack
     public function version(ServerFolder $folder): string
     {
         return trim($this->in($folder, ['exec', '-T', 'agent', 'bin/console', 'server:version'], 60)->orFail('Asking the agent its version')->output);
+    }
+
+    /**
+     * The managed sites that have third-party packages, as the running agent reads their composer.json
+     * (the updater doesn't mount sites' folders): site => packages.
+     *
+     * @return array<string, list<string>>
+     */
+    public function thirdPartySites(ServerFolder $folder): array
+    {
+        $output = $this->in($folder, ['exec', '-T', 'agent', 'bin/console', ThirdPartySitesCommand::NAME], 120)->orFail('Asking the agent which sites have third-party packages')->output;
+        $sites = json_decode(trim($output), true, 8);
+
+        if (!\is_array($sites)) {
+            throw new \RuntimeException('The agent didn\'t say which sites have third-party packages.');
+        }
+
+        $read = [];
+
+        foreach ($sites as $site => $packages) {
+            if (\is_string($site) && \is_array($packages)) {
+                $read[$site] = array_values(array_filter($packages, \is_string(...)));
+            }
+        }
+
+        return $read;
     }
 
     /**

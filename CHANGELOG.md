@@ -34,12 +34,13 @@ The Docker gate is YorvoGate 0.3.0, a managed site's owner adds Quire extensions
 
 ### Known limits
 
+- **If the update to 0.6 rolls back** (by itself, or with `quire-server update --undo`): 0.5's agent, at its start, writes every running site's Compose files again as 0.5 writes them and brings each site up once more (a few seconds offline each), so its front door reaches every site by the name it uses. A site that fails to start is tried again at each start of the agent and named in its log (`quire-server logs agent`). A site whose domain starts with another site's name and a dash (`jane-blog.example` next to `jane`) has only its 0.6 name until then.
+- **Undoing the update to 0.5** (`quire-server update --undo`) turns off the automatic updates of every site with a third-party package (`site:packages … --third-party`), and names them with the command that turns each on again: 0.5 doesn't hold those packages where they are, and its updates would move them unreviewed. Don't update those sites by hand either until the server runs 0.6 again.
 - A restored copy on Quire before 0.3.2 whose `quire/analytics` is installed but disabled keeps the original's measurement ID in its database (the restore says so): clear it in its admin before enabling the extension. Quire 0.3.2 removes it.
 - A storage adapter of a site's own code that's neither a Flysystem package nor configured as a disk isn't seen by the restore's storage check.
 
 ### Deprecated
 
-- **If the update to 0.6 rolls back** (by itself, or with `quire-server update --undo`): 0.5's agent, at its start, writes every running site's Compose files again as 0.5 writes them and brings each site up once more (a few seconds offline each), so its front door reaches every site by the name it uses. A site that fails to start is tried again at each start of the agent and named in its log (`quire-server logs agent`). A site whose domain starts with another site's name and a dash (`jane-blog.example` next to `jane`) has only its 0.6 name until then.
 - The front door's second name for a site, `<domain>.quire.internal`, kept so that an update rolled back to 0.5 still reaches every site: 0.7 removes it. The scope files the agent writes have no `version` until 0.7, because YorvoGate 0.2.2, which a rollback to 0.5 runs, refuses one.
 
 ## [0.5.2] - 2026-11-10

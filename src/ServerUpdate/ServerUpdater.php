@@ -180,10 +180,16 @@ final readonly class ServerUpdater
     /**
      * Puts back the server as it was before its last update.
      *
-     * @param \Closure(string): void $say
-     *
      * @throws ServerUpdateFailed
      */
+    /**
+     * @return array<string, list<string>> The managed sites with third-party packages, as the running agent says
+     */
+    public function thirdPartySites(): array
+    {
+        return $this->stack->thirdPartySites($this->folder);
+    }
+
     public function undo(ServerBackup $backup, string $channel, string $requestedBy, \Closure $say): void
     {
         $lines = [];

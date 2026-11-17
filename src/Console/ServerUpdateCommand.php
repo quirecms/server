@@ -4,10 +4,13 @@ declare(strict_types=1);
 
 namespace Quire\Server\Console;
 
+use Quire\Server\Registry\UpdatePolicies;
 use Quire\Server\Release\ReleaseVerificationFailed;
 use Quire\Server\Release\Version;
+use Quire\Server\ServerUpdate\ServerBackup;
 use Quire\Server\ServerUpdate\ServerUpdateFailed;
 use Quire\Server\ServerUpdate\ServerUpdater;
+use Quire\Server\Site\SiteName;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Attribute\Option;
 use Symfony\Component\Console\Command\Command;
@@ -34,6 +37,7 @@ final readonly class ServerUpdateCommand
     public function __construct(
         private ServerUpdater $updater,
         private bool $inUpdater,
+        private UpdatePolicies $policies,
     ) {
     }
 
@@ -119,7 +123,7 @@ final readonly class ServerUpdateCommand
     {
         $backup = $this->updater->undoable();
 
-        if (!$backup instanceof \Quire\Server\ServerUpdate\ServerBackup) {
+        if (!$backup instanceof ServerBackup) {
             $io->error('There\'s no update to undo (only the last one can be, for a week).');
 
             return Command::FAILURE;
@@ -141,15 +145,66 @@ final readonly class ServerUpdateCommand
             return Command::SUCCESS;
         }
 
+        // 0.5 doesn't hold third-party packages where they are (G1): their sites' automatic updates go off.
+        $held = $this->holdThirdParty($io, $backup);
+
         try {
             $this->updater->undo($backup, Requester::CHANNEL, Requester::name(), static fn (string $line) => $io->writeln('  '.$line));
         } catch (ServerUpdateFailed $e) {
+            if ($e->restored) {
+                foreach ($held as $site => $policy) {
+                    $this->policies->set(new SiteName($site), $policy);
+                }
+            }
+
             return $this->failed($io, 'Undoing the update failed', $e);
         }
 
         $io->success(\sprintf('It runs as before the update (%s).', $backup->from));
 
+        if ([] !== $held) {
+            $io->warning([
+                \sprintf('The automatic updates of %s are off now: %s doesn\'t hold third-party packages where they are, and would move them unreviewed. Don\'t update them by hand either until the server runs 0.6 again.', implode(', ', array_keys($held)), $backup->from),
+                'Once it does, turn them on again: '.implode('; ', array_map(static fn (string $site, string $policy): string => \sprintf('quire-server site:updates %s %s', $site, $policy), array_keys($held), $held)),
+            ]);
+        }
+
         return Command::SUCCESS;
+    }
+
+    /**
+     * Turns off the automatic updates of every managed site with third-party packages, when the undo
+     * goes back before 0.6 (which holds them, G1).
+     *
+     * @return array<string, string> Site => its policy before
+     */
+    private function holdThirdParty(SymfonyStyle $io, ServerBackup $backup): array
+    {
+        if (version_compare($backup->from, '0.6.0-rc', '>=')) {
+            return [];
+        }
+
+        try {
+            $sites = $this->updater->thirdPartySites();
+        } catch (\Throwable $e) {
+            $io->warning(\sprintf('Which sites have third-party packages couldn\'t be told (%s): %s doesn\'t hold them where they are. Turn off the automatic updates of any site you added one to ("quire-server site:updates <site> off").', $e->getMessage(), $backup->from));
+
+            return [];
+        }
+
+        $held = [];
+
+        foreach (array_keys($sites) as $site) {
+            $name = new SiteName($site);
+            $policy = $this->policies->of($name);
+
+            if (UpdatePolicies::OFF !== $policy) {
+                $this->policies->set($name, UpdatePolicies::OFF);
+                $held[$site] = $policy;
+            }
+        }
+
+        return $held;
     }
 
     private function failed(SymfonyStyle $io, string $what, ServerUpdateFailed $e): int
