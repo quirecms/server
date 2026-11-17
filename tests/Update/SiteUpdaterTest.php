@@ -576,6 +576,32 @@ final class SiteUpdaterTest extends RegistryTestCase
         self::assertGreaterThan($quire, array_search('docker exec --interactive', $this->runner->keys(), true));
     }
 
+    public function testAPackageIsAddedAsAnUpdateIsMade(): void
+    {
+        // "site:packages jane add …": the same release (backup, build, check, rollback), its own name in the log
+        $from = LockTest::lock(['quire/core' => 'v0.1.0']);
+        $to = LockTest::lock(['quire/analytics' => 'v0.1.0', 'quire/core' => 'v0.1.0']);
+        $workspace = $this->root.'/plan-packages';
+        new Filesystem()->mkdir($workspace);
+        $json = '{"require": {"quire/analytics": "^0.1", "quire/core": "^0.1"}, "extra": {"quire-server": {"packages": {"quire/analytics": {"third-party": false}}}}}';
+        $plan = new UpdatePlan($this->name, $workspace, $from, $to, $json, $from->changesTo($to), [], null, true, [], [], UpdatePlanner::siteFiles($this->paths->site($this->name)), [], 'site.packages', ['action' => 'add', 'package' => 'quire/analytics', 'from' => null, 'to' => 'v0.1.0', 'third_party' => false, 'packages' => 1]);
+
+        $this->updater()->update($plan, false, 'cli', 'darko', static fn (): null => null);
+
+        $site = $this->paths->site($this->name);
+        self::assertSame($json, file_get_contents($site.'/composer.json'), 'Its record with it.');
+        self::assertSame($to->content, file_get_contents($site.'/composer.lock'));
+        self::assertSame('FROM 0.1.0', file_get_contents($site.'/Dockerfile'), 'No skeleton file changes.');
+        $logged = $this->operations->latest()[0];
+        self::assertSame(['site.packages', 'succeeded'], [$logged['action'], $logged['status']]);
+        $raw = $this->connection->fetchOne(\sprintf('SELECT parameters FROM %s.operation WHERE id = ?', $this->schema), [$logged['id']]);
+        self::assertIsString($raw);
+        $parameters = json_decode($raw, true);
+        self::assertIsArray($parameters);
+        self::assertSame(['add', 'quire/analytics', false], [$parameters['action'] ?? null, $parameters['package'] ?? null, $parameters['third_party'] ?? null]);
+        self::assertNotNull($this->updates->undoable($this->name), 'Undone with "site:undo", as an update is.');
+    }
+
     public function testAPlanIsAppliedOnlyToTheFilesItWasMadeFrom(): void
     {
         $plan = $this->plan();

@@ -19,6 +19,9 @@ final readonly class UpdatePlan
      * @param array<string, list<array{title: string, cve: ?string, link: ?string, severity: ?string}>> $advisoriesBefore
      * @param array<string, list<array{title: string, cve: ?string, link: ?string, severity: ?string}>> $advisoriesAfter
      * @param string                                                                                    $siteFiles        A hash of the site's composer files when planned: it must not change before it's applied
+     * @param array<string, string>                                                                     $held             Third-party packages kept at their versions (G1): "site:packages" moves them
+     * @param string                                                                                    $operation        What the operation log calls it
+     * @param array<string, bool|float|int|string|null>|null                                            $details          What the operation log records of it (null: an update's, its Quire versions and how many packages)
      */
     public function __construct(
         public SiteName $site,
@@ -33,6 +36,9 @@ final readonly class UpdatePlan
         public array $advisoriesBefore,
         public array $advisoriesAfter,
         public string $siteFiles,
+        public array $held = [],
+        public string $operation = 'site.update',
+        public ?array $details = null,
     ) {
     }
 
@@ -55,6 +61,14 @@ final readonly class UpdatePlan
     public function appliedSkeletonFiles(): array
     {
         return array_values(array_filter($this->skeletonFiles, static fn (array $change): bool => SkeletonFiles::CONFLICT !== $change['action']));
+    }
+
+    /**
+     * @return list<array{package: string, version: string, from: ?string, to: ?string}> Packages at the same version as other code (a moved tag)
+     */
+    public function republished(): array
+    {
+        return $this->from->republished($this->to);
     }
 
     public function quireFrom(): ?string

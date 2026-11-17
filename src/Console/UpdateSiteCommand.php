@@ -305,6 +305,18 @@ final readonly class UpdateSiteCommand
             }
         }
 
+        foreach ($plan->republished() as $change) {
+            $io->writeln(\sprintf('  <comment>Re-published</comment> %s %s is other code at the same version: commit %s, was %s (its tag was moved).', $change['package'], $change['version'], $change['to'] ?? '?', $change['from'] ?? '?'));
+        }
+
+        foreach (array_intersect_key($plan->advisoriesAfter, $plan->held) as $package => $advisories) {
+            $io->writeln(\sprintf('  <comment>Held despite a known vulnerability</comment> %s %s: %s. "site:packages %s update %s --third-party" moves it, when a release fixes it.', $package, $plan->held[$package], implode(', ', array_column($advisories, 'title')), $plan->site, $package));
+        }
+
+        if ([] !== $plan->held) {
+            $io->writeln(\sprintf('  <comment>Held</comment> %s: third-party packages and what only they need don\'t move in updates; "site:packages %s update <package> --third-party" moves one.', implode(', ', array_map(static fn (string $package, string $version): string => $package.' '.$version, array_keys($plan->held), $plan->held)), $plan->site));
+        }
+
         if ([] !== $plan->skeletonFiles) {
             $io->section('Files from the skeleton');
             $io->listing(array_map(static fn (array $change): string => \sprintf('%s: %s', $change['path'], match ($change['action']) {
