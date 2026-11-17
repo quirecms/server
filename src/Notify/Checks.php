@@ -13,6 +13,9 @@ use Quire\Server\Registry\Schema;
  */
 final readonly class Checks
 {
+    /** The checks of backups off the server */
+    public const string BACKUPS = 'backups.';
+
     public function __construct(
         private Connection $connection,
         private string $schema = Schema::NAME,
@@ -41,12 +44,16 @@ final readonly class Checks
     /**
      * @return list<Problem> Those that fail, as problems
      */
-    public function problems(): array
+    public function problems(bool $backups = true): array
     {
-        return array_map(
+        return array_values(array_map(
             static fn (array $row): Problem => new Problem('check:'.(\is_string($row['name']) ? $row['name'] : ''), \is_string($row['summary']) ? $row['summary'] : '', \is_string($row['advice']) ? $row['advice'] : ''),
-            $this->connection->fetchAllAssociative(\sprintf('SELECT name, summary, advice FROM %s.check_result WHERE failing ORDER BY name', $this->schema())),
-        );
+            array_filter(
+                $this->connection->fetchAllAssociative(\sprintf('SELECT name, summary, advice FROM %s.check_result WHERE failing ORDER BY name', $this->schema())),
+                // Those of backups off the server only while they're set up
+                static fn (array $row): bool => $backups || !str_starts_with(\is_string($row['name']) ? $row['name'] : '', self::BACKUPS),
+            ),
+        ));
     }
 
     /** A check that no longer applies (backups no longer set up) */

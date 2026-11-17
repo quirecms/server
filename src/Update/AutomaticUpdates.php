@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Quire\Server\Update;
 
 use Quire\Server\Docker\RuntimeImages;
+use Quire\Server\Notify\Checks;
 use Quire\Server\Registry\RuntimeBuilds;
 use Quire\Server\Registry\SiteGit;
 use Quire\Server\Registry\SiteRegistry;
@@ -40,6 +41,9 @@ final readonly class AutomaticUpdates
     public const string SKIPPED = 'skipped';
     public const string FAILED = 'failed';
 
+    /** The check that says a site's update waits for a person: a package re-published under its version */
+    public const string REPUBLISHED_CHECK = 'updates.republished.';
+
     public function __construct(
         private UpdatePolicies $policies,
         private SiteRegistry $registry,
@@ -51,6 +55,7 @@ final readonly class AutomaticUpdates
         private RuntimeBuilds $builds,
         private ServerPaths $paths,
         private string $hour = '3',
+        private ?Checks $checks = null,
     ) {
     }
 
@@ -122,11 +127,20 @@ final readonly class AutomaticUpdates
 
         $registered = $this->registry->get($site);
         $skip = self::reasonToSkip($plan, $policy, $registered instanceof Site ? $this->releases->check($plan, $registered) : null);
+        // Code changed under its version needs a person: told until an update takes it, or the tag comes back
+        $republished = self::republishedProblem($plan);
+        $check = self::REPUBLISHED_CHECK.$site->value;
+
+        if (null !== $republished) {
+            $this->checks?->record($check, true, $republished[0], $republished[1]);
+        } elseif (null !== $this->checks?->get($check)) {
+            $this->checks->forget($check);
+        }
 
         if (null !== $skip) {
             $plan->discard();
 
-            return [$plan->changesAnything() ? self::SKIPPED : self::UP_TO_DATE, $skip];
+            return [$plan->changesAnything() || null !== $republished ? self::SKIPPED : self::UP_TO_DATE, $skip];
         }
 
         try {
@@ -223,6 +237,29 @@ final readonly class AutomaticUpdates
     }
 
     /**
+     * What to tell when an update would take a package re-published under its version (its tag moved):
+     * null when it wouldn't.
+     *
+     * @return array{string, string}|null Its summary and its advice
+     */
+    public static function republishedProblem(UpdatePlan $plan): ?array
+    {
+        if ([] === $plan->republished()) {
+            return null;
+        }
+
+        return [
+            \sprintf('The automatic update of %s waits for you: %s.', $plan->site, self::republishedText($plan)),
+            \sprintf('A version is meant to be fixed code: one re-published may be a maintainer\'s quiet fix, or other code under a trusted version. Look at the commits, then "quire-server site:update %s --accept-republished" takes it; until then, nothing of the site moves by itself.', $plan->site),
+        ];
+    }
+
+    private static function republishedText(UpdatePlan $plan): string
+    {
+        return implode('; ', array_map(static fn (array $change): string => \sprintf('%s %s was re-published as other code (commit %s, was %s)', $change['package'], $change['version'], $change['to'] ?? '?', $change['from'] ?? '?'), $plan->republished()));
+    }
+
+    /**
      * Why an automatic update mustn't be made (or null: it may), from its plan, the site's policy and
      * what the release feed says of it (null when the site isn't in the registry).
      *
@@ -231,6 +268,8 @@ final readonly class AutomaticUpdates
     public static function reasonToSkip(UpdatePlan $plan, string $policy, ?array $check): ?string
     {
         return match (true) {
+            // Before anything else: other code under a version nobody changed is for a person to look at.
+            [] !== $plan->republished() => \sprintf('%s: "site:update %s" shows it, and --accept-republished takes it once you\'ve looked', self::republishedText($plan), $plan->site),
             !$plan->changesAnything() => 'nothing to update',
             UpdatePolicies::OFF === $policy => 'its automatic updates are off',
             UpdatePolicies::SECURITY === $policy && [] === $plan->fixedAdvisories() && [] !== array_intersect_key($plan->advisoriesBefore, $plan->held) => \sprintf('a third-party package it added has a known vulnerability (%s): those move only with "site:packages %s update <package> --third-party"', implode(', ', array_keys(array_intersect_key($plan->advisoriesBefore, $plan->held))), $plan->site),

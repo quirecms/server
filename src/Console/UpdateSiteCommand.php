@@ -43,6 +43,10 @@ use Symfony\Component\Console\Style\SymfonyStyle;
         Files the site got from the skeleton (Dockerfile, Compose files, FrankenPHP's) follow the new
         version, unless the site edited them and the new version changes them too: then the update
         stops, to merge them by hand, or keep the site's own with --keep-edited-files.
+
+        A package re-published as other code under the same version (its tag moved) is shown, and the
+        update asks before taking it; with --yes, or with --all, it doesn't take it unless
+        --accept-republished. The night never takes one: it waits, and says so ("quire-server status").
         HELP,
 )]
 final readonly class UpdateSiteCommand
@@ -74,11 +78,13 @@ final readonly class UpdateSiteCommand
         bool $all = false,
         #[Option(description: 'With --all: what each site\'s automatic updates would do tonight, now')]
         bool $automatic = false,
+        #[Option(description: 'Take packages re-published under the same version as other code (their tag moved), once you\'ve looked at them')]
+        bool $acceptRepublished = false,
     ): int {
         if ($all) {
             return null !== $name || null !== $to
                 ? $this->invalid($io, '--all updates every site within its own constraints: give no site, and no --to.')
-                : ($automatic ? $this->automatic($io) : $this->all($io, $dryRun, $keepEditedFiles, $yes));
+                : ($automatic ? $this->automatic($io) : $this->all($io, $dryRun, $keepEditedFiles, $yes, $acceptRepublished));
         }
 
         if (null === $name || $automatic) {
@@ -141,6 +147,13 @@ final readonly class UpdateSiteCommand
             return Command::FAILURE;
         }
 
+        if (!$dryRun && [] !== $plan->republished() && !$acceptRepublished && ($yes || !$io->confirm('It takes the packages above re-published as other code under the same version: take them?', false))) {
+            $plan->discard();
+            $io->error(\sprintf('Nothing changed: the update would take packages re-published as other code under the same version. Look at their commits; then "quire-server site:update %s --accept-republished" takes them.', $site));
+
+            return Command::FAILURE;
+        }
+
         if ($dryRun || (!$yes && !$io->confirm('Update the site?', false))) {
             $plan->discard();
             $io->writeln('Nothing changed.');
@@ -174,7 +187,7 @@ final readonly class UpdateSiteCommand
      * Every site the server updates, one after the other: each one's plan shown, then made, unless it
      * changes nothing, conflicts with files the site edited, or is a release this server can't run.
      */
-    private function all(SymfonyStyle $io, bool $dryRun, bool $keepEdited, bool $yes): int
+    private function all(SymfonyStyle $io, bool $dryRun, bool $keepEdited, bool $yes, bool $acceptRepublished): int
     {
         $sites = $this->policies->updatable();
 
@@ -194,7 +207,7 @@ final readonly class UpdateSiteCommand
 
         foreach ($sites as $site) {
             $io->section(\sprintf('"%s"', $site));
-            $outcomes[] = [$site->value, ...$this->allOne($io, $site, $dryRun, $keepEdited)];
+            $outcomes[] = [$site->value, ...$this->allOne($io, $site, $dryRun, $keepEdited, $acceptRepublished)];
         }
 
         $io->table(['Site', 'Outcome', ''], $outcomes);
@@ -205,7 +218,7 @@ final readonly class UpdateSiteCommand
     /**
      * @return array{string, string} The outcome, and why
      */
-    private function allOne(SymfonyStyle $io, SiteName $site, bool $dryRun, bool $keepEdited): array
+    private function allOne(SymfonyStyle $io, SiteName $site, bool $dryRun, bool $keepEdited, bool $acceptRepublished): array
     {
         try {
             $this->updater->prepare($site);
@@ -226,6 +239,7 @@ final readonly class UpdateSiteCommand
             !$plan->changesAnything() => AutomaticUpdates::UP_TO_DATE,
             null !== $check && [] !== $check['blocked'] => implode(' ', $check['blocked']),
             [] !== $plan->conflicts() && !$keepEdited => 'it edited files of the skeleton the new version changes',
+            [] !== $plan->republished() && !$acceptRepublished => 'it would take packages re-published as other code under the same version (--accept-republished, once you\'ve looked)',
             $dryRun => 'only shown (--dry-run)',
             default => null,
         };
