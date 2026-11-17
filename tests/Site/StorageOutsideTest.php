@@ -62,10 +62,16 @@ final class StorageOutsideTest extends TestCase
         self::assertSame(null === $found ? [] : [$found], SiteFiles::storageOutsideInCode($this->directory));
     }
 
-    public function testTheS3AdapterInItsLock(): void
+    public function testAnAdapterForRemoteStorageInItsLock(): void
     {
-        file_put_contents($this->directory.'/composer.lock', "{\"packages\": [\n    {\n        \"name\": \"league/flysystem-async-aws-s3\",\n        \"version\": \"3.29.0\"\n    }\n]}");
+        file_put_contents($this->directory.'/composer.lock', (string) json_encode(['packages' => array_map(static fn (string $name): array => ['name' => $name, 'version' => '3.29.0'], [
+            'league/flysystem', 'league/flysystem-local', 'league/flysystem-memory', 'league/flysystem-async-aws-s3', 'league/flysystem-sftp-v3', 'league/flysystem-azure-blob-storage',
+        ])], \JSON_PRETTY_PRINT));
 
-        self::assertSame(['its composer.lock has league/flysystem-async-aws-s3, the S3 adapter'], SiteFiles::storageOutsideInCode($this->directory));
+        self::assertSame([
+            'its composer.lock has league/flysystem-async-aws-s3, an adapter for storage outside the site',
+            'its composer.lock has league/flysystem-sftp-v3, an adapter for storage outside the site',
+            'its composer.lock has league/flysystem-azure-blob-storage, an adapter for storage outside the site',
+        ], SiteFiles::storageOutsideInCode($this->directory), 'Any Flysystem adapter but the local and memory ones (R2).');
     }
 }

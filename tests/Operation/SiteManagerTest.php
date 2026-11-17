@@ -514,10 +514,11 @@ final class SiteManagerTest extends RegistryTestCase
             $said[] = $step;
         });
 
-        $set = array_values(array_filter($this->commands, static fn (array $command): bool => 'quire:settings:set' === ($command[12] ?? null)));
-        self::assertCount(1, $set);
-        self::assertSame(['quire-analytics.ga4_id', ''], [$set[0][13] ?? null, $set[0][14] ?? null]);
-        self::assertGreaterThan(array_search('quire:restore', $this->consoles(), true), array_search('quire:settings:set', $this->consoles(), true), 'After its database is the backup\'s.');
+        $cleared = array_values(array_filter($this->commands, static fn (array $command): bool => 'quire:settings:clear' === ($command[12] ?? null)));
+        self::assertCount(1, $cleared);
+        self::assertSame('quire-analytics.ga4_id', $cleared[0][13] ?? null);
+        self::assertGreaterThan(array_search('quire:restore', $this->consoles(), true), array_search('quire:settings:clear', $this->consoles(), true), 'After its database is the backup\'s.');
+        self::assertNotContains('quire:settings:set', $this->consoles());
         self::assertContains('Its Google Analytics is off, so its visits don\'t count as the original\'s: set its measurement ID in its admin (Analytics), or restore with --keep-analytics to keep it', $said);
     }
 
@@ -527,7 +528,7 @@ final class SiteManagerTest extends RegistryTestCase
         $this->about(['extensions' => [['id' => 'quire-analytics', 'package' => 'quire/analytics', 'status' => 'enabled']]]);
         $this->manager()->restoreAsNew($this->name, $this->request()->domains, $code, $backup, [], 'cli', 'darko', static fn (): null => null, keepAnalytics: true);
 
-        self::assertNotContains('quire:settings:set', $this->consoles());
+        self::assertNotContains('quire:settings:clear', $this->consoles());
     }
 
     public function testACopyWithoutAnalyticsHasNothingToTurnOff(): void
@@ -535,27 +536,37 @@ final class SiteManagerTest extends RegistryTestCase
         [$code, $backup] = $this->backedUpSite();
         $this->manager()->restoreAsNew($this->name, $this->request()->domains, $code, $backup, [], 'cli', 'darko', static fn (): null => null);
 
-        self::assertNotContains('quire:settings:set', $this->consoles());
+        self::assertNotContains('quire:settings:clear', $this->consoles());
     }
 
-    public function testACopyWhoseAnalyticsIsntEnabledIsToldItsIdStays(): void
+    public function testACopyWhoseAnalyticsIsntEnabledLosesItsIdToo(): void
     {
-        // Its settings aren't declared while it's disabled, so the ID can't be cleared from here.
+        // Quire 0.3.2's quire:settings:clear removes it, declared or not: enabled later, it has none.
         [$code, $backup] = $this->backedUpSite();
-        $this->about(['extensions' => [['id' => 'quire-analytics', 'package' => 'quire/analytics', 'status' => 'disabled']]], settings: 'No setting "quire-analytics.ga4_id" is declared. Declare it with Extend\Settings::define() in extend.php.');
+        $this->about(['extensions' => [['id' => 'quire-analytics', 'package' => 'quire/analytics', 'status' => 'disabled']]]);
+        $this->manager()->restoreAsNew($this->name, $this->request()->domains, $code, $backup, [], 'cli', 'darko', static fn (): null => null);
+
+        self::assertContains('quire:settings:clear', $this->consoles());
+    }
+
+    public function testBefore032ACopyWhoseAnalyticsIsntEnabledIsToldItsIdStays(): void
+    {
+        // No quire:settings:clear, and its settings aren't declared while it's disabled.
+        [$code, $backup] = $this->backedUpSite();
+        $this->about(['extensions' => [['id' => 'quire-analytics', 'package' => 'quire/analytics', 'status' => 'disabled']]], settings: 'No setting "quire-analytics.ga4_id" is declared. Declare it with Extend\Settings::define() in extend.php.', clear: 'Command "quire:settings:clear" is not defined.');
         $said = [];
         $site = $this->manager()->restoreAsNew($this->name, $this->request()->domains, $code, $backup, [], 'cli', 'darko', static function (string $step) use (&$said): void {
             $said[] = $step;
         });
 
         self::assertSame(Site::RUNNING, $site->status);
-        self::assertContains('Its Google Analytics extension isn\'t enabled, so its measurement ID (the original\'s, if it had one) stays in its database: clear it in its admin before enabling the extension', $said);
+        self::assertContains('Its Google Analytics extension isn\'t enabled, so its measurement ID (the original\'s, if it had one) stays in its database: clear it in its admin before enabling the extension (Quire 0.3.2 and later remove it here)', $said);
     }
 
     public function testACopyWhoseAnalyticsCantBeTurnedOffIsntMade(): void
     {
         [$code, $backup] = $this->backedUpSite();
-        $this->about(['extensions' => [['id' => 'quire-analytics', 'package' => 'quire/analytics', 'status' => 'enabled']]], settings: 'The database is read-only.');
+        $this->about(['extensions' => [['id' => 'quire-analytics', 'package' => 'quire/analytics', 'status' => 'enabled']]], clear: 'The database is read-only.');
 
         try {
             $this->manager()->restoreAsNew($this->name, $this->request()->domains, $code, $backup, [], 'cli', 'darko', static fn (): null => null);
@@ -585,6 +596,9 @@ final class SiteManagerTest extends RegistryTestCase
         }
 
         self::assertNotContains('quire:restore', $this->consoles(), 'Nothing of the backup was written anywhere.');
+        $ups = array_values(array_filter($this->commands, static fn (array $command): bool => 'up' === ($command[8] ?? null)));
+        self::assertCount(1, $ups, 'Its web container only: its workers never started (R1).');
+        self::assertSame('php', array_last($ups[0]));
         $this->assertNothingLeft();
     }
 
@@ -605,14 +619,21 @@ final class SiteManagerTest extends RegistryTestCase
     {
         // Before 0.3.2, quire:about names no disks: the S3 adapter in its lock says it may have one.
         [$code, $backup] = $this->backedUpSite();
-        file_put_contents($code.'/composer.lock', '{"packages": [{"name": "league/flysystem-async-aws-s3", "version": "3.29.0"}]}');
+        file_put_contents($code.'/composer.lock', '{"packages": [{"name": "league/flysystem", "version": "3.30.0"}, {"name": "league/flysystem-aws-s3-v3", "version": "3.29.0"}]}');
         $this->script['docker compose exec'] = static fn (array $command): ProcessResult => match ($command[12] ?? '') {
             'quire:about' => self::ok($command, '{"contract": 1, "extensions": []}'),
             default => self::ok($command, ''),
         };
 
-        $this->expectExceptionMessageIsOrContains('its composer.lock has league/flysystem-async-aws-s3, the S3 adapter');
-        $this->manager()->restoreAsNew($this->name, $this->request()->domains, $code, $backup, [], 'cli', 'darko', static fn (): null => null);
+        try {
+            $this->manager()->restoreAsNew($this->name, $this->request()->domains, $code, $backup, [], 'cli', 'darko', static fn (): null => null);
+            self::fail('It was made.');
+        } catch (\DomainException $e) {
+            self::assertStringContainsString('its composer.lock has league/flysystem-aws-s3-v3, an adapter for storage outside the site', $e->getMessage());
+        }
+
+        self::assertSame([], array_values(array_filter($this->commands, static fn (array $command): bool => \in_array($command[8] ?? null, ['build', 'up'], true))), 'Before anything of it is built or runs (R1).');
+        $this->assertNothingLeft();
     }
 
     public function testARestoreAsANewSiteThatFailsUndoesEverything(): void
@@ -970,7 +991,7 @@ final class SiteManagerTest extends RegistryTestCase
         $this->about(['extensions' => [['id' => 'quire-analytics', 'package' => 'quire/analytics', 'status' => 'enabled']], 'storage' => [['name' => 'photos', 'adapter' => 's3', 'public' => true, 'location' => 's3: jane-files', 'in_use' => true]]]);
 
         $restored = $manager->restoreRemoved($this->name, [], 'cli', 'darko', static fn (): null => null);
-        self::assertNotContains('quire:settings:set', $this->consoles(), 'Its analytics as it was.');
+        self::assertNotContains('quire:settings:clear', $this->consoles(), 'Its analytics as it was.');
 
         self::assertSame(Site::RUNNING, $restored['site']->status);
         self::assertSame(['jane.example', 'www.jane.example'], array_map(static fn (Domain $domain): string => $domain->value, $restored['site']->domains), 'As it had them, the main one first.');
@@ -1664,16 +1685,17 @@ final class SiteManagerTest extends RegistryTestCase
 
     /**
      * What the restored site's quire:about says, over a site with no extension on its own disks; and
-     * what quire:settings:set answers (null: it sets it).
+     * what quire:settings:clear and quire:settings:set answer (null: done).
      *
      * @param array<string, mixed> $about
      */
-    private function about(array $about, ?string $settings = null): void
+    private function about(array $about, ?string $settings = null, ?string $clear = null): void
     {
         $report = (string) json_encode([...['contract' => 1, 'extensions' => [], 'storage' => []], ...$about]);
         $this->script['docker compose exec'] = static fn (array $command): ProcessResult => match ($command[12] ?? '') {
             'quire:about' => self::ok($command, $report),
             'quire:settings:set' => null === $settings ? self::ok($command, '') : new ProcessResult(self::strings($command), 1, '', $settings),
+            'quire:settings:clear' => null === $clear ? self::ok($command, '') : new ProcessResult(self::strings($command), 1, '', $clear),
             default => self::ok($command, ''),
         };
     }

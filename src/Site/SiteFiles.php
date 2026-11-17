@@ -39,6 +39,9 @@ final readonly class SiteFiles
 
     public const string EDGE_SUFFIX = '.quire.internal';
 
+    /** Flysystem's packages that keep files on the site's own disks */
+    private const array LOCAL_FLYSYSTEM = ['league/flysystem-local', 'league/flysystem-memory'];
+
     /**
      * The first label of a site's name on its link: "edge.<domain>.quire.internal". The Docker gate
      * gives an alias to the site whose prefix ("<project>-") it starts with (YorvoGate 0.3), and a site's
@@ -295,18 +298,32 @@ final readonly class SiteFiles
     }
 
     /**
-     * The same from a site's code, for a Quire whose quire:about doesn't say (before 0.3.2): the S3
-     * adapter's package in its lock, or a disk adapter other than "local" in its configuration.
+     * The same from a site's code, before anything of it runs, and for a Quire whose quire:about doesn't
+     * say (before 0.3.2): a remote disk needs an adapter's code, so any Flysystem package in its lock but
+     * Flysystem itself and its local and memory adapters counts, and so does a disk adapter other than
+     * "local" in its configuration. A storage adapter of the site's own code, outside Flysystem's
+     * packages and not configured as a disk, isn't seen.
      *
      * @return list<string> What says so
      */
     public static function storageOutsideInCode(string $directory): array
     {
         $found = [];
-        $lock = @file_get_contents($directory.'/composer.lock');
+        $lock = json_decode((string) @file_get_contents($directory.'/composer.lock', length: 16_777_216), true, 64);
+        $names = [];
 
-        if (\is_string($lock) && 1 === preg_match('#"name"\s*:\s*"league/flysystem-async-aws-s3"#', $lock)) {
-            $found[] = 'its composer.lock has league/flysystem-async-aws-s3, the S3 adapter';
+        foreach (['packages', 'packages-dev'] as $section) {
+            foreach (\is_array($lock) && \is_array($lock[$section] ?? null) ? $lock[$section] : [] as $package) {
+                if (\is_array($package) && \is_string($package['name'] ?? null)) {
+                    $names[] = $package['name'];
+                }
+            }
+        }
+
+        foreach (array_unique($names) as $package) {
+            if (str_starts_with($package, 'league/flysystem-') && !\in_array($package, self::LOCAL_FLYSYSTEM, true)) {
+                $found[] = \sprintf('its composer.lock has %s, an adapter for storage outside the site', $package);
+            }
         }
 
         $files = [$directory.'/extend.php'];

@@ -169,7 +169,10 @@ final readonly class Compose
      *
      * @param (\Closure(string): void)|null $output
      */
-    public function up(SiteProject $project, ?\Closure $output = null): void
+    /**
+     * @param list<string> $services Only these (none: all of them), e.g. a copy's web container before its workers
+     */
+    public function up(SiteProject $project, ?\Closure $output = null, array $services = []): void
     {
         $this->check($project);
         // Its own network moves to its addresses (a site of a release before D-34, or adopted): Compose
@@ -184,7 +187,7 @@ final readonly class Compose
         }
 
         $recreate = $this->moves($project) || true === $unhardened ? ['--force-recreate'] : [];
-        $this->compose($project, ['up', '--detach', '--wait', '--wait-timeout', '600', '--remove-orphans', '--no-build', ...$recreate], timeout: 900, output: $output)->orFail('Starting the site');
+        $this->compose($project, ['up', '--detach', '--wait', '--wait-timeout', '600', '--remove-orphans', '--no-build', ...$recreate, ...$services], timeout: 900, output: $output)->orFail('Starting the site');
     }
 
     /**

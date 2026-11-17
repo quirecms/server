@@ -350,6 +350,9 @@ final readonly class SiteManager
                 $this->files->writeOverride($directory, $name, $domains, Site::SHARED_DATABASE, $subnets, $this->otherProjects($name));
                 $project = $this->project($name, $domains, $name->value, Site::SHARED_DATABASE);
 
+                // Before anything of it runs: what its code says of where its files are (R1)
+                $this->ensureOwnStorage(SiteFiles::storageOutsideInCode($directory), $sharedStorage, $operation, $say);
+
                 $step('Checking and building it (a few minutes)');
                 // Undone after its containers (in reverse): its builder and cache, and its scope on the gate
                 $undo[] = fn () => $this->compose->forget($project->name());
@@ -357,11 +360,17 @@ final readonly class SiteManager
                 $this->compose->build($project, Progress::of($operation->output(...), $say));
 
                 $step('Starting it');
-                $this->compose->up($project, $operation->output(...));
+                // Its web container first, no worker or scheduler, until where its files are is known:
+                // its migrations run there, then its own quire:about says (Quire 0.3.2 and later).
+                $this->compose->up($project, $operation->output(...), [self::PHP]);
                 $this->ensureContractKept($project);
-                // Before its files are restored: there, on the original's bucket
                 $about = $this->about($project);
-                $this->ensureOwnStorage($directory, $about, $sharedStorage, $operation, $say);
+
+                if (\is_array($about) && \is_array($about['storage'] ?? null)) {
+                    $this->ensureOwnStorage(SiteFiles::storageOutside($about['storage']), $sharedStorage, $operation, $say);
+                }
+
+                $this->compose->up($project, $operation->output(...));
 
                 $step('Restoring its database and files from the backup');
                 $this->compose->exec($project, self::PHP, ['bin/console', 'quire:restore', '-', '--force', '--no-interaction'], $operation->output(...), 3600, $backup)->orFail('Restoring the backup');
@@ -1121,19 +1130,15 @@ final readonly class SiteManager
     }
 
     /**
-     * Refuses a copy whose stored files are on storage outside the site, unless asked: its disks as its
-     * quire:about says (Quire 0.3.2 and later), or, from a Quire that doesn't say, what its code holds
-     * (the S3 adapter's package in its lock, or a disk's adapter other than "local" in its config).
+     * Refuses a copy whose stored files are on storage outside the site, unless asked: as its code says
+     * before anything of it runs, and as its quire:about says (Quire 0.3.2 and later) before its workers
+     * start and its files are restored.
      *
-     * @param array<mixed>|null      $about
+     * @param list<string>           $outside What says so
      * @param \Closure(string): void $say
      */
-    private function ensureOwnStorage(string $directory, ?array $about, bool $shared, Operation $operation, \Closure $say): void
+    private function ensureOwnStorage(array $outside, bool $shared, Operation $operation, \Closure $say): void
     {
-        $outside = \is_array($about) && \is_array($about['storage'] ?? null)
-            ? SiteFiles::storageOutside($about['storage'])
-            : SiteFiles::storageOutsideInCode($directory);
-
         if ([] === $outside) {
             return;
         }
@@ -1163,7 +1168,12 @@ final readonly class SiteManager
             return;
         }
 
-        $result = $this->compose->exec($project, self::PHP, ['bin/console', 'quire:settings:set', self::ANALYTICS_ID, '', '--no-interaction'], $operation->output(...), 120);
+        // Quire 0.3.2 and later remove it whether the extension is enabled or not.
+        $result = $this->compose->exec($project, self::PHP, ['bin/console', 'quire:settings:clear', self::ANALYTICS_ID, '--no-interaction'], $operation->output(...), 120);
+
+        if (!$result->successful() && str_contains($result->output.$result->errorOutput, '"quire:settings:clear" is not defined')) {
+            $result = $this->compose->exec($project, self::PHP, ['bin/console', 'quire:settings:set', self::ANALYTICS_ID, '', '--no-interaction'], $operation->output(...), 120);
+        }
 
         if (!$result->successful()) {
             $undeclared = str_contains($result->output.$result->errorOutput, \sprintf('No setting "%s"', self::ANALYTICS_ID));
@@ -1172,9 +1182,9 @@ final readonly class SiteManager
                 return; // Its Quire has no such setting: no analytics.
             }
 
-            // Installed, not enabled: its settings aren't declared, and its ID stays in the database.
+            // Before 0.3.2, installed and not enabled: its settings aren't declared, and its ID stays.
             if ($undeclared && 'enabled' !== ($analytics[0]['status'] ?? null)) {
-                $say('Its Google Analytics extension isn\'t enabled, so its measurement ID (the original\'s, if it had one) stays in its database: clear it in its admin before enabling the extension');
+                $say('Its Google Analytics extension isn\'t enabled, so its measurement ID (the original\'s, if it had one) stays in its database: clear it in its admin before enabling the extension (Quire 0.3.2 and later remove it here)');
                 $operation->line('Its Google Analytics: not enabled, its ID kept');
 
                 return;
