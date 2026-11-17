@@ -814,7 +814,9 @@ inside 'docker exec jane-php-1 bin/console quire:extension:disable quire-privacy
 # G1, with Packagist's real releases: the record says quire/analytics is a third party's (as an
 # added acme/reviews would be), and the site runs its older 0.3.0. No update moves it, automatic or not.
 inside "sed -i 's/\"third-party\": false/\"third-party\": true/' /srv/quire/sites/jane/composer.json"
-# With Composer in the machine, as the site's owner (the agent has no Composer and no network of its own)
+# Its constraint widened, as an owner's "acme/reviews:^0.3" would be (site:packages added it as ^0.3.1),
+# then the older release, with Composer in the machine, as the site's owner (the agent has none)
+inside "sed -i 's#\"quire/analytics\": \"[^\"]*\"#\"quire/analytics\": \"^0.3\"#' /srv/quire/sites/jane/composer.json"
 inside "docker run --rm --user \$(stat -c %u:%g $lock) -e COMPOSER_HOME=/tmp/composer -v /srv/quire/sites/jane:/srv/quire/sites/jane -w /srv/quire/sites/jane composer:2.10.3 update quire/analytics --with=quire/analytics:0.3.0 --no-install --no-scripts --no-plugins --ignore-platform-reqs --no-interaction --no-progress" 2>&1 | sed 's/^/    /'
 check 'the site has the older release of a "third party'\''s" package' "[ \"\$(locked quire/analytics)\" = v0.3.0 ]"
 inside 'quire-server site:update jane --dry-run 2>&1' > "$logs"/packages-held.log || true
