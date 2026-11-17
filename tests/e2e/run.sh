@@ -1034,7 +1034,7 @@ check 'its state file is the gate'\''s own: root'\''s, readable by it only' "[ \
 check 'the gate says nothing wrong with its state file' "! inside 'docker logs quire-server-gate-1 2>&1' | grep -i 'state file'"
 check 'all three are served on this checkout, the colliding pair too' 'served jane && served jane-blog && served kim'
 check 'jane-blog has only its name "edge.jane-blog.test" on its link (the gate gives "jane-blog.…" to jane)' "names jane-blog-php-1 | grep -q 'quire-link-jane-blog:[^ ]*edge.jane-blog.test.quire.internal' && ! names jane-blog-php-1 | grep -Eq '[:,]jane-blog.test.quire.internal'"
-check 'jane and kim have both names, for a rollback' "names jane-php-1 | grep -q 'edge.jane.test.quire.internal' && names jane-php-1 | grep -Eq '[:,]jane.test.quire.internal' && names kim-php-1 | grep -Eq '[:,]kim.test.quire.internal'"
+check 'jane and kim have both names, for a rollback' "names jane-php-1 | grep -q 'edge.jane.test.quire.internal' && names jane-php-1 | grep -Eq '[:,]jane.test.quire.internal' && names kim-php-1 | grep -q 'edge.kim.test.quire.internal' && names kim-php-1 | grep -Eq '[:,]kim.test.quire.internal'"
 check 'every container was made again under the gate (Docker'\''s built-in seccomp profile)' "[ -z \"\$(inside \"docker ps -q --filter label=com.quirecms.server.site | xargs docker inspect --format '{{.Name}} {{json .HostConfig.SecurityOpt}}'\" | grep -v seccomp=builtin)\" ]"
 check 'a site'\''s container runs its image by ID, as the gate names it to Docker' "inside \"docker inspect jane-php-1 --format '{{.Config.Image}}'\" | grep -Eq '^(quire-sites/jane/php-prod@)?sha256:[0-9a-f]{64}\$'"
 check 'a site'\''s own command goes through its scope' "inside 'quire-server site:console jane-blog quire:about 2>&1' | grep -q 'Quire'"

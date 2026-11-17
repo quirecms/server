@@ -4,6 +4,10 @@ All notable changes to Quire Server. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-17
+
+The Docker gate is YorvoGate 0.3.0, a managed site's owner adds Quire extensions and themes (`site:packages`), and a site restored as a new one leaves the original's email, analytics and storage alone.
+
 ### Security
 
 - **The Docker gate is YorvoGate 0.3.0** (pinned by its digest, its signature checked), which fixes flaws of 0.2.2 that apply to this server. A site could run a container from another site's image by the image's ID: High here, because the server protects sites' images (`protected_images`). A token taken off a scope kept working until the scope's file changed size. A request could crash the gate for every site (GO-2026-6859). The gate now also writes Docker's built-in seccomp profile and a private cgroup namespace into every site container. At the agent's start after the update, every site's containers that don't have them are made again (a few seconds offline each).
@@ -215,7 +219,8 @@ The first release.
 - Sites deployed from a Git repository.
 - Signed releases: images and files checked before installing.
 
-[Unreleased]: https://github.com/quirecms/server/compare/v0.5.2...HEAD
+[Unreleased]: https://github.com/quirecms/server/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/quirecms/server/compare/v0.5.2...v0.6.0
 [0.5.2]: https://github.com/quirecms/server/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/quirecms/server/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/quirecms/server/compare/v0.4.0...v0.5.0
