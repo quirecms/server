@@ -129,12 +129,9 @@ final readonly class AutomaticUpdates
         $skip = self::reasonToSkip($plan, $policy, $registered instanceof Site ? $this->releases->check($plan, $registered) : null);
         // Code changed under its version needs a person: told until an update takes it, or the tag comes back
         $republished = self::republishedProblem($plan);
-        $check = self::REPUBLISHED_CHECK.$site->value;
 
-        if (null !== $republished) {
-            $this->checks?->record($check, true, $republished[0], $republished[1]);
-        } elseif (null !== $this->checks?->get($check)) {
-            $this->checks->forget($check);
+        if ($this->checks instanceof Checks) {
+            self::noteRepublished($this->checks, $plan);
         }
 
         if (null !== $skip) {
@@ -248,10 +245,29 @@ final readonly class AutomaticUpdates
             return null;
         }
 
+        // Fail-closed: what the update would fix waits with it
+        $fixes = array_keys($plan->fixedAdvisories());
+
         return [
-            \sprintf('The automatic update of %s waits for you: %s.', $plan->site, self::republishedText($plan)),
+            \sprintf('The automatic update of %s waits for you: %s%s.', $plan->site, self::republishedText($plan), [] === $fixes ? '' : \sprintf(', and a security fix for %s waits with it', implode(', ', $fixes))),
             \sprintf('A version is meant to be fixed code: one re-published may be a maintainer\'s quiet fix, or other code under a trusted version. Look at the commits, then "quire-server site:update %s --accept-republished" takes it; until then, nothing of the site moves by itself.', $plan->site),
         ];
+    }
+
+    /**
+     * Records that a site's update waits for a person (a package re-published under its version), or
+     * forgets it once its plan has none.
+     */
+    public static function noteRepublished(Checks $checks, UpdatePlan $plan): void
+    {
+        $problem = self::republishedProblem($plan);
+        $check = self::REPUBLISHED_CHECK.$plan->site->value;
+
+        if (null !== $problem) {
+            $checks->record($check, true, $problem[0], $problem[1]);
+        } elseif (null !== $checks->get($check)) {
+            $checks->forget($check);
+        }
     }
 
     private static function republishedText(UpdatePlan $plan): string
