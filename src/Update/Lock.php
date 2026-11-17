@@ -145,6 +145,32 @@ final readonly class Lock
     }
 
     /**
+     * The packages another lock has at the same version but as other code: the commit its download
+     * names (or its source's, without one) isn't this lock's. A tag moved, and Packagist followed it.
+     *
+     * @return list<array{package: string, version: string, from: ?string, to: ?string}> By name, with each commit
+     */
+    public function republished(self $other): array
+    {
+        $republished = [];
+
+        foreach ($this->versions as $package => $version) {
+            if (($other->versions[$package] ?? null) !== $version) {
+                continue;
+            }
+
+            $from = $this->details[$package]['dist']['reference'] ?? $this->details[$package]['source']['reference'] ?? null;
+            $to = $other->details[$package]['dist']['reference'] ?? $other->details[$package]['source']['reference'] ?? null;
+
+            if ($from !== $to) {
+                $republished[] = ['package' => $package, 'version' => $version, 'from' => $from, 'to' => $to];
+            }
+        }
+
+        return $republished;
+    }
+
+    /**
      * What changes from this lock to another one.
      *
      * @return list<array{package: string, from: ?string, to: ?string}> By name: updated, added (from null), removed (to null)

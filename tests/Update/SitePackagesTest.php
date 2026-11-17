@@ -509,6 +509,30 @@ final class SitePackagesTest extends RegistryTestCase
         $this->packages()->update($this->name, 'acme/reviews', true);
     }
 
+    public function testAddingMovesNoReleaseUnderItsVersion(): void
+    {
+        // G3′: Composer took the site's symfony/yaml v8.1.0 as other code (its tag was moved)
+        $site = $this->site();
+        $site[3] = LockTest::package('symfony/yaml', 'v8.1.0', commit: str_repeat('e', 40));
+        $this->resolved = [...$site, ...$this->reviews()];
+
+        $this->expectExceptionMessageIsOrContains('It would move packages the site has: symfony/yaml v8.1.0 re-published as other code (commit '.str_repeat('e', 40).', was '.LockTest::commit('symfony/yaml', 'v8.1.0').').');
+        $this->packages()->add($this->name, 'acme/reviews', true);
+    }
+
+    public function testMovingOneShowsItsReleaseRepublished(): void
+    {
+        $this->addReviews();
+        $reviews = $this->reviews();
+        $reviews[0] = LockTest::package('acme/reviews', '1.2.0', 'quire-extension', ['quire/core' => '^0.3', 'acme/reviews-core' => '^1.0', 'psr/log' => '^3.0'], commit: str_repeat('f', 40));
+        $this->resolved = [...$this->site(), ...$reviews];
+
+        $plan = $this->packages()->update($this->name, 'acme/reviews', true);
+
+        self::assertSame([['acme/reviews', '1.2.0', '1.2.0', str_repeat('f', 40)]], array_map(static fn (array $arrival): array => [$arrival['package'], $arrival['from'], $arrival['version'], $arrival['reference']], $plan->arrived), 'Shown and checked as other code, when the owner moves it.');
+        $plan->discard();
+    }
+
     public function testMovingOneHoldsTheOthers(): void
     {
         $this->addReviews(gallery: true);

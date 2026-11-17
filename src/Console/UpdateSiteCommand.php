@@ -305,6 +305,10 @@ final readonly class UpdateSiteCommand
             }
         }
 
+        foreach ($plan->republished() as $change) {
+            $io->writeln(\sprintf('  <comment>Re-published</comment> %s %s is other code at the same version: commit %s, was %s (its tag was moved).', $change['package'], $change['version'], $change['to'] ?? '?', $change['from'] ?? '?'));
+        }
+
         foreach (array_intersect_key($plan->advisoriesAfter, $plan->held) as $package => $advisories) {
             $io->writeln(\sprintf('  <comment>Held despite a known vulnerability</comment> %s %s: %s. "site:packages %s update %s --third-party" moves it, when a release fixes it.', $package, $plan->held[$package], implode(', ', array_column($advisories, 'title')), $plan->site, $package));
         }

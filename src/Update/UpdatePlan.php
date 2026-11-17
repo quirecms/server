@@ -63,6 +63,14 @@ final readonly class UpdatePlan
         return array_values(array_filter($this->skeletonFiles, static fn (array $change): bool => SkeletonFiles::CONFLICT !== $change['action']));
     }
 
+    /**
+     * @return list<array{package: string, version: string, from: ?string, to: ?string}> Packages at the same version as other code (a moved tag)
+     */
+    public function republished(): array
+    {
+        return $this->from->republished($this->to);
+    }
+
     public function quireFrom(): ?string
     {
         return $this->from->quire();

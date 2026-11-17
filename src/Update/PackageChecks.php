@@ -28,6 +28,8 @@ final class PackageChecks
             $details = $to->details[$package] ?? null;
 
             if (null === $details) {
+                $refused[] = \sprintf('%s isn\'t in the lock Composer wrote', $package);
+
                 continue;
             }
 
@@ -51,6 +53,27 @@ final class PackageChecks
                 $refused[] = \sprintf('%s isn\'t a download over HTTPS', $package);
             } elseif (null === $details['dist']['reference']) {
                 $refused[] = \sprintf('%s\'s download names no commit, which is what its code is known by', $package);
+            }
+        }
+
+        return $refused;
+    }
+
+    /**
+     * A package held where it is (G1) that the new lock has as other code at its version: its release
+     * was re-published (a tag moved), and nobody has looked at that code (G3′).
+     *
+     * @param array<string, string> $held Package => version
+     *
+     * @return list<string> Why the plan is refused; none when it may be made
+     */
+    public static function republishedHeld(Lock $from, Lock $to, array $held): array
+    {
+        $refused = [];
+
+        foreach ($from->republished($to) as $change) {
+            if (isset($held[$change['package']])) {
+                $refused[] = \sprintf('%s %s was re-published as other code (commit %s, was %s): a third party\'s release changed under its version, so nothing moves until you look at it ("site:packages <site> update %s --third-party" shows it)', $change['package'], $change['version'], $change['to'] ?? '?', $change['from'] ?? '?', $change['package']);
             }
         }
 

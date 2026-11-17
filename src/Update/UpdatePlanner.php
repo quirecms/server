@@ -67,6 +67,12 @@ final readonly class UpdatePlanner
             $this->composer->update($workspace.'/composer', $with, $output, $only);
 
             $toLock = Lock::read($workspace.'/composer/composer.lock');
+            // G3′: a held package re-published as other code at its version doesn't move, nor does the rest.
+            $republished = PackageChecks::republishedHeld($from, $toLock, $held);
+
+            if ([] !== $republished) {
+                throw new \DomainException(str_replace('<site>', $name->value, implode('. ', $republished)).'.');
+            }
             $composerJson = (string) file_get_contents($workspace.'/composer/composer.json');
             $advisoriesAfter = $this->composer->audit($workspace.'/composer');
 

@@ -164,7 +164,7 @@ final readonly class SitePackages
                 $this->ensureNotRunning($this->extensions->of($name), $gone, $from, $name);
             }
 
-            if (($from->versions[$package] ?? null) === ($to->versions[$package] ?? null) && [] === $from->changesTo($to)) {
+            if (($from->versions[$package] ?? null) === ($to->versions[$package] ?? null) && [] === $from->changesTo($to) && [] === $from->republished($to)) {
                 throw new \DomainException(\sprintf('%s %s is the newest its constraint allows%s.', $package, $from->versions[$package] ?? '?', null === $constraint ? \sprintf(' ("site:packages … update %s:<constraint>" gives it another)', $package) : ''));
             }
 
@@ -341,9 +341,11 @@ final readonly class SitePackages
     private function ensureNothingElseMoves(Lock $from, Lock $to, array $mayMove, bool $mayGo = false): void
     {
         $moved = array_filter($from->changesTo($to), static fn (array $change): bool => null !== $change['from'] && !\in_array($change['package'], $mayMove, true) && (!$mayGo || null !== $change['to']));
+        // The same version as other code moves too (G3′): a tag moved under it.
+        $republished = array_filter($from->republished($to), static fn (array $change): bool => !\in_array($change['package'], $mayMove, true));
 
-        if ([] !== $moved) {
-            throw new \DomainException(\sprintf('It would move packages the site has: %s. Nothing else moves here: update the site first ("site:update"), then try again.', implode(', ', array_map(static fn (array $change): string => \sprintf('%s %s → %s', $change['package'], $change['from'], $change['to'] ?? '(removed)'), $moved))));
+        if ([] !== $moved || [] !== $republished) {
+            throw new \DomainException(\sprintf('It would move packages the site has: %s. Nothing else moves here: update the site first ("site:update"), then try again.', implode(', ', [...array_map(static fn (array $change): string => \sprintf('%s %s → %s', $change['package'], $change['from'], $change['to'] ?? '(removed)'), $moved), ...array_map(static fn (array $change): string => \sprintf('%s %s re-published as other code (commit %s, was %s)', $change['package'], $change['version'], $change['to'] ?? '?', $change['from'] ?? '?'), $republished)])));
         }
     }
 
@@ -352,7 +354,13 @@ final readonly class SitePackages
      */
     private function arrivals(Lock $from, Lock $to): array
     {
-        return array_values(array_map(static fn (array $change): string => $change['package'], array_filter($from->changesTo($to), static fn (array $change): bool => null !== $change['to'])));
+        $arrived = array_map(static fn (array $change): string => $change['package'], array_filter($from->changesTo($to), static fn (array $change): bool => null !== $change['to']));
+        // And those at the same version as other code (G3′)
+        $republished = array_column($from->republished($to), 'package');
+        $all = array_values(array_unique([...$arrived, ...$republished]));
+        sort($all);
+
+        return $all;
     }
 
     /**

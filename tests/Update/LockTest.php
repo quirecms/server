@@ -52,6 +52,18 @@ final class LockTest extends TestCase
         self::assertSame([], $lock->needs(['nobody/there']));
     }
 
+    public function testTheSameVersionAsOtherCode(): void
+    {
+        $before = self::packages([self::package('acme/reviews', '1.2.0'), self::package('psr/log', '3.0.2'), ['name' => 'old/bare', 'version' => '1.0.0', 'source' => ['type' => 'git', 'url' => 'https://example.com/bare.git', 'reference' => 'aaa']]]);
+        $after = self::packages([self::package('acme/reviews', '1.2.0', commit: str_repeat('b', 40)), self::package('psr/log', '3.0.3'), ['name' => 'old/bare', 'version' => '1.0.0', 'source' => ['type' => 'git', 'url' => 'https://example.com/bare.git', 'reference' => 'bbb']]]);
+
+        self::assertSame([
+            ['package' => 'acme/reviews', 'version' => '1.2.0', 'from' => self::commit('acme/reviews', '1.2.0'), 'to' => str_repeat('b', 40)],
+            ['package' => 'old/bare', 'version' => '1.0.0', 'from' => 'aaa', 'to' => 'bbb'],
+        ], $before->republished($after), 'By its download\'s commit, or its source\'s without one; a new version is a change, not this.');
+        self::assertSame([], $before->republished($before));
+    }
+
     /**
      * @param array<string, string> $require
      * @param array<string, string> $replace
@@ -60,9 +72,9 @@ final class LockTest extends TestCase
      *
      * @return array<string, mixed> A package as a composer.lock has it, from GitHub over HTTPS
      */
-    public static function package(string $name, string $version, string $type = 'library', array $require = [], array $replace = [], array $provide = [], array $extra = []): array
+    public static function package(string $name, string $version, string $type = 'library', array $require = [], array $replace = [], array $provide = [], array $extra = [], ?string $commit = null): array
     {
-        $commit = self::commit($name, $version);
+        $commit ??= self::commit($name, $version);
 
         return array_filter([
             'name' => $name,

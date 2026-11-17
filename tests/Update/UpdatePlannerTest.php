@@ -139,6 +139,30 @@ final class UpdatePlannerTest extends TestCase
         }
     }
 
+    public function testAHeldReleaseRepublishedStopsTheUpdate(): void
+    {
+        // G3′: --with holds its version, not its code; a moved tag gives other code at that version.
+        $site = $this->paths->site($this->name);
+        new Filesystem()->dumpFile($site.'/composer.json', (string) json_encode([
+            'require' => ['acme/reviews' => '^1.2', 'quire/core' => '^0.1'],
+            'extra' => ['quire-server' => ['packages' => ['acme/reviews' => ['third-party' => true]]]],
+        ]));
+        $locked = [LockTest::package('acme/reviews', '1.2.0', 'quire-extension'), LockTest::package('quire/core', 'v0.1.0', 'symfony-bundle')];
+        new Filesystem()->dumpFile($site.'/composer.lock', LockTest::packages($locked)->content);
+        $moved = [LockTest::package('acme/reviews', '1.2.0', 'quire-extension', commit: str_repeat('d', 40)), LockTest::package('quire/core', 'v0.1.1', 'symfony-bundle')];
+        $this->runner = new ScriptedRunner([
+            ...$this->runner->script,
+            'composer update' => static function (array $command, ?string $directory) use ($moved): \Quire\Server\Process\ProcessResult {
+                file_put_contents($directory.'/composer.lock', LockTest::packages($moved)->content);
+
+                return ScriptedRunner::ok($command);
+            },
+        ]);
+
+        $this->expectExceptionMessageIsOrContains('acme/reviews 1.2.0 was re-published as other code (commit '.str_repeat('d', 40).', was '.LockTest::commit('acme/reviews', '1.2.0').'): a third party\'s release changed under its version, so nothing moves until you look at it ("site:packages jane update acme/reviews --third-party" shows it).');
+        $this->planner()->plan($this->name);
+    }
+
     public function testThePlanHoldsForTheFilesItWasMadeFrom(): void
     {
         // Another update applied while this one is worked out: the plan isn't for the files it left.
