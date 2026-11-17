@@ -169,7 +169,7 @@ final readonly class PackagesCommand
         }
 
         foreach ($plan->arrived as $arrival) {
-            $io->writeln(\sprintf('  <info>New</info> %s %s (%s), from %s', $arrival['package'], $arrival['version'], $arrival['type'], $arrival['source'] ?? $arrival['download'] ?? '?'));
+            $io->writeln(\sprintf('  <info>%s</info> %s %s (%s), from %s', null === $arrival['from'] ? 'New' : 'Moved from '.$arrival['from'].':', $arrival['package'], $arrival['version'], $arrival['type'], $arrival['source'] ?? $arrival['download'] ?? '?'));
             $io->writeln($arrival['quire']
                 ? '       Quire\'s: checked against its signed release feed when the site is built.'
                 : \sprintf('       Not Quire\'s. Its code is commit %s, downloaded over HTTPS from %s: that commit is what pins it (Packagist gives GitHub downloads no checksum).', $arrival['reference'] ?? '?', $arrival['download'] ?? '?'));

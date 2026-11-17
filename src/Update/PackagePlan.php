@@ -17,7 +17,7 @@ final readonly class PackagePlan
     public const string REMOVE = 'remove';
 
     /**
-     * @param list<array{package: string, version: string, type: string, quire: bool, source: ?string, download: ?string, reference: ?string}> $arrived The packages it adds, the one asked for and what it needs, by name
+     * @param list<array{package: string, version: string, type: string, quire: bool, source: ?string, download: ?string, reference: ?string, from: ?string}> $arrived The packages whose code is new: those it adds (from null) or moves, by name
      */
     public function __construct(
         public UpdatePlan $plan,

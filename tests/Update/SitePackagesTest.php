@@ -171,7 +171,7 @@ final class SitePackagesTest extends RegistryTestCase
         self::assertTrue($plan->thirdParty);
         $reviews = $plan->arrived[0];
         // G3: shown with the commit its download names, which is what anchors it
-        self::assertSame(['acme/reviews', '1.2.0', 'quire-extension', false, 'https://github.com/acme/reviews.git', 'https://api.github.com/repos/acme/reviews/zipball/'.LockTest::commit('acme/reviews', '1.2.0'), LockTest::commit('acme/reviews', '1.2.0')], array_values($reviews));
+        self::assertSame(['acme/reviews', '1.2.0', 'quire-extension', false, 'https://github.com/acme/reviews.git', 'https://api.github.com/repos/acme/reviews/zipball/'.LockTest::commit('acme/reviews', '1.2.0'), LockTest::commit('acme/reviews', '1.2.0'), null], array_values($reviews));
         // G1: from now on, held in every update
         self::assertSame(['acme/reviews' => '1.2.0', 'acme/reviews-core' => '1.0.4'], $plan->plan->held);
         $json = json_decode($plan->plan->composerJson, true);
@@ -473,11 +473,40 @@ final class SitePackagesTest extends RegistryTestCase
             ['package' => 'acme/reviews-core', 'from' => '1.0.4', 'to' => '1.1.0'],
             ['package' => 'acme/stars', 'from' => null, 'to' => '1.0.0'],
         ], $plan->plan->packages, 'It, and what only it needs, move; what it newly needs is shown and checked.');
-        self::assertSame(['acme/stars'], array_column($plan->arrived, 'package'));
+        self::assertSame(['acme/reviews', 'acme/reviews-core', 'acme/stars'], array_column($plan->arrived, 'package'), 'Every package whose code is new is shown and checked, the moved ones too (G2′).');
+        self::assertSame([['1.2.0', LockTest::commit('acme/reviews', '1.3.0')], ['1.0.4', LockTest::commit('acme/reviews-core', '1.1.0')], [null, LockTest::commit('acme/stars', '1.0.0')]], array_map(static fn (array $arrival): array => [$arrival['from'], $arrival['reference']], $plan->arrived));
         self::assertSame(['update', 'acme/reviews', '--with-dependencies'], \array_slice($this->command('composer update'), 1, 3));
         self::assertNotContains('composer require', $this->runner->keys(), 'Within its constraint.');
         self::assertSame(['acme/reviews' => '1.3.0', 'acme/reviews-core' => '1.1.0', 'acme/stars' => '1.0.0'], $plan->plan->held, 'Held again at its new version.');
         $plan->discard();
+    }
+
+    /**
+     * @return iterable<string, array{array<string, mixed>, string}>
+     */
+    public static function movedStandIns(): iterable
+    {
+        yield 'its new version provides one of Quire\'s' => [LockTest::package('acme/reviews', '1.3.0', 'quire-extension', ['quire/core' => '^0.3', 'acme/reviews-core' => '^1.0'], provide: ['quire/analytics' => '0.3.1']), 'It can\'t be moved: acme/reviews provides quire/analytics (it would stand in for it).'];
+        yield 'what it needs, moved, becomes a plugin' => [LockTest::package('acme/reviews-core', '1.1.0', 'composer-plugin'), 'acme/reviews-core is a Composer plugin'];
+        yield 'what it needs, moved, has no commit' => [['name' => 'acme/reviews-core', 'version' => '1.1.0', 'dist' => ['type' => 'zip', 'url' => 'https://example.com/core.zip', 'shasum' => '']], 'acme/reviews-core\'s download names no commit'];
+    }
+
+    /**
+     * G2′: the checks hold for what moves, not only for what arrives.
+     *
+     * @param array<string, mixed> $moved
+     */
+    #[\PHPUnit\Framework\Attributes\DataProvider('movedStandIns')]
+    public function testWhatMovesIsCheckedToo(array $moved, string $refused): void
+    {
+        $this->addReviews();
+        $packages = 'acme/reviews-core' === ($moved['name'] ?? null)
+            ? [LockTest::package('acme/reviews', '1.3.0', 'quire-extension', ['quire/core' => '^0.3', 'acme/reviews-core' => '^1.1']), $moved]
+            : [$moved, $this->reviews()[1]];
+        $this->resolved = [...$this->site(), ...$packages];
+
+        $this->expectExceptionMessageIsOrContains($refused);
+        $this->packages()->update($this->name, 'acme/reviews', true);
     }
 
     public function testMovingOneHoldsTheOthers(): void

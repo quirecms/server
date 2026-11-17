@@ -229,8 +229,17 @@ final readonly class SitePackages
             $advisoriesBefore = $this->composer->audit($workspace);
             [$to, $action, $package, $thirdParty] = $change($workspace, $from);
             $advisoriesAfter = $this->composer->audit($workspace);
+            // G2, G3 and no plugins: over every package whose code is new, arrived or moved (G2′)
             $arrived = $this->arrivals($from, $to);
-            $this->ensureArrivalsAllowed($from, $to, AddedPackages::read($workspace.'/composer.json'), $arrived);
+            $json = AddedPackages::read($workspace.'/composer.json');
+            $refused = PackageChecks::refusals($from, $to, \is_array($json['require'] ?? null) ? array_map(strval(...), array_keys($json['require'])) : [], $arrived);
+
+            if ([] !== $refused) {
+                throw new \DomainException(\sprintf('%s: %s.', match ($action) {
+                    PackagePlan::ADD => 'It can\'t be added', PackagePlan::UPDATE => 'It can\'t be moved', default => 'It can\'t be removed',
+                }, implode('; ', $refused)));
+            }
+
             $this->ensureNoNewAdvisories($advisoriesBefore, $advisoriesAfter);
             $composerJson = (string) file_get_contents($workspace.'/composer.json');
             $version = $to->versions[$package] ?? null;
@@ -251,6 +260,7 @@ final readonly class SitePackages
                 'source' => $to->details[$arrival]['source']['url'],
                 'download' => $to->details[$arrival]['dist']['url'],
                 'reference' => $to->details[$arrival]['dist']['reference'] ?? $to->details[$arrival]['source']['reference'],
+                'from' => $from->versions[$arrival] ?? null,
             ], $arrived));
         } catch (\Throwable $e) {
             $this->filesystem->remove($workspace);
@@ -338,56 +348,11 @@ final readonly class SitePackages
     }
 
     /**
-     * @return list<string> The packages the new lock has that the old one doesn't, by name
+     * @return list<string> The packages whose code the new lock has and the old one doesn't: those it adds, and those whose version it changes, by name
      */
     private function arrivals(Lock $from, Lock $to): array
     {
-        return array_values(array_map(static fn (array $change): string => $change['package'], array_filter($from->changesTo($to), static fn (array $change): bool => null === $change['from'])));
-    }
-
-    /**
-     * Nothing that arrives is a Composer plugin, stands in for a package the site has or for one of
-     * Quire's (G2: it would pass for it, past D-38's check by name), or comes otherwise than as a
-     * download over HTTPS naming its commit (G3).
-     *
-     * @param array<mixed> $composerJson
-     * @param list<string> $arrived
-     */
-    private function ensureArrivalsAllowed(Lock $from, Lock $to, array $composerJson, array $arrived): void
-    {
-        $require = \is_array($composerJson['require'] ?? null) ? array_map(strval(...), array_keys($composerJson['require'])) : [];
-        $has = array_fill_keys([...array_keys($from->versions), ...$require], true);
-        $refused = [];
-
-        foreach ($arrived as $package) {
-            $details = $to->details[$package];
-
-            if ('composer-plugin' === $details['type']) {
-                $refused[] = \sprintf('%s is a Composer plugin (its code would run in every build of the site)', $package);
-            }
-
-            foreach (['replace' => 'replaces', 'provide' => 'provides'] as $link => $verb) {
-                $names = array_values(array_filter($details[$link], static fn (string $name): bool => isset($has[$name]) || self::isQuire($name)));
-
-                if ([] !== $names) {
-                    $refused[] = \sprintf('%s %s %s (it would stand in for %s)', $package, $verb, implode(', ', $names), 1 === \count($names) ? 'it' : 'them');
-                }
-            }
-
-            if (self::isQuire($package)) {
-                continue; // Checked against Quire's signed release feed when the site is built (D-38)
-            }
-
-            if (null === $details['dist']['url'] || 1 !== preg_match('#^https://#', $details['dist']['url'])) {
-                $refused[] = \sprintf('%s isn\'t a download over HTTPS', $package);
-            } elseif (null === $details['dist']['reference']) {
-                $refused[] = \sprintf('%s\'s download names no commit, which is what its code is known by', $package);
-            }
-        }
-
-        if ([] !== $refused) {
-            throw new \DomainException(\sprintf('It can\'t be added: %s.', implode('; ', $refused)));
-        }
+        return array_values(array_map(static fn (array $change): string => $change['package'], array_filter($from->changesTo($to), static fn (array $change): bool => null !== $change['to'])));
     }
 
     /**
