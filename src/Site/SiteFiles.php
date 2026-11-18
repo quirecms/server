@@ -39,6 +39,9 @@ final readonly class SiteFiles
 
     public const string EDGE_SUFFIX = '.quire.internal';
 
+    /** Flysystem's packages that keep files on the site's own disks */
+    private const array LOCAL_FLYSYSTEM = ['league/flysystem-local', 'league/flysystem-memory'];
+
     /**
      * The first label of a site's name on its link: "edge.<domain>.quire.internal". The Docker gate
      * gives an alias to the site whose prefix ("<project>-") it starts with (YorvoGate 0.3), and a site's
@@ -270,5 +273,80 @@ final readonly class SiteFiles
             umask($previous);
             @unlink($temporary);
         }
+    }
+
+    /**
+     * A copy's disks outside the site, from its quire:about "storage": anything but "local".
+     *
+     * @param array<mixed> $disks
+     *
+     * @return list<string> Each as "<disk> (<location>)"
+     */
+    public static function storageOutside(array $disks): array
+    {
+        $outside = [];
+
+        foreach ($disks as $disk) {
+            if (!\is_array($disk) || 'local' === ($disk['adapter'] ?? 'local')) {
+                continue;
+            }
+
+            $outside[] = \sprintf('the disk "%s" (%s)', \is_string($disk['name'] ?? null) ? $disk['name'] : '?', \is_string($disk['location'] ?? null) ? $disk['location'] : (\is_string($disk['adapter']) ? $disk['adapter'] : '?'));
+        }
+
+        return $outside;
+    }
+
+    /**
+     * The same from a site's code, before anything of it runs, and for a Quire whose quire:about doesn't
+     * say (before 0.3.2): a remote disk needs an adapter's code, so any Flysystem package in its lock but
+     * Flysystem itself and its local and memory adapters counts, and so does a disk adapter other than
+     * "local" in its configuration. A storage adapter of the site's own code, outside Flysystem's
+     * packages and not configured as a disk, isn't seen.
+     *
+     * @return list<string> What says so
+     */
+    public static function storageOutsideInCode(string $directory): array
+    {
+        $found = [];
+        $lock = json_decode((string) @file_get_contents($directory.'/composer.lock', length: 16_777_216), true, 64);
+        $names = [];
+
+        foreach (['packages', 'packages-dev'] as $section) {
+            foreach (\is_array($lock) && \is_array($lock[$section] ?? null) ? $lock[$section] : [] as $package) {
+                if (\is_array($package) && \is_string($package['name'] ?? null)) {
+                    $names[] = $package['name'];
+                }
+            }
+        }
+
+        foreach (array_unique($names) as $package) {
+            if (str_starts_with($package, 'league/flysystem-') && !\in_array($package, self::LOCAL_FLYSYSTEM, true)) {
+                $found[] = \sprintf('its composer.lock has %s, an adapter for storage outside the site', $package);
+            }
+        }
+
+        $files = [$directory.'/extend.php'];
+
+        if (is_dir($directory.'/config')) {
+            foreach (new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator($directory.'/config', \FilesystemIterator::SKIP_DOTS)) as $file) {
+                if ($file instanceof \SplFileInfo && !$file->isLink() && \in_array($file->getExtension(), ['yaml', 'yml', 'php'], true)) {
+                    $files[] = $file->getPathname();
+                }
+            }
+        }
+
+        sort($files);
+
+        foreach ($files as $file) {
+            $content = is_file($file) && !is_link($file) ? (string) @file_get_contents($file, length: 1_048_576) : '';
+
+            // "adapter: s3", "'adapter' => 'service'", or one the environment chooses
+            if (1 === preg_match('/\badapter[\'"]?\s*(?::|=>)\s*[\'"]?(s3|service|%env\()/i', $content, $match)) {
+                $found[] = \sprintf('%s has a disk on "%s"', substr($file, \strlen(rtrim($directory, '/')) + 1), rtrim($match[1], '('));
+            }
+        }
+
+        return $found;
     }
 }

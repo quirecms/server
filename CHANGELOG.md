@@ -10,6 +10,8 @@ All notable changes to Quire Server. The format follows [Keep a Changelog](https
 
 - A site restored as a new one sends no email unless asked (SEC-0014). This covers `backups:restore --as`, `--from-server` and `backups:restore-server`, on this server or another. Before, it kept the mailer its backup had, so a drill or a rehearsal could email the original's users from the real sender, with the production token on the copy. "No email" is now written as such (`MAILER_DSN=null://null`), also for `site:mail --none` and a site added to a server without a mailer, so a mailer in the site's own `.env` files can't take over. `--keep-mailer` keeps the backup's mailer, for a real move; `--server-mailer` gives the site this server's. The restore names each site's mailer, without its password.
 
+- A site restored as a new one doesn't act on the original's other services either. Its Google Analytics is off, so its visits don't count as the original's (`--keep-analytics` keeps it). It isn't restored at all while its stored files are on storage outside it, such as an S3 bucket the original uses too: the copy would change and delete the original's files there, and the restore would first write the backup's files there (`--shared-storage` restores it anyway, once the original is gone). Where a site's disks are comes from its code before anything of it runs (any Flysystem adapter in its lock but the local and memory ones, a disk adapter other than `local` in its configuration), then from its own `quire:about` (Quire 0.3.2 and later) with only its web container started, before its workers. This covers `backups:restore --as`, `--from-server` and `backups:restore-server`; a site restored over itself, or brought back with `site:restore-removed`, keeps them.
+
 - `backups:setup --existing` takes a key that only reads (SEC-0015). A machine that restores another server's backups (a drill, a new machine after an incident) no longer needs a key that could change or delete the only copy. Setup notices that its test write is refused and saves the server as "restores only". Its listings and restores open the repository without restic's lock, so they write nothing to the bucket. It makes no backups, so nothing is late and no night fails, and `status` says so. A key that may write works as before.
 
 - The front door's log no longer holds visitors' full IP addresses (SEC-0010), neither in visits nor in Caddy's own messages (such as a certificate obtained at a site's first visit): each is cut to its network (/24 for IPv4, /48 for IPv6) as the line is written, and headers that can carry an address (`X-Forwarded-For`, `Forwarded`, `X-Real-Ip`, `Cf-Connecting-Ip`, `True-Client-Ip`) are left out. The log has a set size, 3 files of 10 MB, whatever the machine's Docker defaults are. Lines written before the update keep their addresses until the front door is replaced, which the update does.
@@ -28,7 +30,8 @@ All notable changes to Quire Server. The format follows [Keep a Changelog](https
 
 ### Known limits
 
-- A restored copy keeps its other settings that point at what the original uses: a storage disk on the original's bucket (where the copy's clean-up jobs could delete the original's files), an analytics ID, a webhook. Check them in the copy's admin before using it.
+- A restored copy on Quire before 0.3.2 whose `quire/analytics` is installed but disabled keeps the original's measurement ID in its database (the restore says so): clear it in its admin before enabling the extension. Quire 0.3.2 removes it.
+- A storage adapter of a site's own code that's neither a Flysystem package nor configured as a disk isn't seen by the restore's storage check.
 
 ### Deprecated
 
