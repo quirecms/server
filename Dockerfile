@@ -15,7 +15,7 @@ FROM restic/restic:0.19.1@sha256:136600b6ff6843d61d355f7f71f460a166429f35de6fd11
 FROM ghcr.io/yorvolabs/yorvogate:0.3.0@sha256:5c7e5ae91d30374dd8690073639234c990eb8e12620f5270145f945e3ec8267d AS yorvogate
 FROM mlocati/php-extension-installer:2.13@sha256:4fd45396c16685266d32bf147a24ecd5e81029d3820295895bf4a90131190ac9 AS php_extension_installer
 
-FROM php:8.5-cli-alpine@sha256:e899a75c775804e5466dbd9c96b31f8b6c6ae2ddb053a8466223a0c32992ff8e AS agent
+FROM php:8.5-cli-alpine@sha256:1ff5b45922ab30f418447c6089dbe2eba5f01e0b2742863d0327ac349305d70f AS agent
 
 SHELL ["/bin/ash", "-euo", "pipefail", "-c"]
 
