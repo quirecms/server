@@ -100,8 +100,12 @@ services:
       - gate_trusted:/run/quire-gate/trusted:ro
       - gate_sites:/run/quire-gate/sites:ro
       - gate_scopes:/run/quire-gate/scopes
-      # What host-setup found (the AppArmor profile sites' builders run under)
+      # What host-setup found (the AppArmor profile sites' builders run under, the machine's updates)
       - host_facts:/run/quire-host:ro
+      # The host's installed kernels (names only) and when its updates last ran: is a restart pending,
+      # have they stopped (ARC-0061). Read-only, and nothing else of the host's.
+      - /usr/lib/modules:/run/quire-host-kernels:ro
+      - /var/lib/apt/periodic:/run/quire-host-apt:ro
       # Who may log in to PostgreSQL from where (DatabaseAccess): only the agent writes it
       - database_access:/run/quire-database/access
       # The front door's certificates, to tell when one doesn't come or isn't renewed (D-35). The whole
@@ -192,16 +196,25 @@ services:
     # Among the last the kernel stops when memory runs out: sites' containers go first (D-40)
     oom_score_adj: -500
 
-  # What the host needs for sites' builds (gate/host-setup.sh): the AppArmor profile their rootless
-  # BuildKit runs under, loaded with the host's own tools. It runs at each start of the server, before
-  # the agent, and ends: privileged, in the host's root, with no network. What it found goes to the
-  # agent (host_facts).
+  # What the host needs (gate/host-setup.sh): the AppArmor profile sites' rootless BuildKit runs
+  # under, loaded with the host's own tools. Then its automatic updates (gate/host-updates.sh, ARC-0061):
+  # Docker's packages within the tested majors, and the hour and reboot server.env sets, no more. It
+  # runs at each start of the server, before the agent, and ends: privileged, in the host's root, with
+  # no network. What it found goes to the agent (host_facts). The updates' part never stops the start.
   host-setup:
     image: ${QUIRE_SERVER_IMAGE:-quire-server-agent}
     restart: "no"
     entrypoint: [/bin/sh, -euc]
     command:
-      - chroot /host /bin/sh -s </opt/quire-server/gate/host-setup.sh >/facts/builder-apparmor.new && mv /facts/builder-apparmor.new /facts/builder-apparmor
+      - >-
+        chroot /host /bin/sh -s </opt/quire-server/gate/host-setup.sh >/facts/builder-apparmor.new && mv /facts/builder-apparmor.new /facts/builder-apparmor
+        && { chroot /host /bin/sh -s </opt/quire-server/gate/host-updates.sh >/facts/host-updates.new || echo result=failed >>/facts/host-updates.new; }
+        && mv /facts/host-updates.new /facts/host-updates
+    environment:
+      # Only these reach the host's files, and the script checks each before it writes it
+      QUIRE_SERVER_OS_UPDATES: ${QUIRE_SERVER_OS_UPDATES:-}
+      QUIRE_SERVER_OS_UPDATE_HOUR: ${QUIRE_SERVER_OS_UPDATE_HOUR:-}
+      QUIRE_SERVER_REBOOT: ${QUIRE_SERVER_REBOOT:-}
     privileged: true
     network_mode: none
     volumes:

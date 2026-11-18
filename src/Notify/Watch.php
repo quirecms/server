@@ -7,6 +7,7 @@ namespace Quire\Server\Notify;
 use Doctrine\DBAL\Connection;
 use Quire\Server\Backup\BackupSettings;
 use Quire\Server\Backup\OffsiteBackups;
+use Quire\Server\Host\HostUpdates;
 use Quire\Server\Host\Memory;
 use Quire\Server\Registry\Schema;
 use Quire\Server\Site\ServerPaths;
@@ -16,8 +17,9 @@ use Quire\Server\Site\ServerPaths;
  * by each job: every job records its operation, so a failure the owner didn't see (the agent's own,
  * at night) is the latest operation of its kind having failed; a later one that succeeds, whoever ran
  * it, ends it. Also: nightly backups that stopped running, certificates that don't come or aren't
- * renewed, a disk filling up, memory running out, and what the nightly checks of the backups found
- * (Checks).
+ * renewed, a disk filling up, memory running out, the machine missing its fixes (a restart pending,
+ * Docker older than its fixes, its updates stopped: HostUpdates), and what the nightly checks of the
+ * backups found (Checks).
  */
 final readonly class Watch
 {
@@ -66,6 +68,7 @@ final readonly class Watch
         private ?\Closure $now = null,
         private ?\Closure $disk = null,
         private ?Memory $memory = null,
+        private ?HostUpdates $host = null,
     ) {
     }
 
@@ -74,7 +77,7 @@ final readonly class Watch
      */
     public function problems(): array
     {
-        return [...$this->failures(), ...$this->lateBackups(), ...$this->certificatesProblems(), ...$this->diskProblems(), ...$this->memoryProblems(), ...$this->checks->problems($this->backups->configured())];
+        return [...$this->failures(), ...$this->lateBackups(), ...$this->certificatesProblems(), ...$this->diskProblems(), ...$this->memoryProblems(), ...($this->host?->problems() ?? []), ...$this->checks->problems($this->backups->configured())];
     }
 
     /**

@@ -26,7 +26,7 @@ final class ServerSettings
 
     /**
      * What an owner may change, and how it's checked: "email", "emails" (comma-separated), "text",
-     * "constraint", "hour", "seconds", "megabytes", "keep", "hosts", "dsn", "webhook", "secret".
+     * "constraint", "hour", "clock-hour", "switch", "seconds", "megabytes", "keep", "hosts", "dsn", "webhook", "secret".
      */
     public const array CHANGEABLE = [
         'QUIRE_SERVER_ACME_EMAIL' => 'email',
@@ -43,6 +43,10 @@ final class ServerSettings
         'QUIRE_SERVER_GIT_POLL_SECONDS' => 'seconds',
         'QUIRE_SERVER_GIT_PRIVATE_HOSTS' => 'hosts',
         'QUIRE_SERVER_BUILD_MEMORY_MB' => 'megabytes',
+        // The machine's own updates (gate/host-updates.sh, ARC-0061): applied at the server's next start
+        'QUIRE_SERVER_OS_UPDATES' => 'switch',
+        'QUIRE_SERVER_OS_UPDATE_HOUR' => 'clock-hour',
+        'QUIRE_SERVER_REBOOT' => 'switch',
     ];
 
     /** Never shown: secrets of the server, whoever sets them */
@@ -150,6 +154,8 @@ final class ServerSettings
                 'text' => [] === new NotifySettings(name: $value)->problems() ? null : 'QUIRE_SERVER_NAME is a short name for this server (63 plain characters at most), e.g. fra1-web-01.',
                 'constraint' => 1 === preg_match('/^\^?\d+\.\d+(\.\d+)?\z/', $value) ? null : 'QUIRE_SERVER_QUIRE_VERSION is the Quire version new sites get, e.g. ^0.2.',
                 'hour' => self::passes(static fn (): ?int => AutomaticUpdates::parseHour($value, $name)),
+                'clock-hour' => 1 === preg_match('/^(\d|1\d|2[0-3])\z/', $value) ? null : \sprintf('%s is an hour (UTC) from 0 to 23, e.g. 5: the machine\'s updates run from half past it. Empty leaves the hour to the machine.', $name),
+                'switch' => \in_array($value, ['on', 'off'], true) ? null : \sprintf('%s is "on" or "off". Empty leaves it to the machine.', $name),
                 'seconds' => ctype_digit($value) && (int) $value >= 60 ? null : 'QUIRE_SERVER_GIT_POLL_SECONDS is a number of seconds, 60 at least.',
                 'megabytes' => ctype_digit($value) && (int) $value >= 256 ? null : 'QUIRE_SERVER_BUILD_MEMORY_MB is a number of megabytes, 256 at least.',
                 'keep' => self::passes(static fn (): array => new BackupSettings('', '', '', '', keep: $value)->retention()),

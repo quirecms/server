@@ -9,6 +9,7 @@ use Quire\Server\Backup\BackupSettings;
 use Quire\Server\Backup\BackupSigning;
 use Quire\Server\Backup\BackupWatch;
 use Quire\Server\Backup\OffsiteBackups;
+use Quire\Server\Host\HostUpdates;
 use Quire\Server\Notify\Certificates;
 use Quire\Server\Notify\Checks;
 use Quire\Server\Notify\Notifier;
@@ -49,6 +50,7 @@ final readonly class StatusCommand
         private Certificates $certificates,
         private BackupSigning $signing,
         private Checks $checks,
+        private HostUpdates $host,
     ) {
     }
 
@@ -70,6 +72,7 @@ final readonly class StatusCommand
         }
 
         $this->agent($io);
+        $this->machine($io);
         $this->problemsSection($io);
         $this->notifications($io);
         $this->nightly($io);
@@ -86,6 +89,33 @@ final readonly class StatusCommand
         $io->writeln(null !== $age && $age < self::HEARTBEAT_LATE
             ? \sprintf('Agent: running (its last round %d s ago)', $age)
             : '<error>Agent: not doing its rounds</error> (nothing is checked or told): "quire-server logs agent" says why, "quire-server up" starts it again.');
+    }
+
+    /**
+     * The machine's updates as the machine has them, at the server's last start (host-setup read them
+     * with apt's own reading and systemd's): an operator's file can override server.env's settings.
+     */
+    private function machine(SymfonyStyle $io): void
+    {
+        $facts = $this->host->facts();
+
+        if ([] === $facts) {
+            return;
+        }
+        $docker = match ($facts['docker_updates'] ?? '') {
+            'on' => 'Docker\'s too (held to '.HostUpdates::TESTED_DOCKER_MAJOR.')',
+            'untested-major' => 'not Docker\'s (an untested major)',
+            'off' => 'left alone (QUIRE_SERVER_OS_UPDATES=off)',
+            'os-updates-off' => 'off on the machine',
+            'not-from-apt', 'no-apt' => 'Docker isn\'t from Docker\'s repository',
+            default => 'unknown',
+        };
+        $io->writeln(\sprintf(
+            'Machine\'s updates: %s; from %s; restarts after them: %s',
+            $docker,
+            $facts['effective_update_time'] ?? 'unknown',
+            $facts['effective_reboot'] ?? 'unknown',
+        ));
     }
 
     private function problemsSection(SymfonyStyle $io): void

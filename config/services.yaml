@@ -35,6 +35,12 @@ services:
         arguments:
             $buildMegabytes: '%env(int:default:quire_server.build_memory:QUIRE_SERVER_BUILD_MEMORY_MB)%'
 
+    # Whether the machine gets its fixes (ARC-0061): host-setup's facts and the host's paths compose.yaml
+    # mounts read-only, and Docker's versions through the trusted socket
+    Quire\Server\Host\HostUpdates:
+        arguments:
+            $dockerHost: '%env(DOCKER_HOST)%'
+
     Quire\Server\Site\ServerPaths:
         arguments: ['%quire_server.root%']
 
