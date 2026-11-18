@@ -6,10 +6,13 @@ namespace Quire\Server\Tests\ServerUpdate;
 
 use Doctrine\DBAL\Connection;
 use Doctrine\DBAL\DriverManager;
+use Quire\Server\Console\ServerUpdateCommand;
 use Quire\Server\Operation\OperationLog;
 use Quire\Server\Process\ProcessResult;
 use Quire\Server\Process\SymfonyProcessRunner;
 use Quire\Server\Registry\SiteLock;
+use Quire\Server\Registry\SiteRegistry;
+use Quire\Server\Registry\UpdatePolicies;
 use Quire\Server\Release\GitHubReleases;
 use Quire\Server\Release\Releases;
 use Quire\Server\Release\Version;
@@ -19,11 +22,16 @@ use Quire\Server\ServerUpdate\ServerFolder;
 use Quire\Server\ServerUpdate\ServerStack;
 use Quire\Server\ServerUpdate\ServerUpdateFailed;
 use Quire\Server\ServerUpdate\ServerUpdater;
+use Quire\Server\Site\Domain;
 use Quire\Server\Site\EnvFile;
+use Quire\Server\Site\Site;
 use Quire\Server\Site\SiteName;
 use Quire\Server\Tests\Registry\RegistryTestCase;
 use Quire\Server\Tests\ScriptedRunner;
 use Quire\Server\Tests\ServerDatabase\PostgresImagesTest;
+use Symfony\Component\Console\Application;
+use Symfony\Component\Console\Command\Command;
+use Symfony\Component\Console\Tester\CommandTester;
 use Symfony\Component\Filesystem\Filesystem;
 
 /**
@@ -50,6 +58,9 @@ final class ServerUpdaterTest extends RegistryTestCase
 
     /** @var array<string, string> The release each image is */
     private array $releases = [self::OLD => '0.1.1', self::NEW => '0.2.0', 'quire-server-agent' => 'dev'];
+
+    /** What the agent says of the sites with third-party packages (null: it doesn't answer) */
+    private ?string $thirdParty = '{}';
 
     /** The image the agent runs, or null when it's stopped */
     private ?string $agent = self::OLD;
@@ -163,6 +174,7 @@ final class ServerUpdaterTest extends RegistryTestCase
                 return \in_array($image, $this->failing, true) ? ScriptedRunner::failed($command, "container quire-server-agent-1 is unhealthy\n") : ScriptedRunner::ok($command);
             },
             'docker compose exec' => fn (array $command, ?string $directory, ?string $inputFile): ProcessResult => match (true) {
+                \in_array('server:packages:third-party', $command, true) => null === $this->thirdParty ? ScriptedRunner::failed($command, 'service "agent" is not running') : ScriptedRunner::ok($command, $this->thirdParty."\n"),
                 \in_array('server:version', $command, true) => null === $this->agent ? ScriptedRunner::failed($command, 'service "agent" is not running') : ScriptedRunner::ok($command, \sprintf("Quire Server %s\nAgent: %s\n", $this->releases[$this->agent], $this->agent)),
                 \in_array('pg_dump', $command, true) => ScriptedRunner::ok($command, 'dump:'.implode(',', $this->migrationVersions())),
                 \in_array('psql', $command, true) => ScriptedRunner::ok($command, $this->postgres."0006\n"),
@@ -491,6 +503,55 @@ final class ServerUpdaterTest extends RegistryTestCase
         self::assertInstanceOf(ServerBackup::class, $updated->undoable(), 'It can still be undone.');
     }
 
+    public function testUndoingToBefore06TurnsOffTheUpdatesOfSitesWithThirdPartyPackages(): void
+    {
+        // L1: a release before 0.6 doesn't hold them where they are (G1), and would move them by night.
+        $registry = new SiteRegistry($this->connection, $this->schema);
+        $policies = new UpdatePolicies($this->connection, $this->schema);
+
+        foreach (['jane', 'kim', 'lee'] as $site) {
+            $registry->add(new SiteName($site), [new Domain($site.'.example')], Site::SHARED_DATABASE, $site);
+        }
+
+        $policies->set(new SiteName('jane'), UpdatePolicies::ALL);
+        $policies->set(new SiteName('lee'), UpdatePolicies::OFF);
+        $this->thirdParty = '{"jane": ["acme/reviews"], "lee": ["beta/gallery"]}';
+        $this->update();
+
+        $tester = $this->command('0.2.0', $policies);
+        self::assertSame(Command::SUCCESS, $tester->execute(['--undo' => true, '--yes' => true]));
+
+        self::assertSame(self::OLD, $this->agent, 'Undone.');
+        self::assertSame([UpdatePolicies::OFF, UpdatePolicies::SECURITY, UpdatePolicies::OFF], [$policies->of(new SiteName('jane')), $policies->of(new SiteName('kim')), $policies->of(new SiteName('lee'))], 'Only those with third-party packages; kim\'s are as they were.');
+        $said = (string) preg_replace('/\s+/', ' ', $tester->getDisplay());
+        self::assertStringContainsString('The automatic updates of jane are off now: 0.1.1 doesn\'t hold third-party packages where they are', $said);
+        self::assertStringContainsString('quire-server site:updates jane all', $said, 'How to turn them on again, as they were.');
+        self::assertStringNotContainsString('site:updates lee', $said, 'Off already.');
+    }
+
+    public function testAnUndoThatFailsPutsTheirUpdatesBack(): void
+    {
+        $registry = new SiteRegistry($this->connection, $this->schema);
+        $policies = new UpdatePolicies($this->connection, $this->schema);
+        $registry->add(new SiteName('jane'), [new Domain('jane.example')], Site::SHARED_DATABASE, 'jane');
+        $this->thirdParty = '{"jane": ["acme/reviews"]}';
+        $this->update();
+        $this->failing = [self::OLD];
+
+        self::assertSame(Command::FAILURE, $this->command('0.2.0', $policies)->execute(['--undo' => true, '--yes' => true]));
+        self::assertSame(UpdatePolicies::SECURITY, $policies->of(new SiteName('jane')), 'It runs 0.2.0, which holds them.');
+    }
+
+    public function testAnAgentThatCantTellIsSaid(): void
+    {
+        $this->update();
+        $this->thirdParty = null;
+        $tester = $this->command('0.2.0', new UpdatePolicies($this->connection, $this->schema));
+
+        self::assertSame(Command::SUCCESS, $tester->execute(['--undo' => true, '--yes' => true]));
+        self::assertStringContainsString('Turn off the automatic updates of any site you added one to', (string) preg_replace('/\s+/', ' ', $tester->getDisplay()));
+    }
+
     public function testOnlyTheLastUpdateCanBeUndoneForAWeek(): void
     {
         $this->update();
@@ -539,6 +600,14 @@ final class ServerUpdaterTest extends RegistryTestCase
 
             return $e;
         }
+    }
+
+    private function command(string $running, UpdatePolicies $policies): CommandTester
+    {
+        $application = new Application();
+        $application->addCommand(new ServerUpdateCommand($this->updater($running), true, $policies));
+
+        return new CommandTester($application->find('server:update'));
     }
 
     private function updater(string $running): ServerUpdater

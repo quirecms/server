@@ -4,11 +4,17 @@ All notable changes to Quire Server. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-17
+
+The Docker gate is YorvoGate 0.3.0, a managed site's owner adds Quire extensions and themes (`site:packages`), and a site restored as a new one leaves the original's email, analytics and storage alone.
+
 ### Security
 
 - **The Docker gate is YorvoGate 0.3.0** (pinned by its digest, its signature checked), which fixes flaws of 0.2.2 that apply to this server. A site could run a container from another site's image by the image's ID: High here, because the server protects sites' images (`protected_images`). A token taken off a scope kept working until the scope's file changed size. A request could crash the gate for every site (GO-2026-6859). The gate now also writes Docker's built-in seccomp profile and a private cgroup namespace into every site container. At the agent's start after the update, every site's containers that don't have them are made again (a few seconds offline each).
 
 - A site restored as a new one sends no email unless asked (SEC-0014). This covers `backups:restore --as`, `--from-server` and `backups:restore-server`, on this server or another. Before, it kept the mailer its backup had, so a drill or a rehearsal could email the original's users from the real sender, with the production token on the copy. "No email" is now written as such (`MAILER_DSN=null://null`), also for `site:mail --none` and a site added to a server without a mailer, so a mailer in the site's own `.env` files can't take over. `--keep-mailer` keeps the backup's mailer, for a real move; `--server-mailer` gives the site this server's. The restore names each site's mailer, without its password.
+
+- No update takes a package re-published as other code under the same version (its tag moved, and Packagist followed it), where Composer would. The night never does, whatever the site's policy: the site's update waits, and `status` names the package and its commits. `site:update` shows it and asks; `--accept-republished` takes it, and is needed with `--yes` or `--all`. A third-party package added with `site:packages` re-published that way stops every update of its site.
 
 - A site restored as a new one doesn't act on the original's other services either. Its Google Analytics is off, so its visits don't count as the original's (`--keep-analytics` keeps it). It isn't restored at all while its stored files are on storage outside it, such as an S3 bucket the original uses too: the copy would change and delete the original's files there, and the restore would first write the backup's files there (`--shared-storage` restores it anyway, once the original is gone). Where a site's disks are comes from its code before anything of it runs (any Flysystem adapter in its lock but the local and memory ones, a disk adapter other than `local` in its configuration), then from its own `quire:about` (Quire 0.3.2 and later) with only its web container started, before its workers. This covers `backups:restore --as`, `--from-server` and `backups:restore-server`; a site restored over itself, or brought back with `site:restore-removed`, keeps them.
 
@@ -30,12 +36,13 @@ All notable changes to Quire Server. The format follows [Keep a Changelog](https
 
 ### Known limits
 
+- **If the update to 0.6 rolls back** (by itself, or with `quire-server update --undo`): 0.5's agent, at its start, writes every running site's Compose files again as 0.5 writes them and brings each site up once more (a few seconds offline each), so its front door reaches every site by the name it uses. A site that fails to start is tried again at each start of the agent and named in its log (`quire-server logs agent`). A site whose domain starts with another site's name and a dash (`jane-blog.example` next to `jane`) has only its 0.6 name until then.
+- **Undoing the update to 0.5** (`quire-server update --undo`) turns off the automatic updates of every site with a third-party package (`site:packages … --third-party`), and names them with the command that turns each on again: 0.5 doesn't hold those packages where they are, and its updates would move them unreviewed. Don't update those sites by hand either until the server runs 0.6 again.
 - A restored copy on Quire before 0.3.2 whose `quire/analytics` is installed but disabled keeps the original's measurement ID in its database (the restore says so): clear it in its admin before enabling the extension. Quire 0.3.2 removes it.
 - A storage adapter of a site's own code that's neither a Flysystem package nor configured as a disk isn't seen by the restore's storage check.
 
 ### Deprecated
 
-- **If the update to 0.6 rolls back** (by itself, or with `quire-server update --undo`): 0.5's agent, at its start, writes every running site's Compose files again as 0.5 writes them and brings each site up once more (a few seconds offline each), so its front door reaches every site by the name it uses. A site that fails to start is tried again at each start of the agent and named in its log (`quire-server logs agent`). A site whose domain starts with another site's name and a dash (`jane-blog.example` next to `jane`) has only its 0.6 name until then.
 - The front door's second name for a site, `<domain>.quire.internal`, kept so that an update rolled back to 0.5 still reaches every site: 0.7 removes it. The scope files the agent writes have no `version` until 0.7, because YorvoGate 0.2.2, which a rollback to 0.5 runs, refuses one.
 
 ## [0.5.2] - 2026-11-10
@@ -215,7 +222,8 @@ The first release.
 - Sites deployed from a Git repository.
 - Signed releases: images and files checked before installing.
 
-[Unreleased]: https://github.com/quirecms/server/compare/v0.5.2...HEAD
+[Unreleased]: https://github.com/quirecms/server/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/quirecms/server/compare/v0.5.2...v0.6.0
 [0.5.2]: https://github.com/quirecms/server/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/quirecms/server/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/quirecms/server/compare/v0.4.0...v0.5.0

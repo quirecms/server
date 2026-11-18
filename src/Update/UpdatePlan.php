@@ -44,7 +44,8 @@ final readonly class UpdatePlan
 
     public function changesAnything(): bool
     {
-        return [] !== $this->packages || [] !== $this->appliedSkeletonFiles();
+        // Other code at the same version is a change too (a tag moved): taken only when a person says so
+        return [] !== $this->packages || [] !== $this->appliedSkeletonFiles() || [] !== $this->republished();
     }
 
     /**

@@ -84,6 +84,27 @@ final class AutomaticUpdatesTest extends TestCase
         return new UpdatePlan(new SiteName('jane'), sys_get_temp_dir(), LockTest::lock($from), LockTest::lock($to), '{}', $packages, $skeleton, null, true, $before, $after, '', $held);
     }
 
+    public function testNoReleaseRepublishedUnderItsVersionIsTakenByNight(): void
+    {
+        // symfony/yaml v8.1.0 as other code (its tag moved), and nothing else changing: still a change,
+        // and one for a person
+        $from = LockTest::packages([LockTest::package('quire/core', 'v0.1.1'), LockTest::package('symfony/yaml', 'v8.1.0')]);
+        $to = LockTest::packages([LockTest::package('quire/core', 'v0.1.1'), LockTest::package('symfony/yaml', 'v8.1.0', commit: str_repeat('e', 40))]);
+        $plan = new UpdatePlan(new SiteName('jane'), sys_get_temp_dir(), $from, $to, '{}', [], [], null, true, [], [], '');
+
+        self::assertTrue($plan->changesAnything(), 'Applied once a person takes it.');
+
+        foreach ([UpdatePolicies::ALL, UpdatePolicies::SECURITY] as $policy) {
+            self::assertStringContainsString('symfony/yaml v8.1.0 was re-published as other code (commit '.str_repeat('e', 40).', was '.LockTest::commit('symfony/yaml', 'v8.1.0').'): "site:update jane" shows it, and --accept-republished takes it', (string) AutomaticUpdates::reasonToSkip($plan, $policy, self::VOUCHED));
+        }
+
+        $problem = AutomaticUpdates::republishedProblem($plan);
+        self::assertNotNull($problem);
+        self::assertStringStartsWith('The automatic update of jane waits for you: symfony/yaml v8.1.0 was re-published', $problem[0]);
+        self::assertStringContainsString('"quire-server site:update jane --accept-republished" takes it', $problem[1]);
+        self::assertNull(AutomaticUpdates::republishedProblem(self::plan(['symfony/yaml' => ['v8.1.0', 'v8.1.3']])), 'A new version is an update, not this.');
+    }
+
     public function testTheHourIsAnHourOrOff(): void
     {
         self::assertSame(3, AutomaticUpdates::parseHour('3'));

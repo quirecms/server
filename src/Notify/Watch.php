@@ -74,7 +74,7 @@ final readonly class Watch
      */
     public function problems(): array
     {
-        return [...$this->failures(), ...$this->lateBackups(), ...$this->certificatesProblems(), ...$this->diskProblems(), ...$this->memoryProblems(), ...($this->backups->configured() ? $this->checks->problems() : [])];
+        return [...$this->failures(), ...$this->lateBackups(), ...$this->certificatesProblems(), ...$this->diskProblems(), ...$this->memoryProblems(), ...$this->checks->problems($this->backups->configured())];
     }
 
     /**

@@ -33,7 +33,7 @@ sh install.sh --email=you@example.com
 To check the installer itself first (with [cosign](https://docs.sigstore.dev/cosign/system_config/installation/)):
 
 ```bash
-version=0.5.2   # the release you install (its tag, without the "v")
+version=0.6.0   # the release you install (its tag, without the "v")
 curl -fsSLO https://github.com/quirecms/server/releases/download/v$version/install.sh
 curl -fsSLO https://github.com/quirecms/server/releases/download/v$version/install.sh.sigstore.json
 cosign verify-blob install.sh --bundle install.sh.sigstore.json \
@@ -177,6 +177,7 @@ quire-server up | down | ps | logs     # the server itself ("down -v" is refused
 The agent watches what nobody else does, and tells you (`quire-server status` lists it all, and every other command says when something needs you):
 
 - **its own work that failed:** last night's backups off the server, a site's automatic update, its rebuild on a newer runtime, a Git mode site's automatic deploy. Each says what was done about it and what to do, with the operation whose log says why (`quire-server operations <id>`). It's over when that kind of work succeeds again, whoever runs it;
+- **a site's automatic update waiting for you:** a package it would take was re-published as other code under the same version;
 - **nightly backups that stopped running** (none for 36 hours);
 - **certificates:** a domain without one an hour after it was added (its DNS doesn't point here, or ports 80 and 443 are closed), or one that isn't renewed in time;
 - **a disk filling up** (under a tenth, or 5 GB, free);
@@ -216,6 +217,8 @@ Every night (from 03:00 UTC; `QUIRE_SERVER_UPDATE_HOUR` in `server.env` sets the
 **A newer runtime is built on too:** a site whose Dockerfile builds on Quire's runtime images (sites from Quire's skeleton) is built again, its code as it is, when they have a newer signed build than the one it was built on (they're rebuilt every week with PHP's and Debian's security fixes), Git mode sites included, with the same backup, check and rollback (`site.rebuild` in the operations).
 
 A new minor version of Quire (0.1 to 0.2, say) is never taken by itself, whatever the policy: a site's `composer.json` requires the minor version it was made with (`^0.1`), and a new one may change what the site and its extensions rely on. Read its notes, then `quire-server site:update jane --to=0.2.0`.
+
+**Never a release re-published under its version.** A version is meant to be fixed code: when an update would take a package as other code at the same version (its tag was moved, and Packagist followed it), the night doesn't take it, whatever the policy, and nothing of that site moves by itself until you've looked. `quire-server status` says which package and which commits; `site:update jane` shows it and asks, and `--accept-republished` takes it (also needed with `--yes` and `--all`).
 
 `quire-server site:updates jane all` sets it; `quire-server operations` shows what was done, by `automatic`. Some updates always wait for you: one that changes files of the skeleton the site edited, and one that changes Quire's version without Quire's signed release feed vouching for it. Git mode sites get none: their updates are made in their repository.
 
