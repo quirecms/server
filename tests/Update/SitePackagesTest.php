@@ -125,14 +125,16 @@ final class SitePackagesTest extends RegistryTestCase
         $json = json_decode($plan->plan->composerJson, true);
         self::assertIsArray($json);
         self::assertSame(['packages' => ['quire/analytics' => ['third-party' => false]]], $this->at($json, 'extra', 'quire-server'));
-        self::assertSame('^1.0.0', $this->at($json, 'require', 'quire/analytics'), 'Composer wrote its constraint.');
+        self::assertSame('^0.3.1', $this->at($json, 'require', 'quire/analytics'), '"^" and the release that fits the site, as Composer writes one.');
         self::assertSame([], $plan->plan->held, 'Quire\'s follow the site\'s updates.');
         self::assertSame(['site.packages', ['action' => 'add', 'package' => 'quire/analytics', 'from' => null, 'to' => 'v0.3.1', 'third_party' => false, 'packages' => 2]], [$plan->plan->operation, $plan->plan->details]);
 
         // Recorded before Composer resolves (the lock's content-hash covers "extra"); then only it moves.
-        self::assertSame(['composer audit', 'composer require', 'composer update', 'composer audit'], $this->runner->keys());
+        // Any release, resolved with the site; then "^" and the release it got, and the lock again for its hash
+        self::assertSame(['composer audit', 'composer require', 'composer update', 'composer require', 'composer update', 'composer audit'], $this->runner->keys());
         $require = $this->command('composer require');
-        self::assertSame('quire/analytics', $require[2]);
+        self::assertSame('quire/analytics:*', $require[2]);
+        self::assertSame('quire/analytics:^0.3.1', $this->runner->runs[3]['command'][2]);
         self::assertContains('--no-update', $require);
         $update = $this->command('composer update');
         self::assertSame(['update', 'quire/analytics', '--with-dependencies'], \array_slice($update, 1, 3), 'Composer\'s minimal changes: nothing the site requires moves.');
@@ -179,6 +181,27 @@ final class SitePackagesTest extends RegistryTestCase
         self::assertSame(['acme/reviews' => ['third-party' => true]], $this->at($json, 'extra', 'quire-server', 'packages'));
         self::assertSame('^1.2.0', $this->at($json, 'require', 'acme/reviews'));
         $plan->discard();
+    }
+
+    public function testTheReleaseThatFitsTheSiteNotTheNewest(): void
+    {
+        // Packagist's newest needs another Quire than the site's; Composer resolves the one that fits
+        $this->newest = ['quire/analytics' => '0.4.0'];
+        $this->resolved = [...$this->site(), $this->analytics(), $this->privacy()];
+        $plan = $this->packages()->add($this->name, 'quire/analytics', false);
+
+        $json = json_decode($plan->plan->composerJson, true);
+        self::assertIsArray($json);
+        self::assertSame('^0.3.1', $this->at($json, 'require', 'quire/analytics'));
+        self::assertSame('v0.3.1', $plan->version);
+        $plan->discard();
+    }
+
+    public function testOnlyAStableReleaseWithoutAConstraint(): void
+    {
+        $this->resolved = [...$this->site(), LockTest::package('acme/reviews', '1.3.0-beta1', 'quire-extension', ['quire/core' => '^0.3'])];
+        $this->expectExceptionMessageIsOrContains('acme/reviews 1.3.0-beta1 isn\'t a stable release: add it with a constraint ("acme/reviews:^1.2").');
+        $this->packages()->add($this->name, 'acme/reviews', true);
     }
 
     public function testWithAConstraint(): void

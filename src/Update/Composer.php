@@ -62,7 +62,7 @@ final readonly class Composer
     /**
      * Adds a package to this folder's composer.json, without resolving anything: "acme/reviews", or
      * with a constraint ("acme/reviews:^1.2"). Without one, Composer writes "^" and the newest stable
-     * release (resolved by update() afterwards).
+     * release, whether or not it fits the folder's other packages (resolved by update() afterwards).
      *
      * @param (\Closure(string): void)|null $output
      */
