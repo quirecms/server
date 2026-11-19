@@ -136,6 +136,25 @@ final class SettingsCommandsTest extends RegistryTestCase
         self::assertSame('darko@example.com', new ServerFolder($this->runner, $this->root)->env()->get('QUIRE_SERVER_NOTIFY_EMAIL'));
     }
 
+    public function testTheMachinesUpdatesTakeOnlyWhatHostSetupWrites(): void
+    {
+        // host-updates.sh checks these again, in root's shell, before anything reaches a file
+        foreach (['0', '5', '23', ''] as $hour) {
+            self::assertNull(ServerSettings::problem('QUIRE_SERVER_OS_UPDATE_HOUR', $hour), $hour);
+        }
+        foreach (['24', '-1', '05', 'off', '4;touch /pwned', "4\n"] as $hour) {
+            self::assertNotNull(ServerSettings::problem('QUIRE_SERVER_OS_UPDATE_HOUR', $hour), $hour);
+        }
+        self::assertStringContainsString('from 0 to 23', (string) ServerSettings::problem('QUIRE_SERVER_OS_UPDATE_HOUR', '24'));
+        foreach (['QUIRE_SERVER_REBOOT', 'QUIRE_SERVER_OS_UPDATES'] as $name) {
+            self::assertNull(ServerSettings::problem($name, 'on'));
+            self::assertNull(ServerSettings::problem($name, 'off'));
+            self::assertNull(ServerSettings::problem($name, ''));
+            self::assertStringContainsString('"on" or "off"', (string) ServerSettings::problem($name, 'yes'));
+            self::assertStringContainsString('"on" or "off"', (string) ServerSettings::problem($name, 'on"'));
+        }
+    }
+
     public function testADsnShowsWithoutItsPasswordOrToken(): void
     {
         self::assertSame('smtp://(a token)@smtp.postmarkapp.com:587', ServerSettings::dsnShown('smtp://abc-123:abc-123@smtp.postmarkapp.com:587'));

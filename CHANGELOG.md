@@ -4,6 +4,24 @@ All notable changes to Quire Server. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+### Security
+
+- **Docker, containerd and runc get their fixes by themselves** (ARC-0061). Docker comes from Docker's own repository, which Ubuntu's automatic updates leave out, so a server kept the Docker it was installed with: sites are held apart by it and the kernel, and runc had container escapes. At each start, the server now adds Docker's repository to the machine's automatic updates, held to the major this release is tested on (29), never downgrading, and never clearing the machine's other origins. It does so only when those updates are on and Docker came from Docker's repository; on another major, nothing of Docker's is moved, and `status` says so.
+- **`status` says how the machine gets its updates**, as the machine has them (an operator's own file included), **and, with the notifications, when it misses its fixes:** a restart pending for a newer kernel, Docker, containerd or runc below the oldest release without a known escape, Docker on an untested major, and automatic updates that haven't run for 3 days.
+- **SECURITY.md says who the server is for:** whoever can make code run on it is trusted like root, short of a kernel bug and with the machine patched; hosting strangers' code is out of scope (ADR-0008), with the four things that cross that line.
+
+### Added
+
+- `QUIRE_SERVER_OS_UPDATE_HOUR` (0–23) and `QUIRE_SERVER_REBOOT` (on/off): the hour (UTC) of the machine's updates, and whether it restarts after them when a new kernel needs it. A new install sets 5 and on. A server installed before keeps its machine's own hour and restart until they're set (`settings:set`), so an operator's files stay in charge. `QUIRE_SERVER_OS_UPDATES=off`, which `--no-os-updates` now writes, leaves Docker's updates alone too.
+
+### Changed
+
+- The installer turns on the machine's automatic updates before the server starts, so its first start already adds Docker's.
+
+### Upgrading
+
+Nothing to do. At its first start, the server adds Docker's updates where the machine's automatic updates are on, and `status` says whether a restart waits. To have it restart by itself after updates: `quire-server settings:set QUIRE_SERVER_REBOOT=on`.
+
 ## [0.6.0] - 2026-11-17
 
 The Docker gate is YorvoGate 0.3.0, a managed site's owner adds Quire extensions and themes (`site:packages`), and a site restored as a new one leaves the original's email, analytics and storage alone.

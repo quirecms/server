@@ -172,6 +172,10 @@ check 'the Docker gate has no network at all' "[ \"\$(inside 'docker inspect qui
 check 'only the gate holds Docker'\''s socket (and the updater, when it runs)' "[ \"\$(inside 'docker ps --format \"{{.Names}}\" | xargs docker inspect --format \"{{.Name}} {{range .Mounts}}{{.Source}} {{end}}\"' | grep -c docker.sock)\" = 1 ] && inside 'docker inspect quire-server-gate-1 --format \"{{range .Mounts}}{{.Source}} {{end}}\"' | grep -q docker.sock"
 check 'the agent reaches Docker through the gate only' "[ \"\$(inside 'docker inspect quire-server-agent-1 --format \"{{range .Config.Env}}{{println .}}{{end}}\"' | grep ^DOCKER_HOST=)\" = DOCKER_HOST=unix:///run/quire-gate/trusted/trusted.sock ]"
 check 'the host was set up for builds' "inside 'docker run --rm -v quire-server_host_facts:/facts:ro alpine:3.22 cat /facts/builder-apparmor' | grep -Eqx 'none|unconfined|yorvogate-buildkit-rootless'"
+# The machine's updates (gate/host-updates.sh): this machine has no apt, so nothing is written, and
+# the start isn't stopped; status says what it found
+check 'the machine'"'"'s updates were looked at, and nothing written on a machine without apt' "inside 'docker run --rm -v quire-server_host_facts:/facts:ro alpine:3.22 cat /facts/host-updates' | grep -qx 'docker_updates=no-apt' && inside '! ls /etc/apt/apt.conf.d/52quire-server-docker' >/dev/null 2>&1"
+check 'status says how the machine gets its updates' "inside 'quire-server status' | grep -q '^Machine.s updates: Docker isn.t from Docker.s repository'"
 fi
 check 'its secrets are root'\''s only' "[ \"\$(inside 'stat -c %a /srv/quire/server/server.env')\" = 600 ] && [ \"\$(inside 'stat -c %a /srv/quire/sites')\" = 700 ]"
 

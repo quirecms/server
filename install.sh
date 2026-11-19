@@ -299,6 +299,13 @@ install_files() {
 		-e "s#^COMPOSE_FILE=.*#COMPOSE_FILE=compose.yaml${source:+:compose.build.yaml}#" \
 		"$staging/server.env.dist" >"$staging/server.env"
 	if [ "$test_certificates" = 1 ]; then printf '\n# Tests: certificates from the front door'\''s own authority\nQUIRE_SERVER_TLS_GLOBAL=local_certs\n' >>"$staging/server.env"; fi
+	# The machine's own updates (gate/host-updates.sh): Docker's packages with Ubuntu's, at 05:30 UTC,
+	# and a restart right after them when one needs it (a new kernel). --no-os-updates: left alone.
+	if [ "$os_updates" = 1 ]; then
+		printf '\n# The machine'\''s automatic updates: Docker'\''s packages too, from this hour (UTC), and a restart after\n# them when a new kernel needs one (on/off). Empty leaves them to the machine.\nQUIRE_SERVER_OS_UPDATE_HOUR=5\nQUIRE_SERVER_REBOOT=on\n' >>"$staging/server.env"
+	else
+		printf '\n# --no-os-updates: the machine'\''s updates are left alone, Docker'\''s included\nQUIRE_SERVER_OS_UPDATES=off\n' >>"$staging/server.env"
+	fi
 	if [ "$staging_certificates" = 1 ]; then printf '\n# Tests: certificates from Let'\''s Encrypt'\''s staging authority (browsers warn; real public names only)\nQUIRE_SERVER_TLS_GLOBAL='\''acme_ca https://acme-staging-v02.api.letsencrypt.org/directory'\''\n' >>"$staging/server.env"; fi
 	# What was checked and installed (root only): the release, its archive's checksum and its image
 	if [ -n "$image" ]; then printf 'VERSION=%s\nARCHIVE_SHA256=%s\nIMAGE=%s\n' "$version" "$digest" "$image" >"$staging/.installed"; fi
@@ -469,7 +476,7 @@ os_updates() {
 	if [ ! -f /etc/apt/apt.conf.d/20auto-upgrades ]; then
 		printf 'APT::Periodic::Update-Package-Lists "1";\nAPT::Periodic::Unattended-Upgrade "1";\n' >/etc/apt/apt.conf.d/20auto-upgrades
 	fi
-	note 'Security updates install by themselves (restarts stay yours to plan)'
+	note 'Security updates install by themselves, Docker'\''s too, from 05:30 UTC, and the machine restarts after them when a new kernel needs it (QUIRE_SERVER_OS_UPDATE_HOUR and QUIRE_SERVER_REBOOT in server.env)'
 }
 
 firewall() {
@@ -538,11 +545,12 @@ main() {
 	install_files
 	check_site_range
 	size_database
+	# Before the server starts: its host setup finds the machine's updates on, and adds Docker's
+	os_updates
 	start_core
 	adopt_sites
 	start_front
 	firewall
-	os_updates
 
 	say 'Quire Server runs'
 	note 'Add a site:     quire-server site:add jane --domain=jane.example --admin-email=jane@example.com'
