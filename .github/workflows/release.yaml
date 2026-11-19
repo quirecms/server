@@ -82,6 +82,8 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # By its digest only: the version names it once it's scanned and signed ("Tag the signed image"),
+      # so a tag never names an image that failed either (ADR-0010 §7)
       - name: Build and push the agent's image
         id: image
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
@@ -90,8 +92,7 @@ jobs:
           target: server
           platforms: linux/amd64,linux/arm64
           pull: true
-          push: true
-          tags: ${{ env.IMAGE }}:${{ steps.version.outputs.version }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
           build-args: QUIRE_SERVER_VERSION=${{ steps.version.outputs.version }}
           # How it was built, and what's in it, attached to the image
           provenance: mode=max
@@ -108,6 +109,17 @@ jobs:
 
       - name: Sign the image
         run: cosign sign --yes "$IMAGE@${{ steps.image.outputs.digest }}"
+
+      - name: Tag the signed image
+        # The version names exactly the image scanned and signed: tagged as it is (one source, so the
+        # index is copied unchanged), then read back. Another digest under the tag is a failed release.
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          docker buildx imagetools create --tag "$IMAGE:$VERSION" "$IMAGE@$DIGEST"
+          tagged=$(docker buildx imagetools inspect "$IMAGE:$VERSION" --format '{{json .Manifest.Digest}}' | tr -d '"')
+          [ "$tagged" = "$DIGEST" ] || { echo "::error::$IMAGE:$VERSION is $tagged, not the signed $DIGEST."; exit 1; }
 
       - name: The release's files
         env:
