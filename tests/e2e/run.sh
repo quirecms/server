@@ -813,6 +813,9 @@ inside 'quire-server site:packages jane add quire/analytics --dry-run 2>&1' > "$
 check 'the plan shows what it adds, and where from, and changes nothing' "grep -q 'New quire/analytics' $logs/packages-plan.log && grep -q 'New quire/privacy' $logs/packages-plan.log && grep -q 'Nothing changed' $logs/packages-plan.log && [ -z \"\$(locked quire/analytics)\" ]"
 inside 'quire-server site:packages jane add quire/analytics --yes 2>&1' | tee "$logs"/packages-add.log | sed 's/^/    /'
 check 'Quire'\''s analytics is added: installed, not enabled' "grep -q 'installed, not enabled' $logs/packages-add.log && [ -n \"\$(locked quire/analytics)\" ] && inside 'docker exec jane-php-1 bin/console quire:about --format=json' | grep -A3 '\"package\": \"quire/analytics\"' | grep -q '\"status\": \"disabled\"'"
+# The newest release on Packagist, which site:packages took: a later update moves back to it
+newest=$(locked quire/analytics)
+check 'Packagist has a release of it newer than the 0.3.0 the site is moved back to' "[ -n '$newest' ] && [ '$newest' != v0.3.0 ]"
 check 'nothing else moved: it and what it needs (quire/privacy), no more' "[ \"\$(count)\" = \$((packages_before + 2)) ] && [ \"\$(locked symfony/yaml)\" = '$yaml_before' ]"
 check 'it is recorded with the site'\''s composer.json, and logged' "inside 'grep -A2 \"\\\"quire-server\\\"\" /srv/quire/sites/jane/composer.json' | grep -q 'quire/analytics' && inside 'quire-server operations' | grep site.packages | head -1 | grep -q succeeded"
 check 'it answers after its package is added' "[ \"\$(inside \"curl -sk $resolve -o /dev/null -w '%{http_code}' https://jane.test/\")\" = 200 ]"
@@ -831,14 +834,14 @@ inside "sed -i 's#\"quire/analytics\": \"[^\"]*\"#\"quire/analytics\": \"^0.3\"#
 inside "docker run --rm --user \$(stat -c %u:%g $lock) -e COMPOSER_HOME=/tmp/composer -v /srv/quire/sites/jane:/srv/quire/sites/jane -w /srv/quire/sites/jane composer:2.10.3 update quire/analytics --with=quire/analytics:0.3.0 --no-install --no-scripts --no-plugins --ignore-platform-reqs --no-interaction --no-progress" 2>&1 | sed 's/^/    /'
 check 'the site has the older release of a "third party'\''s" package' "[ \"\$(locked quire/analytics)\" = v0.3.0 ]"
 inside 'quire-server site:update jane --dry-run 2>&1' > "$logs"/packages-held.log || true
-check 'an update holds it where it is, and says how it moves' "grep -q 'Held.*quire/analytics v0.3.0' $logs/packages-held.log && ! grep -Eq '^ *quire/analytics +v0.3.0 +v0.3.1' $logs/packages-held.log"
+check 'an update holds it where it is, and says how it moves' "grep -q 'Held.*quire/analytics v0.3.0' $logs/packages-held.log && ! grep -Eq \"^ *quire/analytics +v0.3.0 +$newest\" $logs/packages-held.log"
 inside 'quire-server site:updates jane all >/dev/null'
 inside 'quire-server site:update --all --automatic 2>&1' > "$logs"/packages-automatic.log || true
 check 'nor does the night'\''s, everything allowed' "grep -q jane $logs/packages-automatic.log && [ \"\$(locked quire/analytics)\" = v0.3.0 ]"
 inside 'quire-server site:updates jane security >/dev/null'
 check 'moving it asks for --third-party again' "inside 'quire-server site:packages jane update quire/analytics --yes 2>&1' | tr -s ' \\n' ' ' | grep -q 'with --third-party' && [ \"\$(locked quire/analytics)\" = v0.3.0 ]"
 inside 'quire-server site:packages jane update quire/analytics --third-party --yes 2>&1' | tee "$logs"/packages-update.log | sed 's/^/    /'
-check 'only "site:packages … update" moves it' "grep -q 'runs quire/analytics v0.3.1' $logs/packages-update.log && [ \"\$(locked quire/analytics)\" = v0.3.1 ] && [ \"\$(locked symfony/yaml)\" = '$yaml_before' ]"
+check 'only "site:packages … update" moves it' "grep -q 'runs quire/analytics $newest' $logs/packages-update.log && [ \"\$(locked quire/analytics)\" = $newest ] && [ \"\$(locked symfony/yaml)\" = '$yaml_before' ]"
 
 inside 'quire-server site:packages jane remove quire/analytics --yes 2>&1' | tee "$logs"/packages-remove.log | sed 's/^/    /'
 check 'once the site runs neither, it is removed with what only it needed' "grep -q 'have quire/analytics any more' $logs/packages-remove.log && [ -z \"\$(locked quire/analytics)\" ] && [ -z \"\$(locked quire/privacy)\" ] && [ \"\$(count)\" = $packages_before ] && ! inside 'grep -q quire-server /srv/quire/sites/jane/composer.json'"
