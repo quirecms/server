@@ -11,7 +11,7 @@ on:
   push:
     tags:
       - 'v[0-9]+.[0-9]+.[0-9]+'
-      - 'v[0-9]+.[0-9]+.[0-9]+-*'
+      - 'v[0-9]+.[0-9]+.[0-9]+-rc.[0-9]+'
 
 permissions:
   contents: read
@@ -21,8 +21,28 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # A tag is released only when it's signed by a key in .github/release-signers (ADR-0010): a job of its
+  # own, with no credentials but reading, which the release needs. Anyone who can push a tag could
+  # otherwise have this workflow build, sign and publish a release.
+  signed:
+    name: Signed by a release signer
+    if: github.repository == 'quirecms/server'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: The tag is signed by a key in .github/release-signers
+        run: .github/verify-tag.sh "$GITHUB_REF_NAME"
+
   release:
     name: Release
+    needs: signed
     if: github.repository == 'quirecms/server'
     runs-on: ubuntu-26.04
     timeout-minutes: 60

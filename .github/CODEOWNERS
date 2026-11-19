@@ -1,0 +1,7 @@
+# Who must approve a change to how Quire Server is released (ADR-0010): the keys that may sign a
+# release, the workflows, and the script they gate a release with. GitHub asks for it once "Require
+# review from Code Owners" is on for main.
+/.github/release-signers @dpoposki
+/.github/workflows/ @dpoposki
+/.github/verify-tag.sh @dpoposki
+/.github/CODEOWNERS @dpoposki
