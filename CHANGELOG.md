@@ -4,47 +4,28 @@ All notable changes to Quire Server. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-19
+
+The Docker gate is YorvoGate 0.3.0, Docker, containerd and runc get their fixes with the machine's updates, a managed site's owner adds Quire extensions and themes (`site:packages`), a site restored as a new one leaves the original's email, analytics and storage alone, and only a tag the maintainer signed makes a release.
+
 ### Security
 
-- **Docker, containerd and runc get their fixes by themselves** (ARC-0061). Docker comes from Docker's own repository, which Ubuntu's automatic updates leave out, so a server kept the Docker it was installed with: sites are held apart by it and the kernel, and runc had container escapes. At each start, the server now adds Docker's repository to the machine's automatic updates, held to the major this release is tested on (29), never downgrading, and never clearing the machine's other origins. It does so only when those updates are on and Docker came from Docker's repository; on another major, nothing of Docker's is moved, and `status` says so.
+- **Docker, containerd and runc get their fixes by themselves**. Docker comes from Docker's own repository, which Ubuntu's automatic updates leave out, so a server kept the Docker it was installed with: sites are held apart by it and the kernel, and runc had container escapes. At each start, the server now adds Docker's repository to the machine's automatic updates, held to the major this release is tested on (29), never downgrading, and never clearing the machine's other origins. It does so only when those updates are on and Docker came from Docker's repository; on another major, nothing of Docker's is moved, and `status` says so.
 - **`status` says how the machine gets its updates**, as the machine has them (an operator's own file included), **and, with the notifications, when it misses its fixes:** a restart pending for a newer kernel, Docker, containerd or runc below the oldest release without a known escape, Docker on an untested major, and automatic updates that haven't run for 3 days.
 - **A release's image tag (`ghcr.io/quirecms/server:X.Y.Z`) names only an image that passed its scan and was signed.** The image used to be tagged as it was pushed, before either ran; servers install by digest and check the signature, so a failing image was never installed, but its tag named it. It's now pushed by digest, and tagged once scanned and signed.
 - **Only a tag the maintainer signed makes a release.** Anyone who could push a tag could have the release workflow build, sign and publish it, and a release's keyless signature proves only that the workflow made it. The workflow now refuses a tag that isn't `vX.Y.Z` or `vX.Y.Z-rc.N`, annotated and signed by a key in `.github/release-signers` as `main` has it, before any step that can publish.
-- **SECURITY.md says who the server is for:** whoever can make code run on it is trusted like root, short of a kernel bug and with the machine patched; hosting strangers' code is out of scope (ADR-0008), with the four things that cross that line.
-
-### Added
-
-- `QUIRE_SERVER_OS_UPDATE_HOUR` (0–23) and `QUIRE_SERVER_REBOOT` (on/off): the hour (UTC) of the machine's updates, and whether it restarts after them when a new kernel needs it. A new install sets 5 and on. A server installed before keeps its machine's own hour and restart until they're set (`settings:set`), so an operator's files stay in charge. `QUIRE_SERVER_OS_UPDATES=off`, which `--no-os-updates` now writes, leaves Docker's updates alone too.
-
-### Changed
-
-- The installer turns on the machine's automatic updates before the server starts, so its first start already adds Docker's.
-
-### Upgrading
-
-Nothing to do. At its first start, the server adds Docker's updates where the machine's automatic updates are on, and `status` says whether a restart waits. To have it restart by itself after updates: `quire-server settings:set QUIRE_SERVER_REBOOT=on`.
-
-## [0.6.0] - 2026-11-17
-
-The Docker gate is YorvoGate 0.3.0, a managed site's owner adds Quire extensions and themes (`site:packages`), and a site restored as a new one leaves the original's email, analytics and storage alone.
-
-### Security
-
+- **SECURITY.md says who the server is for:** whoever can make code run on it is trusted like root, short of a kernel bug and with the machine patched; hosting strangers' code is out of scope, with the four things that cross that line.
 - **The Docker gate is YorvoGate 0.3.0** (pinned by its digest, its signature checked), which fixes flaws of 0.2.2 that apply to this server. A site could run a container from another site's image by the image's ID: High here, because the server protects sites' images (`protected_images`). A token taken off a scope kept working until the scope's file changed size. A request could crash the gate for every site (GO-2026-6859). The gate now also writes Docker's built-in seccomp profile and a private cgroup namespace into every site container. At the agent's start after the update, every site's containers that don't have them are made again (a few seconds offline each).
-
-- A site restored as a new one sends no email unless asked (SEC-0014). This covers `backups:restore --as`, `--from-server` and `backups:restore-server`, on this server or another. Before, it kept the mailer its backup had, so a drill or a rehearsal could email the original's users from the real sender, with the production token on the copy. "No email" is now written as such (`MAILER_DSN=null://null`), also for `site:mail --none` and a site added to a server without a mailer, so a mailer in the site's own `.env` files can't take over. `--keep-mailer` keeps the backup's mailer, for a real move; `--server-mailer` gives the site this server's. The restore names each site's mailer, without its password.
-
+- A site restored as a new one sends no email unless asked. This covers `backups:restore --as`, `--from-server` and `backups:restore-server`, on this server or another. Before, it kept the mailer its backup had, so a drill or a rehearsal could email the original's users from the real sender, with the production token on the copy. "No email" is now written as such (`MAILER_DSN=null://null`), also for `site:mail --none` and a site added to a server without a mailer, so a mailer in the site's own `.env` files can't take over. `--keep-mailer` keeps the backup's mailer, for a real move; `--server-mailer` gives the site this server's. The restore names each site's mailer, without its password.
 - No update takes a package re-published as other code under the same version (its tag moved, and Packagist followed it), where Composer would. The night never does, whatever the site's policy: the site's update waits, and `status` names the package and its commits. `site:update` shows it and asks; `--accept-republished` takes it, and is needed with `--yes` or `--all`. A third-party package added with `site:packages` re-published that way stops every update of its site.
-
 - A site restored as a new one doesn't act on the original's other services either. Its Google Analytics is off, so its visits don't count as the original's (`--keep-analytics` keeps it). It isn't restored at all while its stored files are on storage outside it, such as an S3 bucket the original uses too: the copy would change and delete the original's files there, and the restore would first write the backup's files there (`--shared-storage` restores it anyway, once the original is gone). Where a site's disks are comes from its code before anything of it runs (any Flysystem adapter in its lock but the local and memory ones, a disk adapter other than `local` in its configuration), then from its own `quire:about` (Quire 0.3.2 and later) with only its web container started, before its workers. This covers `backups:restore --as`, `--from-server` and `backups:restore-server`; a site restored over itself, or brought back with `site:restore-removed`, keeps them.
-
-- `backups:setup --existing` takes a key that only reads (SEC-0015). A machine that restores another server's backups (a drill, a new machine after an incident) no longer needs a key that could change or delete the only copy. Setup notices that its test write is refused and saves the server as "restores only". Its listings and restores open the repository without restic's lock, so they write nothing to the bucket. It makes no backups, so nothing is late and no night fails, and `status` says so. A key that may write works as before.
-
-- The front door's log no longer holds visitors' full IP addresses (SEC-0010), neither in visits nor in Caddy's own messages (such as a certificate obtained at a site's first visit): each is cut to its network (/24 for IPv4, /48 for IPv6) as the line is written, and headers that can carry an address (`X-Forwarded-For`, `Forwarded`, `X-Real-Ip`, `Cf-Connecting-Ip`, `True-Client-Ip`) are left out. The log has a set size, 3 files of 10 MB, whatever the machine's Docker defaults are. Lines written before the update keep their addresses until the front door is replaced, which the update does.
+- `backups:setup --existing` takes a key that only reads. A machine that restores another server's backups (a drill, a new machine after an incident) no longer needs a key that could change or delete the only copy. Setup notices that its test write is refused and saves the server as "restores only". Its listings and restores open the repository without restic's lock, so they write nothing to the bucket. It makes no backups, so nothing is late and no night fails, and `status` says so. A key that may write works as before.
+- The front door's log no longer holds visitors' full IP addresses, neither in visits nor in Caddy's own messages (such as a certificate obtained at a site's first visit): each is cut to its network (/24 for IPv4, /48 for IPv6) as the line is written, and headers that can carry an address (`X-Forwarded-For`, `Forwarded`, `X-Real-Ip`, `Cf-Connecting-Ip`, `True-Client-Ip`) are left out. The log has a set size, 3 files of 10 MB, whatever the machine's Docker defaults are. Lines written before the update keep their addresses until the front door is replaced, which the update does.
 
 ### Added
 
 - `site:packages`: a managed site's Quire extensions and themes, from Packagist, added, moved and removed by its owner, as updates are made (worked out on a copy and shown first, built beside, backed up, checked, rolled back by itself, undone with `site:undo`). A package is installed, not enabled. Adding one moves nothing else, and brings no Composer plugin, nothing that stands in for one of the site's packages or Quire's, and no known vulnerability. Quire's own follow the site's updates. Anyone else's needs `--third-party`, is shown with the commit its code is, and never moves in an update after, automatic or not: only `site:packages <site> update <package> --third-party` moves it, and a release of it re-published under the same version stops the site's updates until then. A package is removed only once the site runs neither it nor what would go with it. What was added is recorded in the site's `composer.json`, so a restore or an undo brings the record back with the packages.
+- `QUIRE_SERVER_OS_UPDATE_HOUR` (0–23) and `QUIRE_SERVER_REBOOT` (on/off): the hour (UTC) of the machine's updates, and whether it restarts after them when a new kernel needs it. A new install sets 5 and on. A server installed before keeps its machine's own hour and restart until they're set (`settings:set`), so an operator's files stay in charge. `QUIRE_SERVER_OS_UPDATES=off`, which `--no-os-updates` now writes, leaves Docker's updates alone too.
 
 ### Changed
 
@@ -53,6 +34,11 @@ The Docker gate is YorvoGate 0.3.0, a managed site's owner adds Quire extensions
 - The front door reaches a site by `edge.<domain>.quire.internal`. YorvoGate 0.3 gives a name to the site whose prefix it starts with, so a site whose domain starts with another site's name (the domain `jane-blog.example` next to the site `jane`) had both sites refused. A site keeps its name of earlier releases (`<domain>.quire.internal`) where no other site's prefix covers it, and loses it when a site added later covers it.
 - Sites' builders run under YorvoGate 0.3.0's AppArmor profile, its release file as published.
 - New sites get Quire `^0.3` unless the server says otherwise (`settings:set QUIRE_SERVER_QUIRE_VERSION=…`); it was `^0.1`. A server that set its own keeps it.
+- The installer turns on the machine's automatic updates before the server starts, so its first start already adds Docker's.
+
+### Upgrading
+
+Nothing to do. At its first start, the server adds Docker's updates where the machine's automatic updates are on, and `status` says whether a restart waits. To have it restart by itself after updates: `quire-server settings:set QUIRE_SERVER_REBOOT=on`.
 
 ### Known limits
 
