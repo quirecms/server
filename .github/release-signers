@@ -1,0 +1,4 @@
+# Who may sign Quire Server's release tags, in git's allowed-signers format (ssh-keygen(1), ALLOWED SIGNERS).
+# The release workflow publishes only a tag signed by one of these keys, as main lists them
+# (.github/verify-tag.sh). Only the code owners change it (.github/CODEOWNERS).
+dpoposki namespaces="git" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIC5W50dlwamJ3W/cZLLR1ireeA4ExZmI+VbVhkIPfTH+

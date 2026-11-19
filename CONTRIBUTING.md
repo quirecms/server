@@ -34,6 +34,21 @@ docker run --rm -v "$PWD:/m:ro" koalaman/shellcheck-alpine:v0.11.0 sh -c 'shellc
 
 Pull requests are reviewed for the above, and for messages: what an owner reads when something fails says what happened, whether their data is safe, and what to do next.
 
+## Pull requests, commits and branches
+
+These follow the conventions every YorvoLabs repository shares.
+
+1. **The title is the squash commit's subject:** imperative, one sentence, at most 72 characters, no trailing period: "Refuse a site's build without its signed runtime", not "A site's build is refused…" or "Builds: …". It says what the code does, with no reference in it: "Patch Docker with the machine's updates". No type prefixes (`feat:` and the like); only Dependabot's `chore:` stays, so dependency updates can be filtered. A release's pull request is titled `Release X.Y.Z`, and the one that moves `main` to the next minor version `Start X.Y`.
+2. **The description is the squash commit's body,** under the headings of the template: **Why** (required), **What changes** (bullets, behavior rather than files), **Tested** (what ran, and what didn't, NOT RUN with the reason) and **Refs** (only what anyone can open: `Fixes #123`, a pull request, a published advisory, an RFC or upstream documentation; left out when there's none). Its checklist is the list above.
+3. **Nothing internal in public text:** titles, descriptions, commit messages, branch names, tag messages and CHANGELOG entries describe what the code changes and why, for someone outside the project. They never carry internal tracking codes or decision numbers, people's names or who decided or approved what, or paths outside the repository.
+4. **Commits on a branch** are free-form: they're squashed when merging. Add `Co-authored-by` only for a human co-author.
+5. **Branches are named `<kind>/<slug>`,** where the kind is `feat`, `fix`, `docs`, `chore`, `ci` or `security`, and the slug is lowercase with hyphens and says what the change is: `fix/host-patching`, `feat/site-packages`. `release/` is kept for maintenance branches (6); a release is prepared on `chore/release-X.Y.Z`.
+6. **Tags and release branches:** a release tag is `vX.Y.Z`, or `vX.Y.Z-rc.N` for a release candidate, with no other labels; annotated, SSH-signed by a key in `.github/release-signers` (`git tag -s v0.6.0 -m "Quire Server 0.6.0"`), on a commit of `main` that passed CI. The release workflow refuses any other tag before anything that can publish runs; `.github/verify-tag.sh v0.6.0` checks a tag the same way. Releases come from `main`; `release/X.Y` is created from `vX.Y.0` only when an older minor needs a fix after `main` has moved on (fixed on `main` first, then `git cherry-pick -x`).
+7. **Security fixes under embargo** are made in the repository's private security-advisory fork, never on a public branch, with a neutral title, description and branch: no advisory ID and no description of the attack until the advisory is published. The CHANGELOG's "Security" entry and the advisory's ID are added at release.
+8. **What a release publishes:** a GitHub release titled `Quire Server X.Y.Z` (a pre-release for `-rc.N`) with its CHANGELOG section (Keep a Changelog: `## [X.Y.Z] - YYYY-MM-DD`) and its image's digest as notes; the agent's image with its SBOM and provenance, scanned, then signed (servers install it by digest and check that signature); and the release's files with their checksums, signed with Sigstore. Before 1.0, a minor release may break things and a patch only fixes them; "Updating from …" says what an owner must do.
+
+Changes to how Quire Server is released (`.github/release-signers`, the workflows and `.github/verify-tag.sh`) need a code owner's review (`.github/CODEOWNERS`).
+
 ## Commands
 
 A command is a class in `src/Console/` named `server:<name>`, run as `quire-server <name>` (`bin/quire-server` adds the prefix). A new one goes in the README's list of commands and in `bin/quire-server`'s header. `tests/Console/` shows how they're tested; `BackupsSetupCommandTest` is one that reads and writes the registry, on a real PostgreSQL schema of its own (`tests/Registry/RegistryTestCase.php`), with the programs it runs scripted (`tests/ScriptedRunner.php`). Internal commands (the agent's own) are `hidden: true`: "quire-server help" lists the others, by what they're for.
