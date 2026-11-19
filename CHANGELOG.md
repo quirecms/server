@@ -33,7 +33,7 @@ The Docker gate is YorvoGate 0.3.0, Docker, containerd and runc get their fixes 
 - The gate keeps each site's last valid claims across its restarts (a state file on a volume of its own).
 - The front door reaches a site by `edge.<domain>.quire.internal`. YorvoGate 0.3 gives a name to the site whose prefix it starts with, so a site whose domain starts with another site's name (the domain `jane-blog.example` next to the site `jane`) had both sites refused. A site keeps its name of earlier releases (`<domain>.quire.internal`) where no other site's prefix covers it, and loses it when a site added later covers it.
 - Sites' builders run under YorvoGate 0.3.0's AppArmor profile, its release file as published.
-- New sites get Quire `^0.3` unless the server says otherwise (`settings:set QUIRE_SERVER_QUIRE_VERSION=…`); it was `^0.1`. A server that set its own keeps it.
+- New sites get Quire `^0.4` unless the server says otherwise (`settings:set QUIRE_SERVER_QUIRE_VERSION=…`); it was `^0.1`. A server that set its own keeps it.
 - The installer turns on the machine's automatic updates before the server starts, so its first start already adds Docker's.
 
 ### Upgrading

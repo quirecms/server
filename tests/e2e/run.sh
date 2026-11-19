@@ -613,8 +613,10 @@ inside 'docker rm -f other-web >/dev/null'
 inside 'quire-server up 2>&1' > "$logs"/up-after-ports.log || true
 check 'after a port conflict, "up" gets the front door its ports back' "grep -q 'starting it again' $logs/up-after-ports.log && inside 'docker port quire-server-front-1 443'"
 echo '== Adding a site (a few minutes: it is built)'
-# Its third domain is one public DNS knows: it names 127.0.0.1, the front door itself (as a real domain names the server)
-inside 'quire-server site:add jane --domain=jane.test --domain=www.jane.test --domain=jane.127.0.0.1.sslip.io --admin-email=jane@example.com --title="Jane" 2>&1' | tee "$logs"/add.log | sed 's/^/    /'
+# Its third domain is one public DNS knows: it names 127.0.0.1, the front door itself (as a real domain names the server).
+# It's on Quire 0.3, not the server's default: its packages are moved back to an older release of
+# quire/analytics below, which needs a minor with releases before its newest.
+inside 'quire-server site:add jane --domain=jane.test --domain=www.jane.test --domain=jane.127.0.0.1.sslip.io --admin-email=jane@example.com --title="Jane" --quire-version=^0.3 2>&1' | tee "$logs"/add.log | sed 's/^/    /'
 check 'the site runs' "inside 'quire-server site:list' | grep -q running"
 check 'a password was shown once (no email server)' "grep -q 'signs in with the password' $logs/add.log"
 cache=$(inside 'du -sm "$(docker volume inspect --format "{{.Mountpoint}}" quire-buildkit-jane-state)" | cut -f1' || echo unknown)
