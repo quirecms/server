@@ -60,7 +60,7 @@ What Quire Server is built to hold, so you can tell a vulnerability from a limit
 
 **Out of scope:** a kernel exploit from inside a container (containers share the machine's kernel), a flaw in Docker itself, and anyone who is root on the machine or holds `server.env` (it holds the server's secrets and the backups' keys).
 
-**Hosting for others: where this stops holding** (ADR-0008). Running clients' sites is within what the server is built for, as long as the code that runs is the operator's choice, runs in the site's containers, and the machine gets its updates (README, "The machine's updates"). Each of these takes a server past that line, and isn't supported:
+**Hosting for others: where this stops holding**. Running clients' sites is within what the server is built for, as long as the code that runs is the operator's choice, runs in the site's containers, and the machine gets its updates (README, "The machine's updates"). Each of these takes a server past that line, and isn't supported:
 
 - **a client who controls a site's build:** push access to a Git mode site's repository, whose Dockerfile runs in the site's builder, and builders run without seccomp (above);
 - **a client who controls a site's Compose files**, the same way;

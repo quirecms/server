@@ -44,7 +44,7 @@ final readonly class HostUpdates
     public const string TESTED_DOCKER_MAJOR = '29';
 
     /** The release whose floors these are, as the status line says */
-    public const string FLOORS_OF = '0.6.1';
+    public const string FLOORS_OF = '0.6.0';
 
     /**
      * @param \Closure(): string|null             $kernel the running kernel's release (uname -r)

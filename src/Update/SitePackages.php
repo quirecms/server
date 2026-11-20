@@ -107,9 +107,19 @@ final readonly class SitePackages
             $added = AddedPackages::of(AddedPackages::read($workspace.'/composer.json'));
             $added[$package] = !$quire;
             $this->filesystem->dumpFile($workspace.'/composer.json', AddedPackages::with((string) file_get_contents($workspace.'/composer.json'), $added));
-            $this->composer->require($workspace, $package, $constraint, $output);
+            // Without a constraint, Composer would write the newest release on Packagist, which may need
+            // another Quire than the site's (quire/analytics 0.4 on a site on 0.3): any release first,
+            // resolved with the site, then "^" and the release that fits it, as Composer writes one.
+            $this->composer->require($workspace, $package, $constraint ?? '*', $output);
             // Only it and what it needs: nothing the site requires moves (Composer's "minimal changes").
             $this->composer->update($workspace, [], $output, [$package], false);
+
+            if (null === $constraint) {
+                $this->composer->require($workspace, $package, $this->caret($package, Lock::read($workspace.'/composer.lock')), $output);
+                // The lock again, for composer.json's new content-hash: what fits "^" its version stays.
+                $this->composer->update($workspace, [], $output, [$package], false);
+            }
+
             $to = Lock::read($workspace.'/composer.lock');
             $this->ensureFeature($package, $to);
             $this->ensureNothingElseMoves($from, $to, []);
@@ -310,6 +320,25 @@ final readonly class SitePackages
         }
 
         return [$match[1], $match[2] ?? null];
+    }
+
+    /**
+     * "^" and the release Composer resolved for a package ("v0.3.2" → "^0.3.2"), as Composer writes a
+     * constraint itself.
+     */
+    private function caret(string $package, Lock $lock): string
+    {
+        $version = $lock->versions[$package] ?? null;
+
+        if (null === $version) {
+            throw new \RuntimeException(\sprintf('Composer didn\'t add %s.', $package));
+        }
+
+        if (1 !== preg_match('/^v?(\d+\.\d+\.\d+)\z/', $version, $match)) {
+            throw new \DomainException(\sprintf('%s %s isn\'t a stable release: add it with a constraint ("%s:^1.2").', $package, $version, $package));
+        }
+
+        return '^'.$match[1];
     }
 
     private static function isQuire(string $package): bool
