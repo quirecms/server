@@ -250,12 +250,18 @@ final readonly class HostUpdates
             return \sprintf('daily from %02d:30 UTC, once the machine restarts', (int) $hour);
         }
 
-        // "*-*-* 03:30:00 UTC": systemd's own reading of the timer
-        if (1 === preg_match('/^\*-\*-\* (\d{2}):(\d{2}):\d{2}(?: (UTC))?\z/', $facts['effective_update_time'] ?? '', $match)) {
-            return \sprintf('daily from %s:%s %s', $match[1], $match[2], $match[3] ?? '(the machine\'s time zone)');
+        // "*-*-* 03:30:00 UTC": systemd's own reading of the timer, its times joined by ", "
+        $times = [];
+
+        foreach (explode(', ', $facts['effective_update_time'] ?? '') as $calendar) {
+            if (1 !== preg_match('/^\*-\*-\* (\d{2}):(\d{2}):\d{2}(?: (UTC))?\z/', $calendar, $match)) {
+                return 'at the machine\'s own time';
+            }
+
+            $times[] = \sprintf('%s:%s %s', $match[1], $match[2], $match[3] ?? '(the machine\'s time zone)');
         }
 
-        return 'at the machine\'s own time';
+        return 'daily from '.implode(' and from ', $times);
     }
 
     /**

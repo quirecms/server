@@ -34,16 +34,19 @@ if [ "${SYSTEMD:-none}" != none ]; then
 	cat >/usr/local/sbin/systemctl <<'FAKE'
 #!/bin/sh
 loaded=/run/fake-systemd/calendar
+# Every OnCalendar after the last empty one (which clears those before), as systemd lists them
 timer() {
-	value=$(cat /etc/systemd/system/apt-daily-upgrade.timer.d/*.conf 2>/dev/null | sed -n 's/^OnCalendar=\(..*\)$/\1/p' | tail -1 | sed 's/^\(\*-\*-\* \)\([0-9]\):/\10\2:/')
-	printf '%s\n' "${value:-*-*-* 06:00:00}"
+	value=$( (echo 'OnCalendar=*-*-* 06:00:00'; cat /etc/systemd/system/apt-daily-upgrade.timer.d/*.conf 2>/dev/null) | sed -n 's/^OnCalendar=\(.*\)$/\1/p' \
+		| awk '$0 == "" { n = 0; next } { list[n++] = $0 } END { for (i = 0; i < n; i++) printf "{ OnCalendar=%s ; next_elapse=Sat 2026-11-21 06:00:00 UTC } ", list[i] }' \
+		| sed 's/\(OnCalendar=\*-\*-\* \)\([0-9]\):/\10\2:/g')
+	printf '%s\n' "$value"
 }
 [ "${SYSTEMCTL_FORCE_BUS:-}" = 1 ] || { echo 'Failed to connect to system scope bus via local transport: No data available' >&2; exit 1; }
 [ "$SYSTEMD" = ok ] || { echo 'Failed to connect to bus: No such file or directory' >&2; exit 1; }
 case "$1" in
 	boot) timer >"$loaded" ;;
 	daemon-reload) echo reload >>/run/fake-systemd/reloads; timer >"$loaded" ;;
-	show) printf '{ OnCalendar=%s ; next_elapse=Sat 2026-11-21 06:00:00 UTC }\n' "$(cat "$loaded")" ;;
+	show) cat "$loaded" ;;
 	*) exit 1 ;;
 esac
 FAKE
@@ -84,10 +87,14 @@ if [ "$EXPECT" = multiline ]; then
 	export QUIRE_SERVER_OS_UPDATE_HOUR QUIRE_SERVER_REBOOT
 fi
 
-# An operator's timer, read after ours
+# An operator's timer, read after ours: one that replaces ours, or adds a time to it
 if [ "$EXPECT" = timer-overridden ]; then
 	mkdir -p /etc/systemd/system/apt-daily-upgrade.timer.d
 	printf '%s\n' "$operator_timer" >/etc/systemd/system/apt-daily-upgrade.timer.d/yorvolabs.conf
+fi
+if [ "$EXPECT" = timer-added ]; then
+	mkdir -p /etc/systemd/system/apt-daily-upgrade.timer.d
+	printf '[Timer]\nOnCalendar=*-*-* 17:00:00 UTC\n' >/etc/systemd/system/apt-daily-upgrade.timer.d/yorvolabs.conf
 fi
 # What the machine started with: systemd's timer as its files were then
 if [ "${SYSTEMD:-none}" = ok ]; then SYSTEMCTL_FORCE_BUS=1 systemctl boot; fi
@@ -165,6 +172,10 @@ case "$EXPECT" in
 		[ "$(cat /run/fake-systemd/reloads)" = reload ] || fail 'systemd wasn'"'"'t told.'
 		# Docker's files (a first run), not the timer's: it was as it should be
 		only /etc/apt/apt.conf.d "$origin" /etc/apt/preferences.d "$pin"
+		;;
+	timer-added)
+		has update_hour_applied=overridden
+		has 'effective_update_time=*-*-* 04:30:00 UTC, *-*-* 17:00:00 UTC'
 		;;
 	timer-overridden)
 		has update_hour=4

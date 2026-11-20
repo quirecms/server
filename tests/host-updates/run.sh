@@ -35,6 +35,7 @@ case_ 'run again: nothing changes, systemd isn'"'"'t told again' DOCKER=29 UNATT
 case_ 'systemd can'"'"'t be told: the hour applies after a restart, said so' DOCKER=29 UNATTENDED=1 SYSTEMD=broken QUIRE_SERVER_OS_UPDATE_HOUR=4 EXPECT=unreachable
 case_ 'an earlier start couldn'"'"'t tell systemd: told now' DOCKER=29 UNATTENDED=1 SYSTEMD=ok QUIRE_SERVER_OS_UPDATE_HOUR=4 EXPECT=untold
 case_ 'an operator'"'"'s timer, read after ours, wins: said so' DOCKER=29 UNATTENDED=1 SYSTEMD=ok QUIRE_SERVER_OS_UPDATE_HOUR=4 EXPECT=timer-overridden
+case_ 'an operator'"'"'s timer adds a time to ours: not said to be ours alone' DOCKER=29 UNATTENDED=1 SYSTEMD=ok QUIRE_SERVER_OS_UPDATE_HOUR=4 EXPECT=timer-added
 case_ 'an upgraded server without the settings: only Docker, the operator keeps reboot and timing' DOCKER=29 UNATTENDED=1 EXPECT=operator
 case_ 'an operator'"'"'s later file overrides QUIRE_SERVER_REBOOT: the machine'"'"'s value is said' DOCKER=29 UNATTENDED=1 QUIRE_SERVER_REBOOT=off EXPECT=overridden
 case_ 'Docker 30 installed: nothing of Docker written, said why' DOCKER=30 UNATTENDED=1 EXPECT=untested

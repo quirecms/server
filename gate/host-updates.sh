@@ -47,9 +47,10 @@ say() { echo "$1=$2"; }
 # connect to system scope bus via local transport: No data available"); the bus takes it, as root's.
 export SYSTEMCTL_FORCE_BUS=1
 
-# The timer's time as systemd has it now ("*-*-* 04:30:00 UTC"), empty when systemd doesn't say
+# The timer's times as systemd has them now ("*-*-* 04:30:00 UTC", several joined by ", " when a
+# drop-in adds one without clearing ours), empty when systemd doesn't say
 calendar() {
-	systemctl show -p TimersCalendar --value apt-daily-upgrade.timer 2>/dev/null | sed -n 's/.*OnCalendar=\([^;]*\) ;.*/\1/p' | head -1
+	systemctl show -p TimersCalendar --value apt-daily-upgrade.timer 2>/dev/null | grep -o 'OnCalendar=[^;]*' | sed 's/^OnCalendar=//; s/ *$//' | paste -sd ',' - | sed 's/,/, /g'
 }
 
 # Writes a file whole, only when its content changes (a cut-short write never leaves half of one).
