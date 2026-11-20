@@ -111,9 +111,9 @@ final readonly class StatusCommand
             default => 'unknown',
         };
         $io->writeln(\sprintf(
-            'Machine\'s updates: %s; from %s; restarts after them: %s',
+            'Machine\'s updates: %s; %s; restarts after them: %s',
             $docker,
-            $facts['effective_update_time'] ?? 'unknown',
+            HostUpdates::updateTime($facts),
             $facts['effective_reboot'] ?? 'unknown',
         ));
     }

@@ -38,6 +38,9 @@ final class SitePackagesTest extends RegistryTestCase
     /** @var array<string, string> The newest release of each package, for "composer require" without a constraint */
     private array $newest = [];
 
+    /** @var string|null What Composer says when it can't resolve (null: it resolves) */
+    private ?string $unresolvable = null;
+
     /** @var list<string> Packages with a known vulnerability, wherever they are */
     private array $vulnerable = [];
 
@@ -72,6 +75,10 @@ final class SitePackagesTest extends RegistryTestCase
                 return ScriptedRunner::ok($command);
             },
             'composer update' => function (array $command, ?string $directory): ProcessResult {
+                if (null !== $this->unresolvable) {
+                    return new ProcessResult($command, 2, '', $this->unresolvable);
+                }
+
                 file_put_contents($directory.'/composer.lock', LockTest::packages($this->resolved)->content);
 
                 return ScriptedRunner::ok($command);
@@ -202,6 +209,30 @@ final class SitePackagesTest extends RegistryTestCase
         $this->resolved = [...$this->site(), LockTest::package('acme/reviews', '1.3.0-beta1', 'quire-extension', ['quire/core' => '^0.3'])];
         $this->expectExceptionMessageIsOrContains('acme/reviews 1.3.0-beta1 isn\'t a stable release: add it with a constraint ("acme/reviews:^1.2").');
         $this->packages()->add($this->name, 'acme/reviews', true);
+    }
+
+    public function testAReleaseThatNeedsANewerQuireNamesWhatToDo(): void
+    {
+        // Composer 2.10's words, on a site on Quire 0.3 (the one-line form, and the form for several releases)
+        $this->unresolvable = <<<'TEXT'
+            Your requirements could not be resolved to an installable set of packages.
+
+              Problem 1
+                - Root composer.json requires quire/analytics ^0.4 -> satisfiable by quire/analytics[v0.4.0].
+                - quire/analytics v0.4.0 requires quire/core ^0.4 -> found quire/core[v0.4.0] but it conflicts with your root composer.json require (^0.3).
+                - quire/privacy[v0.4.0, v0.4.1] require symfony/yaml ^8.2 -> found symfony/yaml[v8.2.0] but the package is fixed to v8.1.0 (lock file version) by a partial update and that version does not match.
+            TEXT;
+
+        $this->expectExceptionMessageIsOrContains('It needs newer versions than "jane" has: quire/analytics 0.4.0 needs quire/core ^0.4 (the site has 0.3.1); quire/privacy 0.4.1 needs symfony/yaml ^8.2 (the site has 8.1.0). Update the site first ("site:update jane"), then try again; or, without a version, the newest release that fits the site is added.');
+        $this->packages()->add($this->name, 'quire/analytics:^0.4', false);
+    }
+
+    public function testAnotherReasonComposerCantResolveIsComposers(): void
+    {
+        $this->unresolvable = "Your requirements could not be resolved to an installable set of packages.\n\n  Problem 1\n    - Root composer.json requires acme/nothing ^9.0, it could not be found in any version.\n";
+
+        $this->expectExceptionMessageIsOrContains('Composer couldn\'t work out the versions to install: Root composer.json requires acme/nothing ^9.0, it could not be found in any version');
+        $this->packages()->add($this->name, 'acme/nothing:^9.0', true);
     }
 
     public function testWithAConstraint(): void

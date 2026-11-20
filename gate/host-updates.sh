@@ -42,6 +42,17 @@ timer_file=$timer_dir/quire-server.conf
 
 say() { echo "$1=$2"; }
 
+# systemd is told over D-Bus's system bus, not its private socket: host-setup's container has a PID
+# namespace of its own, and systemd refuses the private socket to a process it can't see ("Failed to
+# connect to system scope bus via local transport: No data available"); the bus takes it, as root's.
+export SYSTEMCTL_FORCE_BUS=1
+
+# The timer's times as systemd has them now ("*-*-* 04:30:00 UTC", several joined by ", " when a
+# drop-in adds one without clearing ours), empty when systemd doesn't say
+calendar() {
+	systemctl show -p TimersCalendar --value apt-daily-upgrade.timer 2>/dev/null | grep -o 'OnCalendar=[^;]*' | sed 's/^OnCalendar=//; s/ *$//' | paste -sd ',' - | sed 's/,/, /g'
+}
+
 # Writes a file whole, only when its content changes (a cut-short write never leaves half of one).
 # Prints "changed" or "same".
 put() {
@@ -65,8 +76,8 @@ effective() {
 	reboot_now=''
 	eval "$(apt-config shell reboot_now Unattended-Upgrade::Automatic-Reboot)"
 	case "$reboot_now" in true | 1 | yes) say effective_reboot on ;; *) say effective_reboot off ;; esac
-	calendar=$(systemctl show -p TimersCalendar --value apt-daily-upgrade.timer 2>/dev/null | sed -n 's/.*OnCalendar=\([^;]*\) ;.*/\1/p' | head -1)
-	say effective_update_time "${calendar:-unknown}"
+	now=$(calendar)
+	say effective_update_time "${now:-unknown}"
 }
 
 if ! command -v dpkg-query >/dev/null 2>&1 || ! command -v apt-config >/dev/null 2>&1; then
@@ -166,7 +177,7 @@ esac
 
 # 3. The hour, only as server.env says
 hour=${QUIRE_SERVER_OS_UPDATE_HOUR-}
-changed=''
+changed='' expected=''
 if [ -z "$hour" ]; then
 	[ ! -e "$timer_file" ] || { rm -f "$timer_file"; changed=1; }
 	say update_hour machine
@@ -178,6 +189,7 @@ OnCalendar=
 OnCalendar=*-*-* $hour:30:00 UTC
 RandomizedDelaySec=15m"); then
 		[ "$result" = same ] || changed=1
+		expected="*-*-* $(printf '%02d' "$hour"):30:00 UTC"
 		say update_hour "$hour"
 	else
 		say update_hour failed
@@ -185,8 +197,22 @@ RandomizedDelaySec=15m"); then
 else
 	say update_hour invalid
 fi
-if [ -n "$changed" ]; then
-	systemctl daemon-reload >/dev/null 2>&1 || say update_hour_reload failed
+# systemd reads the file again when it changed, or when it still has another time (an earlier start
+# couldn't tell it). Then what it has is what's said: the hour applies now, only after the machine's
+# next restart (systemd couldn't be told), or never (an operator's timer, read after ours, wins).
+reloaded=yes
+if [ -n "$changed" ] || { [ -n "$expected" ] && [ "$(calendar)" != "$expected" ]; }; then
+	systemctl daemon-reload >/dev/null 2>&1 || { reloaded=no; say update_hour_reload failed; }
+fi
+if [ -n "$expected" ]; then
+	now=$(calendar)
+	if [ "$now" = "$expected" ]; then
+		say update_hour_applied yes
+	elif [ "$reloaded" = no ] || [ -z "$now" ]; then
+		say update_hour_applied no
+	else
+		say update_hour_applied overridden
+	fi
 fi
 effective
 exit 0
