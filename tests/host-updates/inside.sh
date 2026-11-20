@@ -25,6 +25,30 @@ case "\$package" in
 esac
 EOF
 chmod 755 /usr/local/sbin/dpkg-query
+# systemd (SYSTEMD: ok, broken, or none, the image's: no systemctl), as host-setup's container meets
+# it: its private socket refused (another PID namespace), D-Bus taken only with SYSTEMCTL_FORCE_BUS.
+# What it has loaded is the timer's last OnCalendar, its drop-ins read in order, as at the last boot
+# or reload (in /run, which the run's check leaves out).
+if [ "${SYSTEMD:-none}" != none ]; then
+	mkdir -p /run/fake-systemd
+	cat >/usr/local/sbin/systemctl <<'FAKE'
+#!/bin/sh
+loaded=/run/fake-systemd/calendar
+timer() {
+	value=$(cat /etc/systemd/system/apt-daily-upgrade.timer.d/*.conf 2>/dev/null | sed -n 's/^OnCalendar=\(..*\)$/\1/p' | tail -1 | sed 's/^\(\*-\*-\* \)\([0-9]\):/\10\2:/')
+	printf '%s\n' "${value:-*-*-* 06:00:00}"
+}
+[ "${SYSTEMCTL_FORCE_BUS:-}" = 1 ] || { echo 'Failed to connect to system scope bus via local transport: No data available' >&2; exit 1; }
+[ "$SYSTEMD" = ok ] || { echo 'Failed to connect to bus: No such file or directory' >&2; exit 1; }
+case "$1" in
+	boot) timer >"$loaded" ;;
+	daemon-reload) echo reload >>/run/fake-systemd/reloads; timer >"$loaded" ;;
+	show) printf '{ OnCalendar=%s ; next_elapse=Sat 2026-11-21 06:00:00 UTC }\n' "$(cat "$loaded")" ;;
+	*) exit 1 ;;
+esac
+FAKE
+	chmod 755 /usr/local/sbin/systemctl
+fi
 # The unattended-upgrades package's own file, as 26.04 ships it (2.12ubuntu9): its origins
 cat >/etc/apt/apt.conf.d/50unattended-upgrades <<'STOCK'
 Unattended-Upgrade::Allowed-Origins {
@@ -60,6 +84,20 @@ if [ "$EXPECT" = multiline ]; then
 	export QUIRE_SERVER_OS_UPDATE_HOUR QUIRE_SERVER_REBOOT
 fi
 
+# An operator's timer, read after ours
+if [ "$EXPECT" = timer-overridden ]; then
+	mkdir -p /etc/systemd/system/apt-daily-upgrade.timer.d
+	printf '%s\n' "$operator_timer" >/etc/systemd/system/apt-daily-upgrade.timer.d/yorvolabs.conf
+fi
+# What the machine started with: systemd's timer as its files were then
+if [ "${SYSTEMD:-none}" = ok ]; then SYSTEMCTL_FORCE_BUS=1 systemctl boot; fi
+# An earlier start wrote the hour, but couldn't tell systemd (0.6.0-rc.2's host-setup): it has the time of before
+if [ "$EXPECT" = untold ]; then
+	mkdir -p /etc/systemd/system/apt-daily-upgrade.timer.d
+	printf '# Written by Quire Server (gate/host-updates.sh), from QUIRE_SERVER_OS_UPDATE_HOUR in server.env\n[Timer]\nOnCalendar=\nOnCalendar=*-*-* 4:30:00 UTC\nRandomizedDelaySec=15m\n' >/etc/systemd/system/apt-daily-upgrade.timer.d/quire-server.conf
+fi
+rm -f /run/fake-systemd/reloads
+
 sleep 1.1
 touch /tmp/before
 sleep 1.1
@@ -71,7 +109,7 @@ pin=/etc/apt/preferences.d/quire-server-docker
 reboot=/etc/apt/apt.conf.d/52quire-server-reboot
 timer=/etc/systemd/system/apt-daily-upgrade.timer.d/quire-server.conf
 
-has() { printf '%s\n' "$facts" | grep -qx "$1" || fail "It didn't print \"$1\": $facts"; }
+has() { printf '%s\n' "$facts" | grep -qxF "$1" || fail "It didn't print \"$1\": $facts"; }
 only() {
 	expected=$(printf '%s\n' "$@" | sort)
 	[ "$changed" = "$expected" ] || fail "Changed on the machine: [$changed], expected: [$expected]"
@@ -104,10 +142,34 @@ case "$EXPECT" in
 		grep -qx 'OnCalendar=\*-\*-\* 4:30:00 UTC' "$timer" || fail "$timer: $(cat "$timer")"
 		grep -qx 'Unattended-Upgrade::Automatic-Reboot "true";' "$reboot" || fail "$reboot: $(cat "$reboot")"
 		has effective_reboot=on
+		has update_hour_applied=yes
+		has 'effective_update_time=*-*-* 04:30:00 UTC'
 		;;
 	again)
 		has docker_updates=on
+		has update_hour_applied=yes
+		[ ! -e /run/fake-systemd/reloads ] || fail 'systemd was told again, with nothing changed.'
 		only
+		;;
+	unreachable)
+		# The file is written; systemd has its time of before until the machine restarts: said so
+		has update_hour=4
+		has update_hour_reload=failed
+		has update_hour_applied=no
+		grep -qx 'OnCalendar=\*-\*-\* 4:30:00 UTC' "$timer" || fail "$timer: $(cat "$timer")"
+		;;
+	untold)
+		# Nothing to write, but systemd still had the time of before: told now
+		has update_hour_applied=yes
+		has 'effective_update_time=*-*-* 04:30:00 UTC'
+		[ "$(cat /run/fake-systemd/reloads)" = reload ] || fail 'systemd wasn'"'"'t told.'
+		# Docker's files (a first run), not the timer's: it was as it should be
+		only /etc/apt/apt.conf.d "$origin" /etc/apt/preferences.d "$pin"
+		;;
+	timer-overridden)
+		has update_hour=4
+		has update_hour_applied=overridden
+		has 'effective_update_time=*-*-* 05:30:00 UTC'
 		;;
 	operator)
 		has docker_updates=on

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Quire\Server\Update;
 
+use Quire\Server\Process\ProcessFailed;
 use Quire\Server\Registry\SiteGit;
 use Quire\Server\Site\ServerPaths;
 use Quire\Server\Site\SiteName;
@@ -102,7 +103,7 @@ final readonly class SitePackages
             throw new \DomainException(\sprintf('%s isn\'t Quire\'s: its code would run in the site, with the site\'s database and files. Add it only from someone you trust, with --third-party.', $package));
         }
 
-        return $this->planned($name, $site, function (string $workspace, Lock $from) use ($package, $constraint, $quire, $output): array {
+        return $this->planned($name, $site, function (string $workspace, Lock $from) use ($name, $package, $constraint, $quire, $output): array {
             // Recorded before Composer resolves: the lock's content-hash covers composer.json's "extra".
             $added = AddedPackages::of(AddedPackages::read($workspace.'/composer.json'));
             $added[$package] = !$quire;
@@ -112,7 +113,7 @@ final readonly class SitePackages
             // resolved with the site, then "^" and the release that fits it, as Composer writes one.
             $this->composer->require($workspace, $package, $constraint ?? '*', $output);
             // Only it and what it needs: nothing the site requires moves (Composer's "minimal changes").
-            $this->composer->update($workspace, [], $output, [$package], false);
+            $this->fitting($name, $from, fn () => $this->composer->update($workspace, [], $output, [$package], false));
 
             if (null === $constraint) {
                 $this->composer->require($workspace, $package, $this->caret($package, Lock::read($workspace.'/composer.lock')), $output);
@@ -163,7 +164,7 @@ final readonly class SitePackages
                 $this->composer->require($workspace, $package, $constraint, $output);
             }
 
-            $this->composer->update($workspace, array_map(static fn (string $name, string $version): string => $name.':'.$version, array_keys($held), $held), $output, [$package], false);
+            $this->fitting($name, $from, fn () => $this->composer->update($workspace, array_map(static fn (string $name, string $version): string => $name.':'.$version, array_keys($held), $held), $output, [$package], false));
             $to = Lock::read($workspace.'/composer.lock');
             $this->ensureFeature($package, $to);
             $this->ensureNothingElseMoves($from, $to, $moving);
@@ -320,6 +321,56 @@ final readonly class SitePackages
         }
 
         return [$match[1], $match[2] ?? null];
+    }
+
+    /**
+     * Composer's update, where nothing the site has moves: when what's asked for needs a newer version
+     * of something the site has (quire/analytics 0.4 needs Quire 0.4, the site runs 0.3), that's said
+     * plainly, naming each, with what to do (the site's update first), rather than Composer's words.
+     *
+     * @param \Closure(): void $update
+     */
+    private function fitting(SiteName $name, Lock $from, \Closure $update): void
+    {
+        try {
+            $update();
+        } catch (ProcessFailed $e) {
+            $needs = $this->needsNewer($e->result->output."\n".$e->result->errorOutput, $from);
+
+            if ([] === $needs) {
+                throw $e;
+            }
+
+            throw new \DomainException(\sprintf('It needs newer versions than "%s" has: %s. Update the site first ("site:update %s"), then try again; or, without a version, the newest release that fits the site is added.', $name, implode('; ', $needs), $name), 0, $e);
+        }
+    }
+
+    /**
+     * What Composer says couldn't be met because the site's version stays (its root requirement, or
+     * the lock in a partial update): "quire/analytics 0.4.0 needs quire/core ^0.4 (the site has 0.3.2)".
+     *
+     * @return list<string>
+     */
+    private function needsNewer(string $output, Lock $from): array
+    {
+        // "- quire/analytics v0.4.0 requires quire/core ^0.4 -> found quire/core[v0.4.0] but it conflicts
+        // with your root composer.json require (^0.3.2)", or "- quire/analytics[v0.3.0, ..., v0.4.0]
+        // require …", or "… but the package is fixed to v0.3.2 (lock file version) by a partial update"
+        preg_match_all('/- ([a-z0-9][\w.\/-]*)(?: (v?[\w.+-]+)|\[([^\]]+)\]) requires? ([a-z0-9][\w.\/-]*) (\S+) -> found .*? but (?:it conflicts with your root composer\.json require|the package is fixed to)/', $output, $matches, \PREG_SET_ORDER);
+        $needs = [];
+
+        foreach ($matches as $match) {
+            [, $package, $version, $versions, $dependency, $constraint] = $match;
+            $has = $from->versions[$dependency] ?? null;
+
+            if (null === $has) {
+                continue;
+            }
+
+            $needs[] = \sprintf('%s %s needs %s %s (the site has %s)', $package, '' !== $version ? ltrim($version, 'v') : ltrim((string) preg_replace('/^.*, /', '', $versions), 'v'), $dependency, $constraint, ltrim($has, 'v'));
+        }
+
+        return array_values(array_unique($needs));
     }
 
     /**

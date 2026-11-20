@@ -68,7 +68,7 @@ final readonly class HostUpdates
     {
         $facts = $this->facts();
 
-        return [...$this->kernelProblem(), ...$this->dockerProblems($facts), ...$this->updatesProblem($facts)];
+        return [...$this->kernelProblem($facts), ...$this->dockerProblems($facts), ...$this->updatesProblem($facts)];
     }
 
     /**
@@ -159,9 +159,11 @@ final readonly class HostUpdates
     }
 
     /**
+     * @param array<string, string> $facts
+     *
      * @return list<Problem>
      */
-    private function kernelProblem(): array
+    private function kernelProblem(array $facts): array
     {
         $pending = $this->pendingKernel();
 
@@ -170,7 +172,12 @@ final readonly class HostUpdates
         }
         $running = $this->kernel instanceof \Closure ? ($this->kernel)() : php_uname('r');
 
-        return [new Problem('host.kernel', \sprintf('The machine waits for a restart: kernel %s is installed, %s runs.', $pending, $running), 'A kernel\'s fixes apply only once the machine restarts. Restart it ("sudo reboot"; sites are back by themselves within a few minutes), or let it restart by itself after its updates: "quire-server settings:set QUIRE_SERVER_REBOOT=on".')];
+        // The machine restarts by itself after its updates already (whoever's file says so): only when
+        $advice = 'on' === ($facts['effective_reboot'] ?? null)
+            ? 'A kernel\'s fixes apply only once the machine restarts. It restarts by itself after its next automatic updates (%s); to have them sooner, restart it now ("sudo reboot"; sites are back by themselves within a few minutes).'
+            : 'A kernel\'s fixes apply only once the machine restarts. Restart it ("sudo reboot"; sites are back by themselves within a few minutes), or let it restart by itself after its updates: "quire-server settings:set QUIRE_SERVER_REBOOT=on".';
+
+        return [new Problem('host.kernel', \sprintf('The machine waits for a restart: kernel %s is installed, %s runs.', $pending, $running), \sprintf($advice, self::updateTime($facts)))];
     }
 
     /**
@@ -226,6 +233,29 @@ final readonly class HostUpdates
         }
 
         return [new Problem('host.updates', \sprintf('The machine\'s automatic updates haven\'t run since %s.', new \DateTimeImmutable('@'.$stamp)->format('Y-m-d H:i').' UTC'), 'Security fixes for the machine, Docker included, wait until they run again: "systemctl status apt-daily-upgrade.timer" and /var/log/unattended-upgrades/ say why.')];
+    }
+
+    /**
+     * When the machine's automatic updates run, as an owner reads it: "daily from 03:30 UTC" (systemd's
+     * timer, at the server's last start), "daily from 03:30 UTC, once the machine restarts" (server.env's
+     * hour is written, but systemd couldn't be told yet), or "at the machine's own time".
+     *
+     * @param array<string, string> $facts
+     */
+    public static function updateTime(array $facts): string
+    {
+        $hour = $facts['update_hour'] ?? '';
+
+        if (1 === preg_match('/^\d{1,2}\z/', $hour) && 'no' === ($facts['update_hour_applied'] ?? null)) {
+            return \sprintf('daily from %02d:30 UTC, once the machine restarts', (int) $hour);
+        }
+
+        // "*-*-* 03:30:00 UTC": systemd's own reading of the timer
+        if (1 === preg_match('/^\*-\*-\* (\d{2}):(\d{2}):\d{2}(?: (UTC))?\z/', $facts['effective_update_time'] ?? '', $match)) {
+            return \sprintf('daily from %s:%s %s', $match[1], $match[2], $match[3] ?? '(the machine\'s time zone)');
+        }
+
+        return 'at the machine\'s own time';
     }
 
     /**

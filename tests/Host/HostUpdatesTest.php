@@ -57,6 +57,38 @@ final class HostUpdatesTest extends TestCase
         self::assertStringContainsString('QUIRE_SERVER_REBOOT=on', $problems[0]->advice);
     }
 
+    public function testAMachineThatRestartsByItselfIsntToldToTurnItOn(): void
+    {
+        $this->kernels('7.0.0-43-generic', '7.0.0-44-generic');
+        $this->facts("docker_updates=on\nreboot=on\nupdate_hour=4\nupdate_hour_applied=yes\neffective_reboot=on\neffective_update_time=*-*-* 04:30:00 UTC\n");
+
+        $problems = $this->problems();
+
+        self::assertSame(['host.kernel'], $this->keys($problems));
+        self::assertStringNotContainsString('QUIRE_SERVER_REBOOT', $problems[0]->advice);
+        self::assertStringContainsString('It restarts by itself after its next automatic updates (daily from 04:30 UTC)', $problems[0]->advice);
+    }
+
+    /**
+     * @return iterable<string, array{string, string}>
+     */
+    public static function updateTimes(): iterable
+    {
+        yield 'server.env\'s hour, as systemd has it' => ["update_hour=4\nupdate_hour_applied=yes\neffective_update_time=*-*-* 04:30:00 UTC", 'daily from 04:30 UTC'];
+        yield 'written, but systemd couldn\'t be told' => ["update_hour=4\nupdate_hour_applied=no\neffective_update_time=*-*-* 06:00:00", 'daily from 04:30 UTC, once the machine restarts'];
+        yield 'the machine\'s own timer' => ["update_hour=machine\neffective_update_time=*-*-* 06:00:00", 'daily from 06:00 (the machine\'s time zone)'];
+        yield 'systemd didn\'t say' => ["update_hour=machine\neffective_update_time=unknown", 'at the machine\'s own time'];
+        yield 'an older release\'s facts' => ['docker_updates=on', 'at the machine\'s own time'];
+    }
+
+    #[DataProvider('updateTimes')]
+    public function testWhenTheMachinesUpdatesRun(string $facts, string $said): void
+    {
+        $this->facts($facts."\n");
+
+        self::assertSame($said, HostUpdates::updateTime($this->host()->facts()));
+    }
+
     public function testVersionsCompareAsNumbersNotText(): void
     {
         $this->kernels('7.0.0-9-generic', '7.0.0-43-generic');

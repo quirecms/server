@@ -16,9 +16,10 @@
 #   E2E_ONLY=links tests/e2e/run.sh …  sites' links (D-34): the last release before them (0.3.1) installed with
 #                                             a site on the shared networks, moved to this checkout (its files and agent),
 #                                             a second site added; what each reaches of the other and the server
-#   E2E_ONLY=rollback tests/e2e/run.sh … an update from the last release (E2E_ROLLBACK_FROM, else 0.5.2) to this
-#                                             checkout, then rolled back: its files put back as the updater does,
-#                                             its Docker gate and front door serve every site again
+#   E2E_ONLY=rollback tests/e2e/run.sh … the last release before 0.6 (E2E_ROLLBACK_FROM, else 0.5.2) updated with
+#                                             its own updater to a published 0.6 (E2E_ROLLBACK_TO, else 0.6.0-rc.2),
+#                                             undone, updated again; then moved to this checkout and rolled back
+#                                             (its files put back as the updater does): every site served throughout
 #   E2E_CACHE=1 tests/e2e/run.sh …     keeps the machine's images and build cache between runs
 #                                             (in the volume quire-server-e2e-cache; one run at a time)
 #
@@ -1019,12 +1020,45 @@ for site in jane jane-blog kim; do
 done
 served() { inside "curl -sk --resolve $1.test:443:127.0.0.1 https://$1.test/" | grep -q "Site $1"; }
 check "all three run and are served on $from" 'served jane && served jane-blog && served kim'
-# What a rollback puts back: the release's files as they were (ServerFolder::archive/restore)
-inside 'tar -C /srv/quire/server -cf /root/server-before.tar .'
 # A container's names on a network
 names() { inside "docker inspect $1 --format '{{range \$name, \$n := .NetworkSettings.Networks}}{{\$name}}:{{join \$n.DNSNames \",\"}} {{end}}'"; }
+
+# The update as an owner runs it: $from's own updater, to a published release (its signatures checked).
+# Before anything changes, $from's updater checks the sites with the release's Docker gate, which
+# refuses $from's names for the pair: the update stops, and 0.6.0's notes say what to do (Known limits).
+to=${E2E_ROLLBACK_TO:-0.6.0-rc.2}
+# What a log says, whatever lines the console's box broke it over
+said() { tr -s ' \n' '  ' <"$1" | grep -q "$2"; }
+echo "== $from updates itself to Quire Server $to: refused with the pair, as the release notes say"
+inside "quire-server update --to=$to --yes 2>&1" > "$logs"/update-pair.log || true
+sed 's/^/    /' "$logs"/update-pair.log | tail -8
+check 'the update stops before anything changes, naming the pair' "said $logs/update-pair.log 'the server runs as it was' && said $logs/update-pair.log \"quire-link-jane-blog is under scope jane's prefix\""
+check "it runs $from, every site served" "inside 'quire-server version' | grep -q \"^Quire Server $from\" && served jane && served jane-blog && served kim"
+
+echo "== Without the pair (jane-blog removed first, as the notes say), it updates; jane-blog comes back after"
+inside 'quire-server site:remove jane-blog --yes 2>&1' > "$logs"/remove-pair.log || sed 's/^/    /' "$logs"/remove-pair.log
+inside "quire-server update --to=$to --yes 2>&1" > "$logs"/update-real.log || true
+sed 's/^/    /' "$logs"/update-real.log | tail -6
+check "it runs Quire Server $to, its gate YorvoGate 0.3.0" "inside 'quire-server version' | grep -q \"^Quire Server $to\\\$\" && inside \"docker inspect quire-server-gate-1 --format '{{.Config.Image}}'\" | grep -q 'yorvogate:0.3.0@sha256:'"
+check 'jane and kim are served' 'served jane && served kim'
+inside 'quire-server site:restore-removed jane-blog --yes 2>&1' > "$logs"/restore-pair.log || sed 's/^/    /' "$logs"/restore-pair.log
+check 'jane-blog is back, served, with only its name "edge.jane-blog.test" on its link' "grep -q 'runs again' $logs/restore-pair.log && served jane-blog && served jane && names jane-blog-php-1 | grep -q 'quire-link-jane-blog:[^ ]*edge.jane-blog.test.quire.internal' && ! names jane-blog-php-1 | grep -Eq '[:,]jane-blog.test.quire.internal'"
+
+echo "== The update undone: $from again, with the pair"
+inside 'quire-server update --undo --yes 2>&1' > "$logs"/undo-real.log || true
+sed 's/^/    /' "$logs"/undo-real.log | tail -6
 # The agent's start, done: it says so when it starts its rounds
 started() { inside 'for i in $(seq 180); do quire-server logs agent 2>&1 | grep -q "Automatic updates" && exit 0; sleep 2; done; exit 1'; }
+started || true
+check "it runs $from, its gate YorvoGate 0.2.2" "inside 'quire-server version' | grep -q \"^Quire Server $from\" && inside \"docker inspect quire-server-gate-1 --format '{{.Config.Image}}'\" | grep -q 'yorvogate:0.2.2@sha256:'"
+# 0.5's agent writes each site's files again at its start, and brings it up (the notes' first limit)
+inside 'for i in $(seq 60); do curl -sk --resolve jane-blog.test:443:127.0.0.1 https://jane-blog.test/ | grep -q "Site jane-blog" && exit 0; sleep 5; done; exit 1' || true
+check "all three are served by $from's front door, the pair too" 'served jane && served jane-blog && served kim'
+inside "quire-server update --to=$to --yes 2>&1" > "$logs"/update-again.log || true
+check 'updating again with the pair stops as before, changing nothing' "said $logs/update-again.log 'the server runs as it was' && inside 'quire-server version' | grep -q \"^Quire Server $from\" && served jane && served jane-blog && served kim"
+
+# What a rollback puts back: the release's files as they were (ServerFolder::archive/restore)
+inside 'tar -C /srv/quire/server -cf /root/server-before.tar .'
 
 echo '== It moves to this checkout (its files and its agent, as an update replaces them)'
 inside 'tar -C /root/quire-server -cf - . | tar -C /srv/quire/server -xf - --no-same-owner'
