@@ -4,9 +4,17 @@ All notable changes to Quire Server. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-11-22
+
+An undo of the server's update names the settings it puts back, and, undone to 0.5, leaves the machine's update hour and restart as those settings have them.
+
 ### Fixed
 
 - `update --undo` names the settings it puts back. The server's settings (server.env) come back as they were before the update, so whatever was set since goes: each one is now listed before it asks, as `settings` shows it (a password only as changed), or it says it couldn't tell. Undone to a release before 0.6, the machine's update hour and restart (`QUIRE_SERVER_OS_UPDATE_HOUR`, `QUIRE_SERVER_REBOOT`) are also put back as those settings have them, the machine's own when they weren't set: before, what 0.6 wrote for them stayed, and 0.5's `status` didn't show it. Docker's updates stay on. This needs the release undone from to be 0.6.1 or later: an undo from 0.6.0 works as its notes say.
+
+### Upgrading
+
+From 0.6.0, nothing to do. From 0.5, as for 0.6.0: see its Upgrading and Known limits (a site whose domain starts with another site's name and a dash, above all).
 
 ## [0.6.0] - 2026-11-22
 
@@ -236,7 +244,8 @@ The first release.
 - Sites deployed from a Git repository.
 - Signed releases: images and files checked before installing.
 
-[Unreleased]: https://github.com/quirecms/server/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/quirecms/server/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/quirecms/server/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/quirecms/server/compare/v0.5.2...v0.6.0
 [0.5.2]: https://github.com/quirecms/server/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/quirecms/server/compare/v0.5.0...v0.5.1
