@@ -267,7 +267,7 @@ A site's versions are recorded in its folder's `composer.lock`. A new site's fir
 4. **Replaces the server's files** with the release's (its `server.env`, the front door's domains and the deploy keys stay), names the new image in `server.env`, and starts it. Sites are offline only for the seconds the front door is replaced, when the release changes it.
 5. **Checks each part is healthy and the agent is the new release.** If not, it **rolls back by itself:** the files and settings from the backup, the database too if the new release's migrations ran.
 
-`quire-server update --undo` goes back to the release before the last update, within a week. If that update's migrations ran, its database backup is restored too, and what changed in the registry since is lost; you're asked first.
+`quire-server update --undo` goes back to the release before the last update, within a week. If that update's migrations ran, its database backup is restored too, and what changed in the registry since is lost; you're asked first. Its settings (server.env) come back as they were before the update too: it names each one set since, before it asks. Undone to a release before 0.6, which doesn't write the machine's updates, the machine's update hour and restart are put back as those settings have them (the machine's own, when they weren't set); Docker's updates stay on.
 
 A server installed from a checkout (`--source`) moves to releases the same way.
 

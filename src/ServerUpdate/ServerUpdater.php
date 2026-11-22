@@ -41,6 +41,12 @@ final readonly class ServerUpdater
 
     private const int ROLLBACK_WAIT = 300;
 
+    /** What host-setup writes the machine's updates from (gate/host-updates.sh, from 0.6) */
+    private const array HOST_SETTINGS = ['QUIRE_SERVER_OS_UPDATES', 'QUIRE_SERVER_OS_UPDATE_HOUR', 'QUIRE_SERVER_REBOOT'];
+
+    /** The first of 0.6, which writes the machine's updates at each start and holds third-party packages */
+    private const string FIRST_06 = '0.6.0-rc';
+
     public function __construct(
         private Releases $releases,
         private ServerFolder $folder,
@@ -178,10 +184,44 @@ final readonly class ServerUpdater
     }
 
     /**
-     * Puts back the server as it was before its last update.
+     * The owner's settings ("quire-server settings:set") that undoing the update puts back otherwise:
+     * server.env comes back as it was before the update, so whatever was set since goes. Shown as
+     * "settings" shows them (a secret only as changed).
      *
-     * @throws ServerUpdateFailed
+     * @return array<string, array{now: string, then: string}> Empty only when none changes
+     *
+     * @throws \RuntimeException When the backup's settings can't be read
      */
+    public function settingsUndone(ServerBackup $backup): array
+    {
+        $now = $this->folder->env();
+        $then = $this->folder->archivedEnv($backup->files());
+        $shownNow = ServerSettings::shown($now);
+        $shownThen = ServerSettings::shown($then);
+        $undone = [];
+
+        foreach (array_keys(ServerSettings::CHANGEABLE) as $name) {
+            if (($now->get($name) ?? '') === ($then->get($name) ?? '')) {
+                continue;
+            }
+
+            $shown = ['now' => $shownNow[$name] ?? '(not set)', 'then' => $shownThen[$name] ?? '(not set)'];
+            // Shown alike, yet not the same (a secret, a mailer's password): only that it changed
+            $undone[$name] = $shown['now'] === $shown['then'] ? ['now' => $shown['now'].', changed', 'then' => $shown['then']] : $shown;
+        }
+
+        return $undone;
+    }
+
+    /**
+     * Whether the backup's release is one before 0.6: it doesn't write the machine's updates (what this
+     * one wrote would stay, whatever its settings say), nor hold third-party packages where they are.
+     */
+    public static function before06(ServerBackup $backup): bool
+    {
+        return version_compare($backup->from, self::FIRST_06, '<');
+    }
+
     /**
      * @return array<string, list<string>> The managed sites with third-party packages, as the running agent says
      */
@@ -190,8 +230,16 @@ final readonly class ServerUpdater
         return $this->stack->thirdPartySites($this->folder);
     }
 
-    public function undo(ServerBackup $backup, string $channel, string $requestedBy, \Closure $say): void
+    /**
+     * Puts back the server as it was before its last update.
+     *
+     * @return string|null What needs the owner afterwards (putting the machine's updates back failed)
+     *
+     * @throws ServerUpdateFailed
+     */
+    public function undo(ServerBackup $backup, string $channel, string $requestedBy, \Closure $say): ?string
     {
+        $warning = null;
         $lines = [];
         $log = static function (string $line) use (&$lines, $say): void {
             $lines[] = $line;
@@ -206,7 +254,13 @@ final readonly class ServerUpdater
             $log(\sprintf('Undoing the update from %s to %s (%s)', $backup->from, $backup->to, $backup->createdAt->format('Y-m-d H:i')));
             $safety = $this->swap(
                 new ServerBackup($this->backupDirectory(), $this->running, $backup->from, [], new \DateTimeImmutable()),
-                function () use ($backup, $log): void { $this->putBack($backup, $log); },
+                function () use ($backup, $log, &$warning): void {
+                    if (self::before06($backup)) {
+                        $warning = $this->machineAsBefore($backup, $log);
+                    }
+
+                    $this->putBack($backup, $log);
+                },
                 $backup->from,
                 $log,
             );
@@ -222,6 +276,8 @@ final readonly class ServerUpdater
         }
 
         $this->record('server.undo', ['version' => $backup->from], $channel, $requestedBy, $lines, null);
+
+        return $warning;
     }
 
     /**
@@ -313,6 +369,34 @@ final readonly class ServerUpdater
             $log('Its database changed (migrations ran): restoring it from the backup');
             $this->stack->stopAgent($this->folder);
             $this->stack->restoreDatabase($this->folder, $backup->database());
+        }
+    }
+
+    /**
+     * The machine's updates as the backup's settings have them, by this release's host-setup, before its
+     * files go: the release undone to doesn't write them (before 0.6), so 0.6's hour and restart would
+     * stay with nothing saying so. Its settings without them leave the machine's own in charge again
+     * (host-updates.sh removes its files). Docker's origin stays with the machine's automatic updates
+     * on: Docker keeps getting its fixes, within the tested major. Should the undo fail, the rollback's
+     * start writes them again as server.env has them. A failure here doesn't stop the undo: it's said,
+     * with how to do it by hand.
+     *
+     * @param \Closure(string): void $log
+     *
+     * @return string|null Why it failed, and what to do, for after the undo
+     */
+    private function machineAsBefore(ServerBackup $backup, \Closure $log): ?string
+    {
+        try {
+            $before = $this->folder->archivedEnv($backup->files());
+            $this->stack->setUpHost($this->folder, array_combine(self::HOST_SETTINGS, array_map(static fn (string $name): string => $before->get($name) ?? '', self::HOST_SETTINGS)));
+            $log(\sprintf('The machine\'s update hour and restart put back as %s\'s settings have them', $backup->from));
+
+            return null;
+        } catch (\Throwable $e) {
+            $log('Putting the machine\'s update hour and restart back failed: '.$e->getMessage());
+
+            return \sprintf('The machine\'s update hour and restart are still as this release wrote them (putting them back failed: %s), and %s doesn\'t show them. To have the machine\'s own again, as root: rm -f /etc/systemd/system/apt-daily-upgrade.timer.d/quire-server.conf /etc/apt/apt.conf.d/52quire-server-reboot && systemctl daemon-reload', $e->getMessage(), $backup->from);
         }
     }
 

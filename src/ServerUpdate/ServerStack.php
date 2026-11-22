@@ -79,6 +79,27 @@ final readonly class ServerStack
         return true;
     }
 
+    /**
+     * Runs the server's host-setup once (gate/host-setup.sh, then gate/host-updates.sh, as at each start),
+     * with these settings of the machine's updates instead of server.env's: what an undo to a release
+     * that doesn't write the machine's updates (before 0.6) leaves them as, since that one never will.
+     *
+     * @param array<string, string> $settings QUIRE_SERVER_OS_UPDATES, QUIRE_SERVER_OS_UPDATE_HOUR and QUIRE_SERVER_REBOOT ('' for not set)
+     *
+     * @throws \RuntimeException When it fails, with Compose's reason
+     */
+    public function setUpHost(ServerFolder $folder, array $settings): void
+    {
+        $environment = [];
+
+        foreach ($settings as $name => $value) {
+            $environment[] = '-e';
+            $environment[] = $name.'='.$value;
+        }
+
+        $this->in($folder, ['run', '--rm', '--no-deps', '--quiet-pull', '-T', ...$environment, 'host-setup'], 300)->orFail('Setting the machine\'s updates as the settings before the update have them');
+    }
+
     public function pull(string $image): void
     {
         $this->runner->run(['docker', 'pull', '--quiet', $image], ['DOCKER_HOST' => $this->dockerHost], timeout: 1800)->orFail('Getting the release\'s image');
