@@ -4,7 +4,7 @@ All notable changes to Quire Server. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
-## [0.6.0] - 2026-11-19
+## [0.6.0] - 2026-11-22
 
 The Docker gate is YorvoGate 0.3.0, Docker, containerd and runc get their fixes with the machine's updates, a managed site's owner adds Quire extensions and themes (`site:packages`), a site restored as a new one leaves the original's email, analytics and storage alone, and only a tag the maintainer signed makes a release.
 
@@ -47,6 +47,7 @@ Nothing to do, unless one site's domain starts with another site's name and a da
 - **A server with a site whose domain starts with another site's name and a dash (`jane-blog.example` next to `jane`) doesn't update from 0.5 in place.** Before anything changes, 0.5's updater checks the sites with 0.6's Docker gate, which refuses the names 0.5 gave them ("quire-link-jane-blog is under scope jane's prefix"): the update stops, and the server runs as it was. Remove one site of the pair first (`site:remove`, which keeps its final backup), update, then bring it back (`site:restore-removed`); or install 0.6 on a new machine and restore the sites there. The same holds for updating to 0.6 again after an undo.
 - **If the update to 0.6 rolls back** (by itself, or with `quire-server update --undo`): 0.5's agent, at its start, writes every running site's Compose files again as 0.5 writes them and brings each site up once more (a few seconds offline each), so its front door reaches every site by the name it uses. A site that fails to start is tried again at each start of the agent and named in its log (`quire-server logs agent`). A site whose domain starts with another site's name and a dash (`jane-blog.example` next to `jane`) has only its 0.6 name until then.
 - **Undoing the update to 0.5** (`quire-server update --undo`) turns off the automatic updates of every site with a third-party package (`site:packages … --third-party`), and names them with the command that turns each on again: 0.5 doesn't hold those packages where they are, and its updates would move them unreviewed. Don't update those sites by hand either until the server runs 0.6 again.
+- **Undoing the update to 0.5 also undoes the settings made since it**, `QUIRE_SERVER_OS_UPDATE_HOUR` and `QUIRE_SERVER_REBOOT` among them: the server's settings come back as they were before the update, and the undo doesn't name what it dropped. The machine keeps what 0.6 wrote for them (its update hour, and restarting by itself after its updates), which 0.5's `status` doesn't show. Once the server runs 0.6 again, the machine's own hour and restart are back until they're set again. To go back to the machine's own while on 0.5: `rm /etc/systemd/system/apt-daily-upgrade.timer.d/quire-server.conf /etc/apt/apt.conf.d/52quire-server-reboot`, then `systemctl daemon-reload`.
 - A restored copy on Quire before 0.3.2 whose `quire/analytics` is installed but disabled keeps the original's measurement ID in its database (the restore says so): clear it in its admin before enabling the extension. Quire 0.3.2 removes it.
 - A storage adapter of a site's own code that's neither a Flysystem package nor configured as a disk isn't seen by the restore's storage check.
 
