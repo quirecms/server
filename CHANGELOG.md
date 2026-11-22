@@ -4,6 +4,10 @@ All notable changes to Quire Server. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+### Fixed
+
+- `update --undo` names the settings it puts back. The server's settings (server.env) come back as they were before the update, so whatever was set since goes: each one is now listed before it asks, as `settings` shows it (a password only as changed), or it says it couldn't tell. Undone to a release before 0.6, the machine's update hour and restart (`QUIRE_SERVER_OS_UPDATE_HOUR`, `QUIRE_SERVER_REBOOT`) are also put back as those settings have them, the machine's own when they weren't set: before, what 0.6 wrote for them stayed, and 0.5's `status` didn't show it. Docker's updates stay on. This needs the release undone from to be 0.6.1 or later: an undo from 0.6.0 works as its notes say.
+
 ## [0.6.0] - 2026-11-22
 
 The Docker gate is YorvoGate 0.3.0, Docker, containerd and runc get their fixes with the machine's updates, a managed site's owner adds Quire extensions and themes (`site:packages`), a site restored as a new one leaves the original's email, analytics and storage alone, and only a tag the maintainer signed makes a release.

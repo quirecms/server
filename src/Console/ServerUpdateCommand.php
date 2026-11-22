@@ -141,6 +141,22 @@ final readonly class ServerUpdateCommand
             $io->warning('That update changed the server\'s database: its backup from before is restored, and what changed in it since (sites added or removed, the operations\' record) is lost.');
         }
 
+        try {
+            $settings = $this->updater->settingsUndone($backup);
+
+            if ([] !== $settings) {
+                $io->warning([
+                    'The server\'s settings go back as they were before the update. These change:',
+                    ...array_map(static fn (string $name, array $values): string => \sprintf('%s: %s → %s', $name, $values['now'], $values['then']), array_keys($settings), $settings),
+                    ServerUpdater::before06($backup)
+                        ? \sprintf('The machine\'s update hour and restart follow them (%s doesn\'t set them). Set again what you keep once it runs 0.6 again ("quire-server settings:set").', $backup->from)
+                        : 'Set again what you keep ("quire-server settings:set").',
+                ]);
+            }
+        } catch (\Throwable $e) {
+            $io->warning(\sprintf('Which settings change couldn\'t be told (%s): the server\'s settings go back as they were before the update, whatever was set since.', $e->getMessage()));
+        }
+
         if (!$yes && !$io->confirm('Undo it now? Sites keep running.', false)) {
             return Command::SUCCESS;
         }
@@ -149,7 +165,7 @@ final readonly class ServerUpdateCommand
         $held = $this->holdThirdParty($io, $backup);
 
         try {
-            $this->updater->undo($backup, Requester::CHANNEL, Requester::name(), static fn (string $line) => $io->writeln('  '.$line));
+            $machine = $this->updater->undo($backup, Requester::CHANNEL, Requester::name(), static fn (string $line) => $io->writeln('  '.$line));
         } catch (ServerUpdateFailed $e) {
             if ($e->restored) {
                 foreach ($held as $site => $policy) {
@@ -161,6 +177,10 @@ final readonly class ServerUpdateCommand
         }
 
         $io->success(\sprintf('It runs as before the update (%s).', $backup->from));
+
+        if (null !== $machine) {
+            $io->warning($machine);
+        }
 
         if ([] !== $held) {
             $io->warning([
@@ -180,7 +200,7 @@ final readonly class ServerUpdateCommand
      */
     private function holdThirdParty(SymfonyStyle $io, ServerBackup $backup): array
     {
-        if (version_compare($backup->from, '0.6.0-rc', '>=')) {
+        if (!ServerUpdater::before06($backup)) {
             return [];
         }
 

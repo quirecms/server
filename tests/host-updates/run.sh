@@ -42,6 +42,7 @@ case_ 'Docker 30 installed: nothing of Docker written, said why' DOCKER=30 UNATT
 case_ 'hostile values: nothing written from them' DOCKER=29 UNATTENDED=1 'QUIRE_SERVER_OS_UPDATE_HOUR=4;touch /pwned' 'QUIRE_SERVER_REBOOT=on"' EXPECT=hostile
 case_ 'values over several lines: refused whole, no line of them written' DOCKER=29 UNATTENDED=1 EXPECT=multiline
 case_ 'QUIRE_SERVER_OS_UPDATES=off: our files removed, a reboot setting too' DOCKER=29 UNATTENDED=1 QUIRE_SERVER_OS_UPDATES=off QUIRE_SERVER_REBOOT=on QUIRE_SERVER_OS_UPDATE_HOUR=4 EXPECT=off
+case_ 'the hour and the restart set, then undone to before 0.6 (unset): ours removed, systemd told, the machine'"'"'s own again' DOCKER=29 UNATTENDED=1 SYSTEMD=ok EXPECT=undone
 case_ 'the machine'"'"'s unattended upgrades are off: Docker left alone' DOCKER=29 UNATTENDED=0 EXPECT=os-off
 case_ 'Docker not from apt: left alone' DOCKER=none UNATTENDED=1 EXPECT=not-from-apt
 

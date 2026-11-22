@@ -80,6 +80,12 @@ if [ "$EXPECT" = again ]; then
 	sh /opt/host-updates.sh >/dev/null
 fi
 
+# The hour and the restart set on 0.6, then undone to a release before it: the settings of before the
+# update have neither (ServerUpdater::machineAsBefore runs this script with them)
+if [ "$EXPECT" = undone ]; then
+	QUIRE_SERVER_OS_UPDATE_HOUR=7 QUIRE_SERVER_REBOOT=on SYSTEMCTL_FORCE_BUS=1 sh /opt/host-updates.sh >/dev/null
+fi
+
 # Values over several lines (an env file can't carry them): the first line alone looks valid
 if [ "$EXPECT" = multiline ]; then
 	QUIRE_SERVER_OS_UPDATE_HOUR=$(printf '5\nUnit=evil.service')
@@ -223,6 +229,19 @@ case "$EXPECT" in
 		has update_hour=machine
 		absent "$origin" "$pin" "$reboot" "$timer"
 		[ "$(cat /etc/apt/apt.conf.d/52yorvolabs-unattended-upgrades)" = "$operator_conf" ] || fail 'The operator'"'"'s file changed.'
+		;;
+	undone)
+		# Ours removed, systemd told: the timer is the machine's own again, as is the restart
+		has docker_updates=on
+		has reboot=machine
+		has update_hour=machine
+		absent "$reboot" "$timer"
+		[ "$(cat /run/fake-systemd/reloads)" = reload ] || fail 'systemd wasn'"'"'t told.'
+		has 'effective_update_time=*-*-* 06:00:00'
+		has effective_reboot=off
+		# Docker's files stay: it keeps getting its fixes
+		[ -e "$origin" ] && [ -e "$pin" ] || fail 'Docker'"'"'s files are gone.'
+		only /etc/apt/apt.conf.d /etc/systemd/system/apt-daily-upgrade.timer.d
 		;;
 	os-off)
 		has docker_updates=os-updates-off

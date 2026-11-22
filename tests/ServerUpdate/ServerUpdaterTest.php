@@ -80,6 +80,11 @@ final class ServerUpdaterTest extends RegistryTestCase
     private ?array $gateCheck = null;
     private bool $restoreFails = false;
 
+    /** @var list<array{compose: string, env: array<string, string>}> Each host-setup run: the compose.yaml it ran from, and the settings it was given */
+    private array $hostSetups = [];
+    private bool $hostSetupFails = false;
+    private bool $backupSettingsUnreadable = false;
+
     /** The PostgreSQL major the server runs */
     private int $postgres = 18;
 
@@ -137,6 +142,7 @@ final class ServerUpdaterTest extends RegistryTestCase
             'tar -xzf' => $delegate,
             'tar -cf' => $delegate,
             'tar -xf' => $delegate,
+            'tar -xOf' => fn (array $command): ProcessResult => $this->backupSettingsUnreadable ? ScriptedRunner::failed($command, "tar: server.env: Not found in archive\n") : $delegate($command),
             'cp -R' => $delegate,
             'chmod -R' => $delegate,
             'docker compose config' => fn (array $command): ProcessResult => match (true) {
@@ -145,11 +151,27 @@ final class ServerUpdaterTest extends RegistryTestCase
                 default => ScriptedRunner::failed($command, 'required variable QUIRE_SERVER_NEW_SECRET is missing a value'),
             },
             'docker compose run' => function (array $command): ProcessResult {
+                $at = static fn (string $option): string => $command[(int) array_search($option, $command, true) + 1];
+
+                if ('host-setup' === end($command)) {
+                    $env = [];
+
+                    foreach ($command as $i => $part) {
+                        if ('-e' === $part) {
+                            [$name, $value] = explode('=', $command[$i + 1], 2);
+                            $env[$name] = $value;
+                        }
+                    }
+
+                    $this->hostSetups[] = ['compose' => (string) file_get_contents($at('--project-directory').'/compose.yaml'), 'env' => $env];
+
+                    return $this->hostSetupFails ? ScriptedRunner::failed($command, "container quire-server-host-setup-run exited (1)\n") : ScriptedRunner::ok($command);
+                }
+
                 if (['gate', 'check', '--config', '/etc/yorvogate/yorvogate.yaml'] !== \array_slice($command, -4)) {
                     throw new \LogicException('Unexpected: '.implode(' ', $command));
                 }
 
-                $at = static fn (string $option): string => $command[(int) array_search($option, $command, true) + 1];
                 $this->gateCheck = ['directory' => $at('--project-directory'), 'env' => (string) file_get_contents($at('--env-file'))];
 
                 return $this->gateAccepts
@@ -542,6 +564,111 @@ final class ServerUpdaterTest extends RegistryTestCase
         self::assertSame(UpdatePolicies::SECURITY, $policies->of(new SiteName('jane')), 'It runs 0.2.0, which holds them.');
     }
 
+    public function testUndoingToBefore06PutsTheMachinesUpdatesBackAsItsSettingsHaveThem(): void
+    {
+        // What 0.6 wrote for the hour and the restart would stay: a release before it doesn't write them.
+        $this->setting(['QUIRE_SERVER_REBOOT' => 'off']);
+        $this->update();
+        $this->setting(['QUIRE_SERVER_OS_UPDATE_HOUR' => '7', 'QUIRE_SERVER_REBOOT' => 'on']);
+        $updated = $this->updater('0.2.0');
+        $backup = $updated->undoable();
+        self::assertInstanceOf(ServerBackup::class, $backup);
+        $said = [];
+
+        self::assertNull($updated->undo($backup, 'cli', 'darko', static function (string $line) use (&$said): void { $said[] = $line; }));
+
+        self::assertSame(self::OLD, $this->agent, 'Undone.');
+        self::assertSame(
+            [['compose' => self::COMPOSE_020, 'env' => ['QUIRE_SERVER_OS_UPDATES' => '', 'QUIRE_SERVER_OS_UPDATE_HOUR' => '', 'QUIRE_SERVER_REBOOT' => 'off']]],
+            $this->hostSetups,
+            'Once, by the release undone from (the one undone to has no host-updates.sh), before its files went, with the settings of before the update: not set is the machine\'s own.',
+        );
+        self::assertContains('The machine\'s update hour and restart put back as 0.1.1\'s settings have them', $said);
+    }
+
+    public function testPuttingTheMachinesUpdatesBackFailingDoesntStopTheUndoAndIsSaidAfterIt(): void
+    {
+        $this->update();
+        $this->hostSetupFails = true;
+        $tester = $this->command('0.2.0', new UpdatePolicies($this->connection, $this->schema));
+
+        self::assertSame(Command::SUCCESS, $tester->execute(['--undo' => true, '--yes' => true]));
+        self::assertSame(self::OLD, $this->agent, 'Undone all the same.');
+        $display = (string) preg_replace('/\s+/', ' ', $tester->getDisplay());
+        $after = substr($display, (int) strpos($display, 'It runs as before the update'));
+        self::assertStringContainsString('The machine\'s update hour and restart are still as this release wrote them', $after, 'After the undo\'s own lines, where it isn\'t scrolled away.');
+        self::assertStringContainsString('rm -f /etc/systemd/system/apt-daily-upgrade.timer.d/quire-server.conf /etc/apt/apt.conf.d/52quire-server-reboot && systemctl daemon-reload', $after);
+    }
+
+    public function testAnUndoThatFailsAfterPuttingTheMachinesUpdatesBackIsRolledBack(): void
+    {
+        $this->update();
+        $this->failing = [self::OLD];
+        $updated = $this->updater('0.2.0');
+        $backup = $updated->undoable();
+        self::assertInstanceOf(ServerBackup::class, $backup);
+
+        try {
+            $updated->undo($backup, 'cli', 'darko', static function (): void {});
+            self::fail('It was undone.');
+        } catch (ServerUpdateFailed $e) {
+            self::assertTrue($e->restored);
+        }
+
+        // The rollback's start runs host-setup with server.env's settings again (compose.yaml), as at every start
+        self::assertSame(self::NEW, $this->agent);
+        self::assertCount(1, $this->hostSetups);
+    }
+
+    public function testOnlyAnUndoToBefore06PutsTheMachinesUpdatesBack(): void
+    {
+        $backup = static fn (string $from): ServerBackup => new ServerBackup('/nowhere', $from, '0.6.1', [], new \DateTimeImmutable());
+
+        self::assertTrue(ServerUpdater::before06($backup('0.5.2')));
+        self::assertTrue(ServerUpdater::before06($backup('0.4.0')));
+        self::assertFalse(ServerUpdater::before06($backup('0.6.0-rc.3')), 'Its own start writes them, from the settings put back.');
+        self::assertFalse(ServerUpdater::before06($backup('0.6.0')));
+        self::assertFalse(ServerUpdater::before06($backup('0.6.1')));
+    }
+
+    public function testTheUndoNamesTheSettingsItPutsBack(): void
+    {
+        $this->setting(['QUIRE_SERVER_MAILER_DSN' => 'smtp://quire:old-password@smtp.example:587', 'QUIRE_SERVER_NAME' => 'fra1']);
+        $this->update();
+        $this->setting(['QUIRE_SERVER_OS_UPDATE_HOUR' => '7', 'QUIRE_SERVER_MAILER_DSN' => 'smtp://quire:new-password@smtp.example:587', 'QUIRE_SERVER_NOTIFY_SECRET' => 'whsec_new', 'QUIRE_SERVER_IMAGE' => self::NEW]);
+        $updated = $this->updater('0.2.0');
+        $backup = $updated->undoable();
+        self::assertInstanceOf(ServerBackup::class, $backup);
+
+        self::assertSame([
+            'QUIRE_SERVER_MAILER_DSN' => ['now' => 'smtp://quire:(password)@smtp.example:587, changed', 'then' => 'smtp://quire:(password)@smtp.example:587'],
+            'QUIRE_SERVER_NOTIFY_SECRET' => ['now' => 'set (not shown)', 'then' => '(not set)'],
+            'QUIRE_SERVER_OS_UPDATE_HOUR' => ['now' => '7', 'then' => '(not set)'],
+        ], $updated->settingsUndone($backup), 'Only the owner\'s settings that differ (not the image the update set), as "settings" shows them: a password only as changed.');
+
+        $tester = $this->command('0.2.0', new UpdatePolicies($this->connection, $this->schema));
+        $tester->setInputs(['no']);
+        $tester->execute(['--undo' => true], ['interactive' => true]);
+        $display = (string) preg_replace('/\s+/', ' ', $tester->getDisplay());
+        self::assertStringContainsString('The server\'s settings go back as they were before the update. These change:', $display, 'Before it asks.');
+        self::assertStringContainsString('QUIRE_SERVER_OS_UPDATE_HOUR: 7 → (not set)', $display);
+        self::assertStringNotContainsString('new-password', $display);
+        self::assertStringNotContainsString('whsec_new', $display);
+        self::assertSame(self::NEW, $this->agent, 'Not undone: it was asked, and not answered.');
+    }
+
+    public function testSettingsThatCantBeToldAreSaidSo(): void
+    {
+        $this->update();
+        $this->backupSettingsUnreadable = true;
+        $tester = $this->command('0.2.0', new UpdatePolicies($this->connection, $this->schema));
+        $tester->setInputs(['no']);
+        $tester->execute(['--undo' => true], ['interactive' => true]);
+
+        // An empty list only ever means "nothing changes"
+        self::assertStringContainsString('Which settings change couldn\'t be told', (string) preg_replace('/\s+/', ' ', $tester->getDisplay()));
+    }
+
     public function testAnAgentThatCantTellIsSaid(): void
     {
         $this->update();
@@ -624,6 +751,16 @@ final class ServerUpdaterTest extends RegistryTestCase
             migrationsTable: $this->migrations,
             pause: static function (): void {},
         );
+    }
+
+    /**
+     * Settings of server.env, as "settings:set" leaves them.
+     *
+     * @param array<string, string> $values
+     */
+    private function setting(array $values): void
+    {
+        file_put_contents($this->server.'/server.env', EnvFile::read($this->server.'/server.env')->with($values)->content());
     }
 
     /**

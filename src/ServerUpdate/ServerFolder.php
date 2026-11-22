@@ -113,6 +113,14 @@ final readonly class ServerFolder
     }
 
     /**
+     * The settings (server.env) in a copy made by archive(), without putting anything back.
+     */
+    public function archivedEnv(string $file): EnvFile
+    {
+        return EnvFile::parse($this->runner->run(['tar', '-xOf', $file, 'server.env'], timeout: 60)->orFail('Reading the settings in the server\'s backup')->output);
+    }
+
+    /**
      * The files of a copy made by archive(), server.env included, as they were.
      */
     public function restore(string $file): void
