@@ -33,6 +33,8 @@ dind=quire-server-e2e-$$
 image=${1:-}
 failures=0
 
+# What a log says, whatever lines the console's box broke it over
+said() { tr -s ' \n' '  ' <"$1" | grep -q "$2"; }
 pass() { printf '  \033[32mok\033[0m   %s\n' "$1"; }
 fail() { printf '  \033[31mFAIL\033[0m %s\n' "$1"; failures=$((failures + 1)); }
 check() {
@@ -453,10 +455,14 @@ inside 'quire-server backups jane 2>&1' > "$logs"/backups-existing.log || true
 check 'another server connects to the repository with its password' "grep -q 'are set up' $logs/setup-existing.log && [ \"\$(grep -cE '^ +[0-9a-f]{8} ' $logs/backups-existing.log)\" -ge 1 ]"
 
 echo '== A site from a backup, as a new site: a copy here, and moved from another server'
-inside 'quire-server backups:restore jane --as=jane-copy --domain=copy.test --yes 2>&1' | tee "$logs"/copy.log | sed 's/^/    /'
-check 'a copy of a site runs from its backup, with its data' "grep -q 'jane-copy\" runs, as \"jane\" was' $logs/copy.log && inside 'curl -sk --resolve copy.test:443:127.0.0.1 https://copy.test/' | grep -q 'Jane before'"
-check 'the copy has settings of its own (no secret of the site'\''s)' "[ \"\$(inside \"sed -n 's/^APP_SECRET=//p' /srv/quire/sites/jane/prod.env\")\" != \"\$(inside \"sed -n 's/^APP_SECRET=//p' /srv/quire/sites/jane-copy/prod.env\")\" ] && inside 'quire-server site:list' | grep -q 'jane-copy.*running'"
-check 'with its application'\''s own tables' "[ \"\$(orders jane-copy)\" = 2 ]"
+# Named apart from jane: a name that nests with another site's ("jane-copy") is refused, before
+# anything is made
+inside 'quire-server backups:restore jane --as=jane-copy --domain=jane-copy.test --yes 2>&1' > "$logs"/copy-nested.log || true
+check 'a copy whose name nests with the site'\''s is refused, before anything is made' "said $logs/copy-nested.log '\"jane-copy\" and the site \"jane\" would nest' && ! inside 'test -e /srv/quire/sites/jane-copy' && ! inside 'quire-server site:list' | grep -q jane-copy # $logs/copy-nested.log"
+inside 'quire-server backups:restore jane --as=copy --domain=copy.test --yes 2>&1' | tee "$logs"/copy.log | sed 's/^/    /'
+check 'a copy of a site runs from its backup, with its data' "grep -q 'copy\" runs, as \"jane\" was' $logs/copy.log && inside 'curl -sk --resolve copy.test:443:127.0.0.1 https://copy.test/' | grep -q 'Jane before'"
+check 'the copy has settings of its own (no secret of the site'\''s)' "[ \"\$(inside \"sed -n 's/^APP_SECRET=//p' /srv/quire/sites/jane/prod.env\")\" != \"\$(inside \"sed -n 's/^APP_SECRET=//p' /srv/quire/sites/copy/prod.env\")\" ] && inside 'quire-server site:list' | grep -qE '^ *copy +.*running'"
+check 'with its application'\''s own tables' "[ \"\$(orders copy)\" = 2 ]"
 check 'the site itself is untouched' "inside \"curl -sk $resolve https://jane.test/\" | grep -q 'Jane before' && inside 'quire-server site:list' | grep -q 'jane .*running'"
 check 'a name taken isn'\''t restored over' "inside 'quire-server backups:restore jane --as=jane --domain=other.test --yes 2>&1' | grep -q 'exists already' && inside \"curl -sk $resolve https://jane.test/\" | grep -q 'Jane before'"
 # This machine as a second server, under another name in the same bucket: the first one's backups are another server's.
@@ -472,14 +478,14 @@ check 'the copy sends no email, though this server has a mailer and its backup h
 check 'no email is what its containers run with, whatever its own .env files say' "[ \"\$(inside 'docker exec moved-php-1 printenv MAILER_DSN')\" = null://null ] && [ \"\$(inside 'docker exec moved-worker-1 printenv MAILER_DSN')\" = null://null ]"
 check 'its token is in none of the restore'\''s output' "! grep -q prod-token $logs/moved.log"
 check 'the copy'\''s Google Analytics is off, and the original'\''s as it was' "grep -q 'Its Google Analytics is off' $logs/moved.log && [ -z \"\$(ga4 moved)\" ] && [ \"\$(ga4 jane)\" = G-E2EORIGINAL1 ]"
-inside "quire-server backups:restore jane --from-server=quire-server --signed-by='$public_key' --as=moved-kept --domain=moved-kept.test --keep-mailer --keep-analytics --yes 2>&1" > "$logs"/moved-kept.log || sed 's/^/    /' "$logs"/moved-kept.log
-check 'with --keep-analytics, a real move keeps it' "[ \"\$(ga4 moved-kept)\" = G-E2EORIGINAL1 ]"
-check 'with --keep-mailer, a real move keeps the backup'\''s mailer' "grep -q 'mailer, as asked' $logs/moved-kept.log && inside 'quire-server site:mail moved-kept' | grep -qF 'smtp://own:(password)@mail.own.test:25'"
+inside "quire-server backups:restore jane --from-server=quire-server --signed-by='$public_key' --as=kept --domain=kept.test --keep-mailer --keep-analytics --yes 2>&1" > "$logs"/kept.log || sed 's/^/    /' "$logs"/kept.log
+check 'with --keep-analytics, a real move keeps it' "[ \"\$(ga4 kept)\" = G-E2EORIGINAL1 ]"
+check 'with --keep-mailer, a real move keeps the backup'\''s mailer' "grep -q 'mailer, as asked' $logs/kept.log && inside 'quire-server site:mail kept' | grep -qF 'smtp://own:(password)@mail.own.test:25'"
 check '--keep-mailer is refused for a restore over the site itself' "inside 'quire-server backups:restore moved --keep-mailer --yes 2>&1' | grep -q 'are for a restore as a new site'"
-inside "quire-server backups:restore jane --from-server=quire-server --signed-by='$public_key' --as=moved-server --domain=moved-server.test --server-mailer --yes 2>&1" > "$logs"/moved-server.log || sed 's/^/    /' "$logs"/moved-server.log
-check 'with --server-mailer, it gets this server'\''s' "inside 'quire-server site:mail moved-server' | grep -qF 'smtp://server:(password)@mail.server.test:25'"
+inside "quire-server backups:restore jane --from-server=quire-server --signed-by='$public_key' --as=relayed --domain=relayed.test --server-mailer --yes 2>&1" > "$logs"/relayed.log || sed 's/^/    /' "$logs"/relayed.log
+check 'with --server-mailer, it gets this server'\''s' "inside 'quire-server site:mail relayed' | grep -qF 'smtp://server:(password)@mail.server.test:25'"
 check 'not both' "inside 'quire-server backups:restore jane --from-server=quire-server --as=both --domain=both.test --keep-mailer --server-mailer --yes 2>&1' | grep -q 'not both' && ! inside 'quire-server site:list' | grep -q both"
-inside 'quire-server site:remove moved-kept --yes >/dev/null 2>&1; quire-server site:remove moved-server --yes >/dev/null 2>&1' || true
+inside 'quire-server site:remove kept --yes >/dev/null 2>&1; quire-server site:remove relayed --yes >/dev/null 2>&1' || true
 inside 'cp -p /root/server.env.before-mailer /srv/quire/server/server.env && quire-server up >/dev/null 2>&1' || true
 
 echo '== A whole server from its backups (as a server that replaces it)'
@@ -1024,8 +1030,6 @@ served() { inside "curl -sk --resolve $1.test:443:127.0.0.1 https://$1.test/" | 
 check "both run and are served on $from" 'served jane && served kim'
 # A container's names on a network
 names() { inside "docker inspect $1 --format '{{range \$name, \$n := .NetworkSettings.Networks}}{{\$name}}:{{join \$n.DNSNames \",\"}} {{end}}'"; }
-# What a log says, whatever lines the console's box broke it over
-said() { tr -s ' \n' '  ' <"$1" | grep -q "$2"; }
 # The agent's start, done: it says so when it starts its rounds
 started() { inside 'for i in $(seq 180); do quire-server logs agent 2>&1 | grep -q "Automatic updates" && exit 0; sleep 2; done; exit 1'; }
 # What a rollback puts back: the release's files and server.env as they were, as ServerFolder::archive
