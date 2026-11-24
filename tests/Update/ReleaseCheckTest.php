@@ -23,8 +23,11 @@ final class ReleaseCheckTest extends RegistryTestCase
 {
     private bool $tampered = false;
 
-    /** @var list<array<string, mixed>> */
+    /** @var list<array<string, mixed>> The latest release's feed */
     private array $releases = [];
+
+    /** @var array<string, list<array<string, mixed>>> Newer releases' own feeds, by version */
+    private array $candidates = [];
     private bool $reachable = true;
 
     public function testAnUpdateThatKeepsQuiresVersionNeedsNoFeed(): void
@@ -74,14 +77,34 @@ final class ReleaseCheckTest extends RegistryTestCase
         self::assertSame([], $this->check('v0.1.1', 'v0.2.0', Site::OWN_DATABASE)['blocked'], 'A site with its own PostgreSQL gets the one its files say.');
     }
 
-    public function testAReleaseTheFeedDoesNotListIsNotVouchedFor(): void
+    public function testAnOlderReleaseTheFeedDoesNotListStopsTheUpdate(): void
+    {
+        // The latest release's feed lists every release before it: one it doesn't isn't Quire's
+        $this->releases = [$this->release('0.2.0'), $this->release('0.1.1')];
+        $check = $this->check('v0.1.1', 'v0.1.5');
+
+        self::assertFalse($check['vouched']);
+        self::assertStringContainsString('Quire 0.1.5 has no release feed', $check['blocked'][0] ?? '');
+    }
+
+    public function testAReleaseCandidateNewerThanTheLatestIsCheckedAgainstItsOwnFeed(): void
+    {
+        $this->releases = [$this->release('0.1.1')];
+        $this->candidates['0.2.0-rc.1'] = [$this->release('0.2.0-rc.1', upgrade: 'Try it first.', contract: 3), $this->release('0.1.1')];
+        $check = $this->check('v0.1.1', 'v0.2.0-rc.1');
+
+        self::assertFalse($check['vouched']);
+        self::assertStringContainsString('Quire v0.2.0-rc.1 keeps server contract 3', $check['blocked'][0] ?? '', 'What its own feed requires is checked.');
+        self::assertSame(['Quire 0.2.0-rc.1: Try it first.'], $check['notes']);
+    }
+
+    public function testANewerReleaseWithoutAFeedStopsTheUpdate(): void
     {
         $this->releases = [$this->release('0.1.1')];
         $check = $this->check('v0.1.1', 'v0.1.2');
 
         self::assertFalse($check['vouched']);
-        self::assertSame([], $check['blocked']);
-        self::assertStringContainsString('isn\'t in Quire\'s release feed', $check['notes'][0] ?? '');
+        self::assertStringContainsString('Quire 0.1.2 has no release feed', $check['blocked'][0] ?? '', 'Not a note an update goes ahead after: it stops.');
     }
 
     public function testAFeedThatDoesntCheckOutStopsTheUpdate(): void
@@ -119,8 +142,16 @@ final class ReleaseCheckTest extends RegistryTestCase
                     return ScriptedRunner::ok($command, 'https://github.com/quirecms/framework/releases/tag/v'.(\is_string($latest) ? $latest : ''));
                 }
 
+                $latest = $this->releases[0]['version'] ?? '0.0.1';
+                $version = substr(basename(\dirname((string) end($command))), 1);
+                $releases = $version === $latest ? $this->releases : $this->candidates[$version] ?? null;
+
+                if (null === $releases) {
+                    return new ProcessResult($command, 22, '404', 'curl: (22) The requested URL returned error: 404');
+                }
+
                 $at = array_search('-o', $command, true);
-                file_put_contents($command[\is_int($at) ? $at + 1 : 0], str_ends_with((string) end($command), '.json') && !str_ends_with((string) end($command), 'sigstore.json') ? json_encode(['schema' => 1, 'releases' => $this->releases]) : '{}');
+                file_put_contents($command[\is_int($at) ? $at + 1 : 0], str_ends_with((string) end($command), '.json') && !str_ends_with((string) end($command), 'sigstore.json') ? json_encode(['schema' => 1, 'releases' => $releases]) : '{}');
 
                 return ScriptedRunner::ok($command);
             },

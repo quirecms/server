@@ -32,6 +32,9 @@ final class CodeCheckTest extends TestCase
     /** @var list<array<string, mixed>> The feed's releases, newest first */
     private array $releases;
 
+    /** @var array<string, list<array<string, mixed>>> Newer releases' own feeds, by version */
+    private array $candidates = [];
+
     #[\Override]
     protected function setUp(): void
     {
@@ -52,6 +55,24 @@ final class CodeCheckTest extends TestCase
     public function testALockWithQuiresCodeAsReleasedPasses(): void
     {
         self::assertSame([], $this->check()->lock($this->lock([$this->package('quire/core', '0.1.3', self::CORE), $this->package('quire/admin', 'v0.1.3', self::ADMIN), ['name' => 'symfony/yaml', 'version' => 'v8.1.10']])));
+    }
+
+    public function testAReleaseCandidateNewerThanTheLatestIsCheckedAgainstItsOwnFeed(): void
+    {
+        $rc = str_repeat('c', 40);
+        $this->candidates['0.2.0-rc.1'] = [$this->release('0.2.0-rc.1', ['quire/core' => $rc], null), ...$this->releases];
+
+        self::assertSame([], $this->check()->lock($this->lock([$this->package('quire/core', 'v0.2.0-rc.1', $rc)])));
+        $this->expectException(CodeNotReleased::class);
+        $this->expectExceptionMessageIsOrContains('quire/core 0.2.0-rc.1 isn\'t the code Quire released: its download names commit '.self::CORE);
+        $this->check()->lock($this->lock([$this->package('quire/core', 'v0.2.0-rc.1', self::CORE)]));
+    }
+
+    public function testANewerReleaseWithoutAFeedIsNeverBuilt(): void
+    {
+        $this->expectException(CodeNotReleased::class);
+        $this->expectExceptionMessageIsOrContains('Quire 0.2.0 has no release feed');
+        $this->check()->lock($this->lock([$this->package('quire/core', '0.2.0', self::CORE)]));
     }
 
     public function testAMovedTagIsRefused(): void
@@ -243,7 +264,14 @@ final class CodeCheckTest extends TestCase
 
                 $at = array_search('-o', $command, true);
                 $last = (string) end($command);
-                file_put_contents($command[\is_int($at) ? $at + 1 : 0], str_ends_with($last, '.json') && !str_ends_with($last, 'sigstore.json') ? json_encode(['schema' => 1, 'releases' => $this->releases]) : '{}');
+                $version = substr(basename(\dirname($last)), 1);
+                $releases = $version === ($this->releases[0]['version'] ?? null) ? $this->releases : $this->candidates[$version] ?? null;
+
+                if (null === $releases) {
+                    return new ProcessResult($command, 22, '404', 'curl: (22) The requested URL returned error: 404');
+                }
+
+                file_put_contents($command[\is_int($at) ? $at + 1 : 0], str_ends_with($last, '.json') && !str_ends_with($last, 'sigstore.json') ? json_encode(['schema' => 1, 'releases' => $releases]) : '{}');
 
                 return ScriptedRunner::ok($command);
             },
