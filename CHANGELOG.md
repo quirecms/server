@@ -12,6 +12,10 @@ All notable changes to Quire Server. The format follows [Keep a Changelog](https
 
 - **New sites get Quire `^0.5`** on a server installed with this release. A server installed before keeps the version its settings name, as it did for 0.4. `quire-server settings:set QUIRE_VERSION=^0.5` gives its new sites 0.5. A site that's already there moves only when its owner updates it: `quire-server site:update <site> --to=0.5.0`.
 - `site:packages <site> add <package>` without a version, when no release of the package fits the site, says only to update the site first. It no longer also suggests adding it without a version, which is what was just tried.
+### Changed
+
+- **The Docker gate is YorvoGate 0.4.0**, pinned by digest and checked against its release workflow's signature for its tag. It keeps one site from taking the gate from the others: image loads are bounded across every site (what an archive decompresses to, its entries, the bytes kept, how many at once), and each site's requests and connections are bounded (64 each). Refusals carry a reason code and the problems found, and every answer has a request ID. Image archives are now kept beside the gate's state, so its `/tmp` volume is gone. Go keeps its heap under 200 MiB, below the gate's 256 MiB.
+- **A site's Compose files may not ask for unlimited swap, nor more than twice their memory** (`memswap_limit`), which the gate now refuses. The server says so first, with its own message.
 
 ## [0.6.1] - 2026-11-22
 
