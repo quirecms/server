@@ -95,6 +95,8 @@ Each release ([GitHub releases](https://github.com/quirecms/server/releases)) ha
 - **`release.env`,** naming the image by digest and the files by checksum, signed the same way, with `release.env.sigstore.json`;
 - **the server's files** (`quire-server-<version>.tar.gz`) and **`install.sh`** (installing that version, with its own signature).
 
+**A release ships the image that was tested.** A release with release candidates (`0.7.0-rc.1`, …) isn't built again: its image is its highest candidate's, the one tested on real machines, signed again for the release's own tag, so it has both signatures. The release is made only on that candidate's commit, and only once the candidate's `release.env` and image check out for the candidate's tag. It's scanned again for known flaws with a fix first, and a flaw found since the candidate means a new candidate, which is tested in turn. Its SBOM and build provenance are the candidate's build's, and they name the candidate's tag, since that's where it was built. A release without candidates is built from its tag.
+
 Every image Quire Server runs, and every GitHub Action that builds it, is pinned by digest or commit; Dependabot proposes updates. `quire-server version` says which release a server runs.
 
 The installer and `quire-server update` download a release's files from GitHub over HTTPS only. When GitHub answers 429, 500, 502, 503 or 504, or doesn't answer in time, a download is tried 6 more times, 10 s apart: GitHub answers 504 now and then for a minute at a time.
