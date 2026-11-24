@@ -232,7 +232,7 @@ final class GateTest extends TestCase
         $services = \is_array($compose) && \is_array($compose['services'] ?? null) ? $compose['services'] : [];
         $image = \is_array($services['gate'] ?? null) ? $services['gate']['image'] ?? null : null;
         self::assertIsString($image);
-        self::assertMatchesRegularExpression('#^ghcr\.io/yorvolabs/yorvogate:[0-9.]+@sha256:[0-9a-f]{64}\z#', $image);
+        self::assertMatchesRegularExpression('#^ghcr\.io/yorvolabs/yorvogate:[0-9.]+(?:-rc\.[0-9]+)?@sha256:[0-9a-f]{64}\z#', $image);
         self::assertStringContainsString('FROM '.$image.' AS yorvogate', (string) file_get_contents(self::SERVER.'/Dockerfile'));
     }
 

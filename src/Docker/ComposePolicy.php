@@ -435,6 +435,19 @@ final readonly class ComposePolicy
             }
         }
 
+        // Swap is memory too: as much as the limit (Docker's default, left out) or up to twice it, never
+        // unlimited ("-1"). The gate refuses the same, so this says it first, with the file's words.
+        $memory = $service['mem_limit'] ?? $limits['memory'] ?? null;
+        $swap = $service['memswap_limit'] ?? null;
+
+        if (null !== $swap) {
+            if (!is_numeric($swap) || (int) $swap < 0) {
+                $violations[] = \sprintf('"memswap_limit: %s": unlimited swap isn\'t allowed. Leave it out (as much swap as memory), or give at most twice "mem_limit".', $this->string($swap));
+            } elseif (is_numeric($memory) && ((int) $swap < (int) $memory || (int) $swap > 2 * (int) $memory)) {
+                $violations[] = \sprintf('"memswap_limit: %s": between "mem_limit" (%s) and twice it.', $this->string($swap), $this->string($memory));
+            }
+        }
+
         foreach (array_keys($this->map($service['ulimits'] ?? [])) as $limit) {
             if (!\in_array($limit, self::ULIMITS, true)) {
                 $violations[] = \sprintf('"ulimits: %s": only %s may be set.', $limit, implode(', ', self::ULIMITS));

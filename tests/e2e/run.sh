@@ -1066,7 +1066,9 @@ inside "sed -i 's/^QUIRE_SERVER_IMAGE=.*/QUIRE_SERVER_IMAGE=/' /srv/quire/server
 inside 'quire-server up 2>&1' > "$logs"/up-rollback.log || sed 's/^/    /' "$logs"/up-rollback.log
 started || true
 inside 'quire-server logs agent 2>&1 | grep -v "^ *$" | tail -12' | sed 's/^/    /'
-check 'its gate is YorvoGate 0.3.0' "inside \"docker inspect quire-server-gate-1 --format '{{.Config.Image}}'\" | grep -q 'yorvogate:0.3.0@sha256:'"
+# The gate this checkout pins, by its digest (compose.yaml)
+gate_pin=$(grep -o 'ghcr.io/yorvolabs/yorvogate:[^ ]*' "$here"/compose.yaml | head -1)
+check "its gate is the checkout's, ${gate_pin#ghcr.io/yorvolabs/}" "inside \"docker inspect quire-server-gate-1 --format '{{.Config.Image}}'\" | grep -qF '$gate_pin'"
 inside 'docker exec quire-server-gate-1 yorvogate check --docker --config /etc/yorvogate/yorvogate.yaml 2>&1' > "$logs"/gate-check.log || true
 sed 's/^/    /' "$logs"/gate-check.log
 check 'the gate'\''s own check passes on this Docker (its seccomp, AppArmor, runtime)' "inside 'docker exec quire-server-gate-1 yorvogate check --docker --config /etc/yorvogate/yorvogate.yaml' >/dev/null 2>&1"
