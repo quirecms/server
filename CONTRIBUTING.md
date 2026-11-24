@@ -24,28 +24,58 @@ CI also runs ShellCheck on `bin/quire-server` and every `*.sh` file, `composer a
 docker run --rm -v "$PWD:/m:ro" koalaman/shellcheck-alpine:v0.11.0 sh -c 'shellcheck -s sh -e SC2016 /m/bin/quire-server $(find /m -name "*.sh" -not -path "/m/vendor/*")'
 ```
 
-## What a change needs
+## Before you open a pull request
 
 - **Tests that fail without it.** For a fix, run the new test against the code before your change and see it fail. For anything a site controls, a hostile case: what an attacker would write, refused.
+- **`composer qa` and ShellCheck pass.**
 - **The end-to-end part it touches**, when it touches what Docker, Compose or PostgreSQL do (`E2E_ONLY=<part>`); a check of your own there when unit tests can only script the outside world.
 - **Least privilege:** a program the agent runs gets only what it's given (`ProcessRunner`), a site only what it's allowed (`ComposePolicy`).
+- **Messages:** what an owner reads when something fails says what happened, whether their data is safe, and what to do next.
 - **The README** when a command, a setting or what an owner sees changes.
 - **An entry in [CHANGELOG.md](CHANGELOG.md),** under "Unreleased", when what an owner sees or does changes; under "Updating from …" when they have to do something after updating. A release's notes are its section there.
+- **Commits on a branch** are free-form: they're squashed when merging. `Co-authored-by` is the only trailer, for a human co-author.
 
-Pull requests are reviewed for the above, and for messages: what an owner reads when something fails says what happened, whether their data is safe, and what to do next.
+Pull requests are reviewed for the above.
 
-## Pull requests, commits and branches
+## Pull requests
 
-These follow the conventions every YorvoLabs repository shares.
+Pull requests are squashed: the title becomes the commit's subject on `main`, followed by `(#N)`, and the description becomes its body. Write both for the change as a whole, never by copying the branch's commit messages.
 
-1. **The title is the squash commit's subject:** imperative, one sentence, at most 72 characters, no trailing period: "Refuse a site's build without its signed runtime", not "A site's build is refused…" or "Builds: …". It says what the code does, with no reference in it: "Patch Docker with the machine's updates". No type prefixes (`feat:` and the like); only Dependabot's `chore:` stays, so dependency updates can be filtered. A release's pull request is titled `Release X.Y.Z`, and the one that moves `main` to the next minor version `Start X.Y`.
-2. **The description is the squash commit's body,** under the headings of the template: **Why** (required), **What changes** (bullets, behavior rather than files), **Tested** (what ran, and what didn't, NOT RUN with the reason) and **Refs** (only what anyone can open: `Fixes #123`, a pull request, a published advisory, an RFC or upstream documentation; left out when there's none). Its checklist is the list above.
-3. **Nothing internal in public text:** titles, descriptions, commit messages, branch names, tag messages and CHANGELOG entries describe what the code changes and why, for someone outside the project. They never carry internal tracking codes or decision numbers, people's names or who decided or approved what, or paths outside the repository.
-4. **Commits on a branch** are free-form: they're squashed when merging. Add `Co-authored-by` only for a human co-author.
-5. **Branches are named `<kind>/<slug>`,** where the kind is `feat`, `fix`, `docs`, `chore`, `ci` or `security`, and the slug is lowercase with hyphens and says what the change is: `fix/host-patching`, `feat/site-packages`. `release/` is kept for maintenance branches (6); a release is prepared on `chore/release-X.Y.Z`.
-6. **Tags and release branches:** a release tag is `vX.Y.Z`, or `vX.Y.Z-rc.N` for a release candidate, with no other labels; annotated, SSH-signed by a key in `.github/release-signers` (`git tag -s v0.6.0 -m "Quire Server 0.6.0"`), on a commit of `main` that passed CI. The release workflow refuses any other tag before anything that can publish runs; `.github/verify-tag.sh v0.6.0` checks a tag the same way. Releases come from `main`; `release/X.Y` is created from `vX.Y.0` only when an older minor needs a fix after `main` has moved on (fixed on `main` first, then `git cherry-pick -x`).
-7. **Security fixes under embargo** are made in the repository's private security-advisory fork, never on a public branch, with a neutral title, description and branch: no advisory ID and no description of the attack until the advisory is published. The CHANGELOG's "Security" entry and the advisory's ID are added at release.
-8. **What a release publishes:** a GitHub release titled `Quire Server X.Y.Z` (a pre-release for `-rc.N`) with its CHANGELOG section (Keep a Changelog: `## [X.Y.Z] - YYYY-MM-DD`) and its image's digest as notes; the agent's image with its SBOM and provenance, scanned, then signed (servers install it by digest and check that signature); and the release's files with their checksums, signed with Sigstore. Before 1.0, a minor release may break things and a patch only fixes them; "Updating from …" says what an owner must do.
+**The title** is `<Verb> <what changes>`:
+- It starts with an imperative verb, capitalized, e.g. Add, Fix, Refuse, Let, Make, Move, Remove, Rename, Read, Run, Show, Keep.
+- It names one change, as whoever uses it sees it. No colon, no semicolon and no list of several changes: if it needs a list, the title is the umbrella and the list goes under "What changes".
+- At most 72 characters, with no trailing period, no `feat:`-style prefix, no product name and no version. Only Dependabot's `chore:` stays, so dependency updates can be filtered.
+- A release's pull request is titled exactly `Release X.Y.Z` (or `Release X.Y.Z-rc.N`), and the one that moves `main` on to the next minor exactly `Start X.Y`.
+
+Good: "Refuse a release whose tag isn't signed". Not: "feat: release tags are checked", "Releases: signed tags, checksums and docs".
+
+**The description** has exactly these sections, in this order, and nothing before, between or after them (the template has them):
+- `## Why`: one to three sentences about the problem, for whoever uses it.
+- `## What changes`: one behavior per bullet. A breaking change is the first bullet, starting "Breaking:".
+- `## Tested`: what ran, then `NOT RUN: <what>, because <why>` for anything that didn't.
+- `## Refs`: public links only (issues, pull requests, published advisories, RFCs, upstream docs). Leave the section out when there are none.
+
+A release's pull request uses the same sections: "Why" is `Release X.Y.Z.`, and "What changes" has one bullet per changelog heading.
+
+**Nothing internal in public text.** Titles, descriptions, commit messages, branch names, tag messages, release notes and the changelog say what the code changes and why, for a reader outside the project. They carry no internal tracking codes or decision numbers, no names of who decided, reviewed or approved what, and no paths outside the repository.
+
+**Before you send it, check:**
+1. Does the title start with an imperative verb?
+2. Does the title name one change, with no colon or list?
+3. Is it 72 characters or fewer, with no prefix and no trailing period?
+4. Does the description have exactly Why, What changes, Tested and (when there are any) Refs, in that order, and nothing else?
+5. Is there nothing internal in either?
+
+If the branch gains commits after the pull request is opened, update the title and description so they still describe the whole change.
+
+**Branches** are `<kind>/<slug>`, where the kind is one of `feat`, `fix`, `docs`, `chore`, `ci` or `security`, and the slug is lowercase with hyphens and describes the change, with no internal code. A release is prepared on `chore/release-X.Y.Z`. `release/X.Y` is reserved for maintenance branches.
+
+**A fix of an embargoed vulnerability** is developed in the repository's private security advisory fork, never on a public branch. Until the advisory is published, its title, description and branch describe the change neutrally: no advisory ID, and no description of the exploit. The changelog's Security entry and the advisory ID are added at the release.
+
+## Releases
+
+- **Tags and release branches:** a release tag is `vX.Y.Z`, or `vX.Y.Z-rc.N` for a release candidate, with no other labels; annotated, SSH-signed by a key in `.github/release-signers` (`git tag -s v0.6.0 -m "Quire Server 0.6.0"`), on a commit of `main` that passed CI. The release workflow refuses any other tag before anything that can publish runs; `.github/verify-tag.sh v0.6.0` checks a tag the same way. Releases come from `main`; `release/X.Y` is created from `vX.Y.0` only when an older minor needs a fix after `main` has moved on (fixed on `main` first, then `git cherry-pick -x`).
+- **What a release publishes:** a GitHub release titled `Quire Server X.Y.Z` (a pre-release for `-rc.N`) with its CHANGELOG section (Keep a Changelog: `## [X.Y.Z] - YYYY-MM-DD`) and its image's digest as notes; the agent's image with its SBOM and provenance, scanned, then signed (servers install it by digest and check that signature); and the release's files with their checksums, signed with Sigstore. Before 1.0, a minor release may break things and a patch only fixes them; "Updating from …" says what an owner must do.
 
 Changes to how Quire Server is released (`.github/release-signers`, the workflows and `.github/verify-tag.sh`) need a code owner's review (`.github/CODEOWNERS`).
 
