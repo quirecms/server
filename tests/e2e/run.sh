@@ -280,11 +280,11 @@ inside 'docker cp /root/try-links.php jane-php-1:/app/var/try-links.php'
 from_jane() { inside "docker exec jane-php-1 php /app/var/try-links.php $1"; }
 kim_link=$(inside "docker inspect kim-php-1 --format '{{(index .NetworkSettings.Networks \"quire-link-kim\").IPAddress}}'" || true)
 kim_own=$(inside "docker inspect kim-php-1 --format '{{(index .NetworkSettings.Networks \"kim_default\").IPAddress}}'" || true)
-reached=$(from_jane "tcp $kim_link:80 $kim_own:80 kim.test.quire.internal:80 kim-php-1:80 10.72.0.66:443 10.72.0.67:5432 jane.test.quire.internal:80" || true)
+reached=$(from_jane "tcp $kim_link:80 $kim_own:80 edge.kim.test.quire.internal:80 kim-php-1:80 10.72.0.66:443 10.72.0.67:5432 edge.jane.test.quire.internal:80" || true)
 echo "$reached" | sed 's/^/    /'
 check 'from jane, nothing of kim answers, by address or by name' "[ \"\$(echo \"\$reached\" | head -4 | grep -c ' not reached\$')\" = 4 ]"
 check 'nor the front door or PostgreSQL on kim'\''s link' "[ \"\$(echo \"\$reached\" | sed -n 5,6p | grep -c ' not reached\$')\" = 2 ]"
-check 'a control: jane reaches itself by its name on its link' "echo \"\$reached\" | grep -qx 'jane.test.quire.internal:80 reached'"
+check 'a control: jane reaches itself by its name on its link' "echo \"\$reached\" | grep -qx 'edge.jane.test.quire.internal:80 reached'"
 kim_password=$(inside "grep '^QUIRE_DATABASE_PASSWORD=' /srv/quire/sites/kim/prod.env | cut -d\\' -f2")
 server_password=$(inside "sed -n 's/^QUIRE_SERVER_DATABASE_PASSWORD=//p' /srv/quire/server/server.env" | tr -d "'")
 check 'kim'\''s role, with its real password, is refused from jane' "[ \"\$(from_jane \"login site_kim site_kim $kim_password\")\" = refused ]"
@@ -1090,7 +1090,9 @@ gate_state ls '-ln /state' | sed 's/^/    /' || true
 check 'its state file is the gate'\''s own: root'\''s, readable by it only' "[ \"\$(gate_state stat '-c %u:%a /state/state.json')\" = '0:600' ]"
 check 'the gate says nothing wrong with its state file' "! inside 'docker logs quire-server-gate-1 2>&1' | grep -i 'state file'"
 check 'both sites are served on this checkout' 'served jane && served kim'
-check 'each site has its name "edge.<domain>" on its link' "names jane-php-1 | grep -q 'edge.jane.test.quire.internal' && names kim-php-1 | grep -q 'edge.kim.test.quire.internal'"
+check 'each site has its name "edge.<domain>" on its link, and no other' "names jane-php-1 | grep -q 'edge.jane.test.quire.internal' && names kim-php-1 | grep -q 'edge.kim.test.quire.internal' && ! names jane-php-1 | grep -Eq '[:,]jane.test.quire.internal' && ! names kim-php-1 | grep -Eq '[:,]kim.test.quire.internal'"
+inside 'quire-server site:add jane-shop --domain=jane-shop.test --admin-email=shop@example.com --title="Shop" 2>&1' > "$logs"/add-nested.log || true
+check 'a new site whose name nests with another'\''s is refused, before anything is made' "said $logs/add-nested.log '\"jane-shop\" and the site \"jane\" would nest' && ! inside 'test -e /srv/quire/sites/jane-shop' && ! inside 'quire-server site:list' | grep -q jane-shop # $logs/add-nested.log"
 check 'every container was made again under the gate (Docker'\''s built-in seccomp profile)' "[ -z \"\$(inside \"docker ps -q --filter label=com.quirecms.server.site | xargs docker inspect --format '{{.Name}} {{json .HostConfig.SecurityOpt}}'\" | grep -v seccomp=builtin)\" ]"
 check 'a site'\''s container runs its image by ID, as the gate names it to Docker' "inside \"docker inspect jane-php-1 --format '{{.Config.Image}}'\" | grep -Eq '^(quire-sites/jane/php-prod@)?sha256:[0-9a-f]{64}\$'"
 check 'a site'\''s own command goes through its scope' "inside 'quire-server site:console kim quire:about 2>&1' | grep -q 'Quire'"

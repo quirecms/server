@@ -63,8 +63,7 @@ final readonly class SiteOverrides
             }
 
             try {
-                $others = array_values(array_map(static fn (Site $other): string => $other->project, array_filter($sites, static fn (Site $other): bool => $other->name->value !== $site->name->value)));
-                $projects[] = SiteProject::of($this->paths, $site->name, $site->domains, $site->project, $site->databaseMode, $this->networks->find($site->name), $others);
+                $projects[] = SiteProject::of($this->paths, $site->name, $site->domains, $site->project, $site->databaseMode, $this->networks->find($site->name));
             } catch (\Throwable $e) {
                 $failed[$site->name->value] = $e->getMessage();
             }
@@ -82,9 +81,8 @@ final readonly class SiteOverrides
      */
     public function refresh(): array
     {
-        // Every site's scope first, as this release writes it: a scope of the release before may hold
-        // a name the gate now gives another site (YorvoGate 0.3: "jane-blog.test.quire.internal" is
-        // under "jane-"), and the gate would refuse that other site's scope until it's rewritten.
+        // Every site's scope first, as this release writes it (its format, its names on its link), so
+        // the gate holds this release's before any site's containers are made again.
         $failed = $this->scopes();
 
         foreach ($this->registry->all() as $site) {
@@ -101,10 +99,9 @@ final readonly class SiteOverrides
                     $before = (string) file_get_contents($override);
                     // Its link and addresses: made the first time (a site of a release before D-34)
                     $subnets = $this->links->ensure($site->name, $site->project, Site::SHARED_DATABASE === $site->databaseMode);
-                    $projects = array_values(array_map(static fn (Site $other): string => $other->project, array_filter($this->registry->all(), static fn (Site $other): bool => $other->name->value !== $site->name->value && Site::REMOVED !== $other->status)));
-                    $this->files->writeOverride($directory, $site->name, $site->domains, $site->databaseMode, $subnets, $projects, $site->project);
+                    $this->files->writeOverride($directory, $site->name, $site->domains, $site->databaseMode, $subnets, $site->project);
                     $image = SiteFiles::image($site->project);
-                    $project = SiteProject::of($this->paths, $site->name, $site->domains, $site->project, $site->databaseMode, $subnets, $projects);
+                    $project = SiteProject::of($this->paths, $site->name, $site->domains, $site->project, $site->databaseMode, $subnets);
 
                     if (null === $this->images->id($project, $image)) {
                         $running = $this->images->ofContainer($project, $site->project.'-php-1');

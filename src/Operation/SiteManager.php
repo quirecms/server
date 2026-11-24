@@ -26,6 +26,7 @@ use Quire\Server\Registry\SiteRegistry;
 use Quire\Server\ServerUpdate\ServerSettings;
 use Quire\Server\Site\Domain;
 use Quire\Server\Site\EnvFile;
+use Quire\Server\Site\NestedNames;
 use Quire\Server\Site\ServerPaths;
 use Quire\Server\Site\Site;
 use Quire\Server\Site\SiteFiles;
@@ -138,6 +139,8 @@ final readonly class SiteManager
                     throw new \DomainException(\sprintf('The folder "%s" exists already: move it away first (if an add of "%s" was cut short, "quire-server site:remove %2$s --skip-backup" clears what it left).', $directory, $request->name));
                 }
 
+                $this->ensureNotNested($request->name->value, $request->name);
+
                 if ($request->repository instanceof Repository && $request->repository->overSsh() && !$this->keys->exists($request->name)) {
                     throw new \DomainException(\sprintf('The site has no deploy key yet: create it with "quire-server site:key %s", add it to the repository as a read-only deploy key, then add the site.', $request->name));
                 }
@@ -182,8 +185,7 @@ final readonly class SiteManager
                 ], static fn (string $value): bool => '' !== $value));
                 $subnets = $this->links->ensure($request->name, $request->name->value, true);
                 $undo[] = fn () => $this->links->remove($request->name, $request->name->value);
-                $this->yieldEdgeNames($request->name->value, $operation);
-                $this->files->writeOverride($directory, $request->name, $request->domains, Site::SHARED_DATABASE, $subnets, $this->otherProjects($request->name));
+                $this->files->writeOverride($directory, $request->name, $request->domains, Site::SHARED_DATABASE, $subnets);
                 $project = $this->project($request->name, $request->domains, $request->name->value, Site::SHARED_DATABASE);
 
                 $step('Checking and building it (a few minutes)');
@@ -275,6 +277,8 @@ final readonly class SiteManager
                     throw new \DomainException(\sprintf('The folder "%s" exists already: choose another name, or move it away first.', $directory));
                 }
 
+                $this->ensureNotNested($name->value, $name);
+
                 if (\is_string($code)) {
                     foreach (['compose.yaml', 'compose.prod.yaml', 'composer.json'] as $file) {
                         if (!is_file($code.'/'.$file)) {
@@ -346,8 +350,7 @@ final readonly class SiteManager
                 ], static fn (string $value): bool => '' !== $value));
                 $subnets = $this->links->ensure($name, $name->value, true);
                 $undo[] = fn () => $this->links->remove($name, $name->value);
-                $this->yieldEdgeNames($name->value, $operation);
-                $this->files->writeOverride($directory, $name, $domains, Site::SHARED_DATABASE, $subnets, $this->otherProjects($name));
+                $this->files->writeOverride($directory, $name, $domains, Site::SHARED_DATABASE, $subnets);
                 $project = $this->project($name, $domains, $name->value, Site::SHARED_DATABASE);
 
                 // Before anything of it runs: what its code says of where its files are (R1)
@@ -462,6 +465,7 @@ final readonly class SiteManager
 
             $env = EnvFile::read($envPath);
             $project = $env->clear('COMPOSE_PROJECT_NAME') ?? $name->value;
+            $this->ensureNotNested($project, $name);
 
             // Docker's objects are the project's by its name and label: a site's project follows a site
             // name's rules (no "_", nothing of the server's, e.g. "quire-server", whose containers
@@ -503,8 +507,7 @@ final readonly class SiteManager
                 $files = $env->clear('COMPOSE_FILE') ?? 'compose.yaml:compose.prod.yaml';
                 $subnets = $this->links->ensure($name, $project, false);
                 $undo[] = fn () => $this->links->remove($name, $project);
-                $this->yieldEdgeNames($project, $operation);
-                $this->files->writeOverride($directory, $name, $domains, Site::OWN_DATABASE, $subnets, $this->otherProjects($name), $project);
+                $this->files->writeOverride($directory, $name, $domains, Site::OWN_DATABASE, $subnets, $project);
                 $this->files->write($envPath, $env->with([
                     'COMPOSE_FILE' => str_contains($files, SiteFiles::OVERRIDE) ? $files : $files.':'.SiteFiles::OVERRIDE,
                     'COMPOSE_PROJECT_NAME' => $project,
@@ -623,7 +626,7 @@ final readonly class SiteManager
                     $this->files->write($envPath, $envBefore, 0o600);
                 };
                 $subnets = $this->links->ensure($name, $site->project, Site::SHARED_DATABASE === $site->databaseMode);
-                $this->files->writeOverride($directory, $name, $domains, $site->databaseMode, $subnets, $this->otherProjects($name), $site->project);
+                $this->files->writeOverride($directory, $name, $domains, $site->databaseMode, $subnets, $site->project);
                 $env = EnvFile::parse($envBefore);
 
                 // The server's own prod.env names its main domain; an adopted site's keeps its own settings
@@ -1041,55 +1044,28 @@ final readonly class SiteManager
      */
     public function project(SiteName $name, array $domains, string $project, string $databaseMode): SiteProject
     {
-        return SiteProject::of($this->paths, $name, $domains, $project, $databaseMode, $this->networks->find($name), $this->otherProjects($name));
+        return SiteProject::of($this->paths, $name, $domains, $project, $databaseMode, $this->networks->find($name));
     }
 
     /**
-     * The Compose projects of the server's other sites: their prefixes decide which of a site's names on
-     * its link the gate allows it (SiteFiles::edgeNames).
-     *
-     * @return list<string>
+     * Refuses a new site's project that nests with another site's ("jane" and "jane-shop": NestedNames),
+     * before anything is made. Restoring a site that was there keeps its name, nested or not: its data
+     * comes first, and the server lists such pairs.
      */
-    private function otherProjects(SiteName $name): array
+    private function ensureNotNested(string $project, SiteName $name): void
     {
-        $projects = [];
+        $others = [];
 
         foreach ($this->registry->all() as $site) {
             if ($site->name->value !== $name->value && Site::REMOVED !== $site->status) {
-                $projects[] = $site->project;
+                $others[] = $site->project;
             }
         }
 
-        return $projects;
-    }
+        $refusal = NestedNames::refusal($project, $others);
 
-    /**
-     * Before a new project's scope is on the gate: the sites whose names of releases before 0.6 on
-     * their link it covers ("jane-blog.example.quire.internal" once there's a site "jane") lose them,
-     * in their scope and their override, so the gate refuses neither. Their running containers keep
-     * the name until they're next made; their front door finds them by "edge.<domain>" meanwhile.
-     */
-    private function yieldEdgeNames(string $project, Operation $operation): void
-    {
-        foreach ($this->registry->all() as $site) {
-            $covered = array_filter($site->domains, static fn (Domain $domain): bool => null !== SiteFiles::coveredBy($domain->value, [$project]));
-
-            if ($site->project === $project || Site::REMOVED === $site->status || [] === $covered) {
-                continue;
-            }
-
-            $directory = $this->paths->site($site->name);
-            $subnets = $this->networks->find($site->name);
-
-            if (!is_file($directory.'/'.SiteFiles::OVERRIDE) || !$subnets instanceof \Quire\Server\Network\SiteSubnets) {
-                continue;
-            }
-
-            $this->lock->run($site->name, function () use ($site, $directory, $subnets): void {
-                $this->files->writeOverride($directory, $site->name, $site->domains, $site->databaseMode, $subnets, $this->otherProjects($site->name), $site->project);
-                $this->compose->scope($this->projectOf($site));
-            });
-            $operation->line(\sprintf('"%s" no longer has its link\'s names of releases before 0.6 that start with "%s-" (the gate gives those to this site); the front door finds it by "edge.<domain>"', $site->name->value, $project));
+        if (null !== $refusal) {
+            throw new \DomainException($refusal);
         }
     }
 

@@ -25,6 +25,11 @@ All notable changes to Quire Server. The format follows [Keep a Changelog](https
 
 ### Changed
 
+- **A new site's name can't nest with another site's** (`jane` and `jane-shop`, either way round), when it's added, restored as a new site or adopted. Docker's names for one site would start with the other's (`jane-shop-web-1` is both jane's `shop-web` and jane-shop's `web`), so one site could take names that are the other's. The refusal comes before anything is made, and says which site's names. Sites that are already there keep their names, nested or not, and so does restoring a site that was there. `quire-server status` lists each pair, with what the Docker gate does with their names.
+- **A site has one name on its link,** `edge.<domain>.quire.internal`, which the front door asks for. The name releases before 0.6 also gave it (`<domain>.quire.internal`) was kept for an undo to 0.5. This release updates only from 0.6 or later, so that name goes: a site's containers lose it the next time they're made, and the front door no longer asks for it.
+
+### Changed
+
 - **Breaking: this release updates only a server on 0.6.0 or later.** It writes what 0.5's Docker gate and front door can't read, so an update from an older release, or its undo, would leave sites unreachable. Its first step at a start stops such an update before any of its containers runs, and the updater puts the server back as it ran (its output names the step: `update-from-0.6-or-later`). From 0.5 or older, update to 0.6.1 first (`quire-server update --to=0.6.1`), then to this release.
 
 ## [0.6.1] - 2026-11-22

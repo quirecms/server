@@ -265,15 +265,6 @@ final readonly class Compose
     }
 
     /**
-     * The site's scope on the gate as its policy says now, in effect: e.g. after another site's
-     * arrival took one of its names on its link (SiteManager::yieldEdgeNames).
-     */
-    public function scope(SiteProject $project): void
-    {
-        $this->gate->site($project);
-    }
-
-    /**
      * Removes the site's builder and its build cache, and its scope on the gate: with the site.
      */
     public function forget(string $project): void
