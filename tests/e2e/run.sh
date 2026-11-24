@@ -1114,11 +1114,14 @@ check 'its gate read every site'\''s scope (this release left them as 0.6 reads 
 	for site in jane kim; do echo "$site after ${waited}s: $(inside "curl -sk --resolve $site.test:443:127.0.0.1 -o /dev/null -w '%{http_code}' https://$site.test/" 2>&1) $(served $site && echo served || echo 'not served')"; done
 } > "$logs"/served-back.log 2>&1
 inside 'docker logs quire-server-front-1 2>&1 | tail -40' > "$logs"/front-back.log 2>&1 || true
+# The agent's own since the rollback (its container is 0.6.1's, made by that start): whether its rounds
+# put the front door back on each site's link, and anything that went wrong
+inside 'docker logs quire-server-agent-1 2>&1' | grep -iE 'back on its link|error|exception|fail|warn|refus|link' > "$logs"/agent-back.log 2>&1 || true
 {
 	inside "docker ps -a --format '{{.Names}} {{.Image}} {{.Status}}'"
 	for container in quire-server-front-1 jane-php-1 kim-php-1; do echo "$container: $(names $container 2>&1)"; done
 } > "$logs"/containers-back.log 2>&1 || true
-check "both sites are served by $to's front door again, with no deploy" "grep -q 'jane at once: 200 served' $logs/served-back.log && grep -q 'kim at once: 200 served' $logs/served-back.log # $logs/served-back.log $logs/front-back.log $logs/containers-back.log $logs/gate-back-sites.log"
+check "both sites are served by $to's front door again, with no deploy" "grep -q 'jane at once: 200 served' $logs/served-back.log && grep -q 'kim at once: 200 served' $logs/served-back.log # $logs/served-back.log $logs/agent-back.log $logs/front-back.log $logs/containers-back.log $logs/gate-back-sites.log"
 check 'a site'\''s own command works through its scope' "inside 'quire-server site:console jane quire:about 2>&1' | grep -q 'Quire'"
 fi
 
