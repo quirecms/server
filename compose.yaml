@@ -8,10 +8,30 @@
 name: quire-server
 
 services:
+  # This release's first step at each start, before any of its containers: an update from a release
+  # older than 0.6.0 stops here (bin/update-floor), and the updater that ran it puts the server back as
+  # it ran. Its name is what that updater shows of it ("service "update-from-0.6-or-later" didn't
+  # complete successfully"). It reads only the update's record, read-only: no network, no Docker.
+  update-from-0.6-or-later:
+    image: ${QUIRE_SERVER_IMAGE:-quire-server-agent}
+    restart: "no"
+    entrypoint: [php, bin/update-floor, /swap/swap.json]
+    volumes:
+      - ${QUIRE_SERVER_ROOT:-/srv/quire}/backups/server:/swap:ro
+    network_mode: none
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges=true]
+    healthcheck: {disable: true}
+    mem_limit: 128m
+    pids_limit: 64
+
   # The only part visitors reach: certificates and routing to sites by domain.
   front:
     image: caddy:2.11.9-alpine@sha256:003a97808e781aa9f7e75cc2f43d34d461099031faf5e20faefb9f61126836f0
     restart: unless-stopped
+    depends_on:
+      update-from-0.6-or-later: {condition: service_completed_successfully}
     ports:
       - {name: http, target: 80, published: 80, protocol: tcp}
       - {name: https, target: 443, published: 443, protocol: tcp}
@@ -55,6 +75,7 @@ services:
       database: {condition: service_healthy}
       gate: {condition: service_started}
       host-setup: {condition: service_completed_successfully}
+      update-from-0.6-or-later: {condition: service_completed_successfully}
     environment: &agent-environment
       APP_SECRET: ${QUIRE_SERVER_APP_SECRET:?Set QUIRE_SERVER_APP_SECRET in server.env}
       DATABASE_URL: postgresql://quire_server:${QUIRE_SERVER_DATABASE_PASSWORD:?Set QUIRE_SERVER_DATABASE_PASSWORD in server.env}@quire-database:5432/quire_server?serverVersion=18&charset=utf8
@@ -172,6 +193,8 @@ services:
   gate:
     image: ghcr.io/yorvolabs/yorvogate:0.4.0@sha256:59f2399f2ad1930f67ee278c38edb9070187be1bba5a32e77b2522ae95e046c2
     restart: unless-stopped
+    depends_on:
+      update-from-0.6-or-later: {condition: service_completed_successfully}
     user: "0:0"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
@@ -207,6 +230,8 @@ services:
   host-setup:
     image: ${QUIRE_SERVER_IMAGE:-quire-server-agent}
     restart: "no"
+    depends_on:
+      update-from-0.6-or-later: {condition: service_completed_successfully}
     entrypoint: [/bin/sh, -euc]
     command:
       - >-
