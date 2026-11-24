@@ -1100,8 +1100,25 @@ started || true
 inside 'quire-server logs agent 2>&1 | grep -v "^ *$" | tail -12' | sed 's/^/    /'
 check "it runs $to, its gate YorvoGate 0.3.0" "inside 'quire-server version' | grep -q \"^Quire Server $to\" && inside \"docker inspect quire-server-gate-1 --format '{{.Config.Image}}'\" | grep -q 'yorvogate:0.3.0@sha256:'"
 inside 'docker logs quire-server-gate-1 2>&1' > "$logs"/gate-back.log || true
-check 'its gate read every site'\''s scope (this release left them as 0.6 reads them)' "! grep -iE 'refus|unknown field' $logs/gate-back.log | grep -qE 'jane|kim'"
-check "both sites are served by $to's front door again, with no deploy" 'served jane && served kim'
+# What the gate said of the sites, and what it refused of them. Not YorvoGate 0.3's warning at its
+# start that the scope files have no version yet (it names the sites and says 0.4 "refuses them").
+grep -E 'jane|kim' "$logs"/gate-back.log | tail -40 > "$logs"/gate-back-sites.log || true
+grep -iE 'refus|unknown field' "$logs"/gate-back-sites.log | grep -v 'scope files have no version' > "$logs"/gate-back-refused.log || true
+check 'its gate read every site'\''s scope (this release left them as 0.6 reads them)' "[ ! -s $logs/gate-back-refused.log ] # $logs/gate-back-refused.log"
+# Why a site wouldn't be served, in CI's log: what the front door answers at once and a minute later,
+# what it said, and each container's networks and names
+{
+	for site in jane kim; do echo "$site at once: $(inside "curl -sk --resolve $site.test:443:127.0.0.1 -o /dev/null -w '%{http_code}' https://$site.test/" 2>&1) $(served $site && echo served || echo 'not served')"; done
+	waited=0
+	until { served jane && served kim; } || [ $waited -ge 60 ]; do sleep 5; waited=$((waited + 5)); done
+	for site in jane kim; do echo "$site after ${waited}s: $(inside "curl -sk --resolve $site.test:443:127.0.0.1 -o /dev/null -w '%{http_code}' https://$site.test/" 2>&1) $(served $site && echo served || echo 'not served')"; done
+} > "$logs"/served-back.log 2>&1
+inside 'docker logs quire-server-front-1 2>&1 | tail -40' > "$logs"/front-back.log 2>&1 || true
+{
+	inside "docker ps -a --format '{{.Names}} {{.Image}} {{.Status}}'"
+	for container in quire-server-front-1 jane-php-1 kim-php-1; do echo "$container: $(names $container 2>&1)"; done
+} > "$logs"/containers-back.log 2>&1 || true
+check "both sites are served by $to's front door again, with no deploy" "grep -q 'jane at once: 200 served' $logs/served-back.log && grep -q 'kim at once: 200 served' $logs/served-back.log # $logs/served-back.log $logs/front-back.log $logs/containers-back.log $logs/gate-back-sites.log"
 check 'a site'\''s own command works through its scope' "inside 'quire-server site:console jane quire:about 2>&1' | grep -q 'Quire'"
 fi
 
