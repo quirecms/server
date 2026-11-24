@@ -27,6 +27,9 @@ final readonly class Gate
     /** The label that says which project (and so which site) a Docker object belongs to */
     public const string OWNER_LABEL = 'com.docker.compose.project';
 
+    /** The format of the scope files the agent writes */
+    public const int SCOPE_FORMAT = 1;
+
     /** How long a site's socket may take to open */
     private const float OPEN_SECONDS = 15.0;
 
@@ -286,6 +289,10 @@ final readonly class Gate
         }
 
         return [
+            // The scope file's format (YorvoGate 0.3 reads it, and warns without it; a later one refuses
+            // a file without it). Every release this one can roll back to (0.6.0 or later: UpdateFloor)
+            // runs a gate that reads it.
+            'version' => self::SCOPE_FORMAT,
             'owner' => ['label' => self::OWNER_LABEL, 'value' => $name],
             'prefixes' => [$name.'-', $name.'_'],
             'images' => [PolicyContext::IMAGES.$name.'/'],
