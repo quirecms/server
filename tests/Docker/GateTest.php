@@ -48,6 +48,8 @@ final class GateTest extends TestCase
     public function testASitesScopeIsWhatTheServerAllowsIt(): void
     {
         self::assertSame([
+            // Its format, first (a later YorvoGate refuses a scope file without it)
+            'version' => 1,
             'owner' => ['label' => 'com.docker.compose.project', 'value' => 'jane'],
             'prefixes' => ['jane-', 'jane_'],
             'images' => ['quire-sites/jane/'],

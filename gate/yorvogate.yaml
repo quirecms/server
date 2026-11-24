@@ -12,9 +12,8 @@
 #     actually receives, so a gap in the policy isn't root on the host.
 #
 # Only the agent mounts the sockets. The settings below mirror ComposePolicy: a test keeps them equal.
-# The configuration's format (YorvoGate 0.3 and later). The scope files the agent writes stay without
-# one in this release: 0.2.2, which a server update rolls back to, refuses a field it doesn't know, and
-# a rollback doesn't rewrite them. They get "version" once no release it can roll back to runs 0.2.
+# The configuration's format (YorvoGate 0.3 and later). The scope files the agent writes carry theirs
+# too ("version": 1): every release this one can roll back to (0.6.0 or later) runs a gate that reads it.
 version: 1
 upstream: unix:///var/run/docker.sock
 # Each scope's last valid claims, kept across the gate's restarts, so a site's scope file that isn't
