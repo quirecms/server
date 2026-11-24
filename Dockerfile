@@ -9,7 +9,7 @@
 FROM docker:29.10.0-cli@sha256:34507eb5069d8be82c95dd3b6987d4250fd5fee49b82e2509b7d7a7030740d6d AS docker_cli
 FROM composer:2.11.0@sha256:278dfc7bd35169965d03f87194816f43bf4e6b6ea61707c2114e52ad12fe24ce AS composer
 FROM ghcr.io/sigstore/cosign/cosign:v3.1.4@sha256:0f06154836d2de34f887a5c273506d52ca43edaa1d9e53e6510fa78a48f69c2d AS cosign
-FROM restic/restic:0.19.1@sha256:136600b6ff6843d61d355f7f71f460a166429f35de6fd11b568fece3c9a4d510 AS restic
+FROM restic/restic:0.20.0@sha256:93999df80d4ac6cb148e82d2ef1fe6a81996f17ff535e772723538211b31555a AS restic
 # The Docker gate, for the tests only (they check the scopes the agent writes with the gate itself);
 # the server runs its image (compose.yaml), the same digest (a test keeps them equal).
 FROM ghcr.io/yorvolabs/yorvogate:0.4.0@sha256:59f2399f2ad1930f67ee278c38edb9070187be1bba5a32e77b2522ae95e046c2 AS yorvogate
