@@ -41,6 +41,9 @@ final readonly class ServerUpdater
 
     private const int ROLLBACK_WAIT = 300;
 
+    /** The group of Docker's socket (dockerGroup) */
+    public const string DOCKER_GID = 'QUIRE_SERVER_DOCKER_GID';
+
     /** What host-setup writes the machine's updates from (gate/host-updates.sh, from 0.6) */
     private const array HOST_SETTINGS = ['QUIRE_SERVER_OS_UPDATES', 'QUIRE_SERVER_OS_UPDATE_HOUR', 'QUIRE_SERVER_REBOOT'];
 
@@ -60,6 +63,7 @@ final readonly class ServerUpdater
         private string $migrationsTable = 'doctrine_migration_versions',
         private \Closure $pause = sleep(...),
         private Filesystem $filesystem = new Filesystem(),
+        private string $dockerSocket = '/var/run/docker.sock',
     ) {
     }
 
@@ -126,7 +130,7 @@ final readonly class ServerUpdater
                 throw new \DomainException(\sprintf('Quire Server %s doesn\'t run PostgreSQL %d any more, which this server runs: upgrade it first ("quire-server database:upgrade").', $target, $postgres));
             }
 
-            $env = $this->folder->env()->with(['QUIRE_SERVER_IMAGE' => $release->image, 'COMPOSE_FILE' => $images->composeFile('compose.yaml', $postgres)]);
+            $env = $this->folder->env()->with(['QUIRE_SERVER_IMAGE' => $release->image, 'COMPOSE_FILE' => $images->composeFile('compose.yaml', $postgres), ...$this->dockerGroup()]);
             $staged = $work.'/server.env';
             // For the checks only, never installed: the gate's settings are the release's own
             ServerFolder::writeSecret($staged, $env->with([self::GATE_CONFIG => $release->files.'/gate/yorvogate.yaml'])->content());
@@ -457,6 +461,21 @@ final readonly class ServerUpdater
         $swap = false === $record ? null : json_decode($record, true);
 
         return \is_array($swap) && \is_string($swap['from'] ?? null) && \is_string($swap['to'] ?? null) ? ['from' => $swap['from'], 'to' => $swap['to']] : null;
+    }
+
+    /**
+     * The group of Docker's socket on this machine, for server.env: a release whose Docker gate runs
+     * as a user of its own joins it (Compose reads it when it reads the release's files, before that
+     * release runs anything, so the release before writes it). Read again at each update: Docker
+     * installed again may have another. Nothing when it can't be read.
+     *
+     * @return array<string, string>
+     */
+    private function dockerGroup(): array
+    {
+        $group = @filegroup($this->dockerSocket);
+
+        return \is_int($group) ? [self::DOCKER_GID => (string) $group] : [];
     }
 
     private function swapRecord(): string

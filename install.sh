@@ -299,6 +299,11 @@ install_files() {
 		-e "s#^COMPOSE_FILE=.*#COMPOSE_FILE=compose.yaml${source:+:compose.build.yaml}#" \
 		"$staging/server.env.dist" >"$staging/server.env"
 	if [ "$test_certificates" = 1 ]; then printf '\n# Tests: certificates from the front door'\''s own authority\nQUIRE_SERVER_TLS_GLOBAL=local_certs\n' >>"$staging/server.env"; fi
+	# The group of Docker's socket: a release whose Docker gate runs as a user of its own joins it. Each
+	# update reads it again (Docker installed again may have another).
+	if docker_gid=$(stat -c %g /var/run/docker.sock 2>/dev/null) && [ -n "$docker_gid" ]; then
+		printf '\n# The group of Docker'\''s socket (written by the installer and each update)\nQUIRE_SERVER_DOCKER_GID=%s\n' "$docker_gid" >>"$staging/server.env"
+	fi
 	# The machine's own updates (gate/host-updates.sh): Docker's packages with Ubuntu's, at 05:30 UTC,
 	# and a restart right after them when one needs it (a new kernel). --no-os-updates: left alone.
 	if [ "$os_updates" = 1 ]; then

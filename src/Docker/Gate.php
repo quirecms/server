@@ -30,6 +30,13 @@ final readonly class Gate
     /** The format of the scope files the agent writes */
     public const int SCOPE_FORMAT = 1;
 
+    /**
+     * The Docker gate's own group: its sockets' and the scope files' (read by it, changed by the agent
+     * only). The gate still runs as root in this release, reading them anyway; a later one runs it as
+     * a user of its own in this group, and finds the files ready.
+     */
+    public const int GATE_GROUP = 65533;
+
     /** How long a site's socket may take to open */
     private const float OPEN_SECONDS = 15.0;
 
@@ -47,6 +54,11 @@ final readonly class Gate
         private string $configs,
         /** What the gate made of a scope file, once it read it */
         private ScopeStatus $status,
+        /**
+         * The group that may read the scope files (GATE_GROUP), or null to leave their group as it is
+         * (a test, run as a user that can't give it).
+         */
+        private ?int $readers = null,
     ) {
         $this->filesystem = new Filesystem();
     }
@@ -181,19 +193,45 @@ final readonly class Gate
         $document = json_encode($this->scope($project), \JSON_THROW_ON_ERROR | \JSON_UNESCAPED_SLASHES | \JSON_PRETTY_PRINT)."\n";
         $before = is_file($file) ? file_get_contents($file) : null;
 
+        $this->readable();
+
         if ($before === $document) {
+            // One a release before this one wrote: readable by the gate's group from now on
+            $this->readableFile($file);
+
             return hash('sha256', $document);
         }
 
-        $this->filesystem->mkdir($this->scopes, 0o700);
         // Whole or not at all: the gate may read it at any moment.
         $temporary = $this->scopes.'/.'.$name.'.'.bin2hex(random_bytes(4));
         $this->filesystem->dumpFile($temporary, $document);
-        // Only its owner may change it, or the gate refuses it.
-        $this->filesystem->chmod($temporary, 0o600);
+        // Only its owner may change it, or the gate refuses it; the gate's group may read it.
+        $this->readableFile($temporary);
         $this->filesystem->rename($temporary, $file, true);
 
         return hash('sha256', $document);
+    }
+
+    /**
+     * The scope files' folder: the agent's, searchable by the gate's group, closed to anyone else.
+     */
+    private function readable(): void
+    {
+        $this->filesystem->mkdir($this->scopes, 0o750);
+        $this->filesystem->chmod($this->scopes, 0o750);
+
+        if (null !== $this->readers) {
+            $this->filesystem->chgrp($this->scopes, $this->readers);
+        }
+    }
+
+    private function readableFile(string $file): void
+    {
+        if (null !== $this->readers) {
+            $this->filesystem->chgrp($file, $this->readers);
+        }
+
+        $this->filesystem->chmod($file, 0o640);
     }
 
     /**
