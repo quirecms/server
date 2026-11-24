@@ -1,0 +1,26 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+/*
+ * The release's first step at each start (compose.yaml: update-from-0.6-or-later): stops the start of
+ * an update from a release older than this one updates from (UpdateFloor). Reads only the update's
+ * record, mounted read-only; no network, no Docker, no secrets.
+ */
+
+use Quire\Server\ServerUpdate\UpdateFloor;
+
+require dirname(__DIR__).'/vendor/autoload.php';
+
+$file = $argv[1] ?? '/swap/swap.json';
+$record = is_file($file) ? file_get_contents($file) : null;
+$refusal = UpdateFloor::refusal(false === $record ? null : $record);
+
+if (null !== $refusal) {
+    fwrite(STDERR, $refusal."\n");
+
+    exit(1);
+}
+
+exit(0);

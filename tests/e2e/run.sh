@@ -16,10 +16,11 @@
 #   E2E_ONLY=links tests/e2e/run.sh …  sites' links (D-34): the last release before them (0.3.1) installed with
 #                                             a site on the shared networks, moved to this checkout (its files and agent),
 #                                             a second site added; what each reaches of the other and the server
-#   E2E_ONLY=rollback tests/e2e/run.sh … the last release before 0.6 (E2E_ROLLBACK_FROM, else 0.5.2) updated with
-#                                             its own updater to a published 0.6 (E2E_ROLLBACK_TO, else 0.6.0-rc.2),
-#                                             undone, updated again; then moved to this checkout and rolled back
-#                                             (its files put back as the updater does): every site served throughout
+#   E2E_ONLY=rollback tests/e2e/run.sh … a release before 0.6 (E2E_ROLLBACK_FROM, else 0.5.2) refused by this
+#                                             release's first step, then updated with its own updater to a
+#                                             published 0.6 (E2E_ROLLBACK_TO, else 0.6.1), moved to this checkout
+#                                             and rolled back (its files put back as the updater does): every
+#                                             site served throughout
 #   E2E_CACHE=1 tests/e2e/run.sh …     keeps the machine's images and build cache between runs
 #                                             (in the volume quire-server-e2e-cache; one run at a time)
 #
@@ -1014,58 +1015,65 @@ fi
 
 if rollingback; then
 from=${E2E_ROLLBACK_FROM:-0.5.2}
-echo "== Quire Server $from with three sites: one whose domain starts with another's name (jane-blog.test, next to jane)"
-for site in jane jane-blog kim; do
+to=${E2E_ROLLBACK_TO:-0.6.1}
+echo "== Quire Server $from with two sites"
+for site in jane kim; do
 	inside "quire-server site:add $site --domain=$site.test --admin-email=$site@example.com --title=\"Site $site\" 2>&1" > "$logs/add-$site.log" || sed 's/^/    /' "$logs/add-$site.log"
 done
 served() { inside "curl -sk --resolve $1.test:443:127.0.0.1 https://$1.test/" | grep -q "Site $1"; }
-check "all three run and are served on $from" 'served jane && served jane-blog && served kim'
+check "both run and are served on $from" 'served jane && served kim'
 # A container's names on a network
 names() { inside "docker inspect $1 --format '{{range \$name, \$n := .NetworkSettings.Networks}}{{\$name}}:{{join \$n.DNSNames \",\"}} {{end}}'"; }
-
-# The update as an owner runs it: $from's own updater, to a published release (its signatures checked).
-# Before anything changes, $from's updater checks the sites with the release's Docker gate, which
-# refuses $from's names for the pair: the update stops, and 0.6.0's notes say what to do (Known limits).
-to=${E2E_ROLLBACK_TO:-0.6.0-rc.2}
 # What a log says, whatever lines the console's box broke it over
 said() { tr -s ' \n' '  ' <"$1" | grep -q "$2"; }
-echo "== $from updates itself to Quire Server $to: refused with the pair, as the release notes say"
-inside "quire-server update --to=$to --yes 2>&1" > "$logs"/update-pair.log || true
-sed 's/^/    /' "$logs"/update-pair.log | tail -8
-check 'the update stops before anything changes, naming the pair' "said $logs/update-pair.log 'the server runs as it was' && said $logs/update-pair.log \"quire-link-jane-blog is under scope jane's prefix\""
-check "it runs $from, every site served" "inside 'quire-server version' | grep -q \"^Quire Server $from\" && served jane && served jane-blog && served kim"
-
-echo "== Without the pair (jane-blog removed first, as the notes say), it updates; jane-blog comes back after"
-inside 'quire-server site:remove jane-blog --yes 2>&1' > "$logs"/remove-pair.log || sed 's/^/    /' "$logs"/remove-pair.log
-inside "quire-server update --to=$to --yes 2>&1" > "$logs"/update-real.log || true
-sed 's/^/    /' "$logs"/update-real.log | tail -6
-check "it runs Quire Server $to, its gate YorvoGate 0.3.0" "inside 'quire-server version' | grep -q \"^Quire Server $to\\\$\" && inside \"docker inspect quire-server-gate-1 --format '{{.Config.Image}}'\" | grep -q 'yorvogate:0.3.0@sha256:'"
-check 'jane and kim are served' 'served jane && served kim'
-inside 'quire-server site:restore-removed jane-blog --yes 2>&1' > "$logs"/restore-pair.log || sed 's/^/    /' "$logs"/restore-pair.log
-check 'jane-blog is back, served, with only its name "edge.jane-blog.test" on its link' "grep -q 'runs again' $logs/restore-pair.log && served jane-blog && served jane && names jane-blog-php-1 | grep -q 'quire-link-jane-blog:[^ ]*edge.jane-blog.test.quire.internal' && ! names jane-blog-php-1 | grep -Eq '[:,]jane-blog.test.quire.internal'"
-
-echo "== The update undone: $from again, with the pair"
-inside 'quire-server update --undo --yes 2>&1' > "$logs"/undo-real.log || true
-sed 's/^/    /' "$logs"/undo-real.log | tail -6
 # The agent's start, done: it says so when it starts its rounds
 started() { inside 'for i in $(seq 180); do quire-server logs agent 2>&1 | grep -q "Automatic updates" && exit 0; sleep 2; done; exit 1'; }
-started || true
-check "it runs $from, its gate YorvoGate 0.2.2" "inside 'quire-server version' | grep -q \"^Quire Server $from\" && inside \"docker inspect quire-server-gate-1 --format '{{.Config.Image}}'\" | grep -q 'yorvogate:0.2.2@sha256:'"
-# 0.5's agent writes each site's files again at its start, and brings it up (the notes' first limit)
-inside 'for i in $(seq 60); do curl -sk --resolve jane-blog.test:443:127.0.0.1 https://jane-blog.test/ | grep -q "Site jane-blog" && exit 0; sleep 5; done; exit 1' || true
-check "all three are served by $from's front door, the pair too" 'served jane && served jane-blog && served kim'
-inside "quire-server update --to=$to --yes 2>&1" > "$logs"/update-again.log || true
-check 'updating again with the pair stops as before, changing nothing' "said $logs/update-again.log 'the server runs as it was' && inside 'quire-server version' | grep -q \"^Quire Server $from\" && served jane && served jane-blog && served kim"
-
 # What a rollback puts back: the release's files as they were (ServerFolder::archive/restore)
 inside 'tar -C /srv/quire/server -cf /root/server-before.tar .'
+put_back() { inside 'cd /srv/quire/server && find . -mindepth 1 -maxdepth 1 ! -name server.env -exec rm -rf {} + && tar -xf /root/server-before.tar --no-same-owner'; }
+# This checkout's files and agent, as an update replaces them
+move_here() { inside 'tar -C /root/quire-server -cf - . | tar -C /srv/quire/server -xf - --no-same-owner' && inside "sed -i 's/^QUIRE_SERVER_IMAGE=.*/QUIRE_SERVER_IMAGE=/' /srv/quire/server/server.env"; }
 
-echo '== It moves to this checkout (its files and its agent, as an update replaces them)'
-inside 'tar -C /root/quire-server -cf - . | tar -C /srv/quire/server -xf - --no-same-owner'
-inside "sed -i 's/^QUIRE_SERVER_IMAGE=.*/QUIRE_SERVER_IMAGE=/' /srv/quire/server/server.env"
+# An update to this release from $from: its updater writes the update's record, puts the release's files
+# in place and starts them as ServerStack::up does. This release's first step refuses it before any of
+# its containers starts, and the updater puts the files back.
+echo "== $from updated to this checkout: refused before anything of it starts, then put back"
+inside "mkdir -p /srv/quire/backups/server && printf '{\"from\":\"%s\",\"to\":\"dev\"}\n' $from > /srv/quire/backups/server/swap.json && chmod 600 /srv/quire/backups/server/swap.json"
+move_here
+inside 'cd /srv/quire/server && docker compose --env-file server.env up --detach --no-build --remove-orphans --wait --wait-timeout 300 2>&1' > "$logs"/up-floor.log || true
+sed 's/^/    /' "$logs"/up-floor.log | tail -4
+inside 'docker logs quire-server-update-from-0.6-or-later-1 2>&1' > "$logs"/floor.log || true
+sed 's/^/    /' "$logs"/floor.log
+check 'the start stops at its first step, which the updater shows by name' "said $logs/up-floor.log 'update-from-0.6-or-later\" didn.t complete successfully: exit 1' # $logs/up-floor.log"
+check 'the step says why, and what to do' "said $logs/floor.log \"this one runs $from. Update it to 0.6.1 first\" # $logs/floor.log"
+# This checkout's gate, by its digest (compose.yaml): not the one $from runs
+this_gate=$(grep -o 'ghcr.io/yorvolabs/yorvogate:[^ ]*' "$here"/compose.yaml | head -1)
+check 'nothing of this release runs: not its gate, not its agent (this checkout'\''s image)' "! inside \"docker ps --format '{{.Image}}'\" | grep -qF '$this_gate' && ! inside \"docker ps --format '{{.Image}}'\" | grep -Eq '^quire-server-agent(:latest)?\\$'"
+put_back
+inside 'rm /srv/quire/backups/server/swap.json'
+inside 'quire-server up 2>&1' > "$logs"/up-back-floor.log || sed 's/^/    /' "$logs"/up-back-floor.log
+started || true
+check "it runs $from again, both sites served" "inside 'quire-server version' | grep -q \"^Quire Server $from\" && served jane && served kim"
+
+# The way a server on $from comes to this release: first to $to, with $from's own updater (a published
+# release, its signatures checked)
+echo "== $from updates itself to Quire Server $to"
+inside "quire-server update --to=$to --yes 2>&1" > "$logs"/update-real.log || true
+sed 's/^/    /' "$logs"/update-real.log | tail -6
+started || true
+check "it runs Quire Server $to, its gate YorvoGate 0.3.0" "inside 'quire-server version' | grep -q \"^Quire Server $to\\\$\" && inside \"docker inspect quire-server-gate-1 --format '{{.Config.Image}}'\" | grep -q 'yorvogate:0.3.0@sha256:'"
+check 'jane and kim are served' 'served jane && served kim'
+inside 'tar -C /srv/quire/server -cf /root/server-before.tar .'
+
+echo '== It moves to this checkout, from 0.6 (its record says so): this release starts'
+inside "printf '{\"from\":\"%s\",\"to\":\"dev\"}\n' $to > /srv/quire/backups/server/swap.json && chmod 600 /srv/quire/backups/server/swap.json"
+move_here
 inside 'quire-server up 2>&1' > "$logs"/up-rollback.log || sed 's/^/    /' "$logs"/up-rollback.log
+inside 'rm -f /srv/quire/backups/server/swap.json'
 started || true
 inside 'quire-server logs agent 2>&1 | grep -v "^ *$" | tail -12' | sed 's/^/    /'
+check 'its first step passed, from 0.6' "[ \"\$(inside \"docker inspect quire-server-update-from-0.6-or-later-1 --format '{{.State.ExitCode}}'\")\" = 0 ]"
+check 'the agent is this checkout'\''s' "inside 'quire-server version' | grep -q 'built from a checkout'"
 # The gate this checkout pins, by its digest (compose.yaml)
 gate_pin=$(grep -o 'ghcr.io/yorvolabs/yorvogate:[^ ]*' "$here"/compose.yaml | head -1)
 check "its gate is the checkout's, ${gate_pin#ghcr.io/yorvolabs/}" "inside \"docker inspect quire-server-gate-1 --format '{{.Config.Image}}'\" | grep -qF '$gate_pin'"
@@ -1077,27 +1085,24 @@ gate_state() { inside "docker run --rm --network none -v quire-server_gate_state
 gate_state ls '-ln /state' | sed 's/^/    /' || true
 check 'its state file is the gate'\''s own: root'\''s, readable by it only' "[ \"\$(gate_state stat '-c %u:%a /state/state.json')\" = '0:600' ]"
 check 'the gate says nothing wrong with its state file' "! inside 'docker logs quire-server-gate-1 2>&1' | grep -i 'state file'"
-check 'all three are served on this checkout, the colliding pair too' 'served jane && served jane-blog && served kim'
-check 'jane-blog has only its name "edge.jane-blog.test" on its link (the gate gives "jane-blog.…" to jane)' "names jane-blog-php-1 | grep -q 'quire-link-jane-blog:[^ ]*edge.jane-blog.test.quire.internal' && ! names jane-blog-php-1 | grep -Eq '[:,]jane-blog.test.quire.internal'"
-check 'jane and kim have both names, for a rollback' "names jane-php-1 | grep -q 'edge.jane.test.quire.internal' && names jane-php-1 | grep -Eq '[:,]jane.test.quire.internal' && names kim-php-1 | grep -q 'edge.kim.test.quire.internal' && names kim-php-1 | grep -Eq '[:,]kim.test.quire.internal'"
+check 'both sites are served on this checkout' 'served jane && served kim'
+check 'each site has its name "edge.<domain>" on its link' "names jane-php-1 | grep -q 'edge.jane.test.quire.internal' && names kim-php-1 | grep -q 'edge.kim.test.quire.internal'"
 check 'every container was made again under the gate (Docker'\''s built-in seccomp profile)' "[ -z \"\$(inside \"docker ps -q --filter label=com.quirecms.server.site | xargs docker inspect --format '{{.Name}} {{json .HostConfig.SecurityOpt}}'\" | grep -v seccomp=builtin)\" ]"
 check 'a site'\''s container runs its image by ID, as the gate names it to Docker' "inside \"docker inspect jane-php-1 --format '{{.Config.Image}}'\" | grep -Eq '^(quire-sites/jane/php-prod@)?sha256:[0-9a-f]{64}\$'"
-check 'a site'\''s own command goes through its scope' "inside 'quire-server site:console jane-blog quire:about 2>&1' | grep -q 'Quire'"
-inside 'docker logs quire-server-gate-1 2>&1' > "$logs"/gate-0.3.log || true
-check 'the gate refused no site'\''s request on its way here' "! grep -E '\"status\": ?4(01|03)' $logs/gate-0.3.log | grep -q '\"scope\"'"
-grep -o '"headers_not_forwarded":[^]]*]' "$logs"/gate-0.3.log | sort | uniq -c | sed 's/^/    not forwarded: /' || true
+check 'a site'\''s own command goes through its scope' "inside 'quire-server site:console kim quire:about 2>&1' | grep -q 'Quire'"
+inside 'docker logs quire-server-gate-1 2>&1' > "$logs"/gate-here.log || true
+check 'the gate refused no site'\''s request on its way here' "! grep -E '\"status\": ?4(01|03)' $logs/gate-here.log | grep -q '\"scope\"'"
 
-echo "== The update rolls back: $from's files put back, as the updater does"
-inside 'cd /srv/quire/server && find . -mindepth 1 -maxdepth 1 ! -name server.env -exec rm -rf {} + && tar -xf /root/server-before.tar --no-same-owner'
+echo "== The update rolls back: $to's files put back, as the updater does"
+put_back
 inside 'quire-server up 2>&1' > "$logs"/up-back.log || sed 's/^/    /' "$logs"/up-back.log
 started || true
 inside 'quire-server logs agent 2>&1 | grep -v "^ *$" | tail -12' | sed 's/^/    /'
-check "it runs $from, its gate YorvoGate 0.2.2" "inside 'quire-server version' | grep -q \"^Quire Server $from\" && inside \"docker inspect quire-server-gate-1 --format '{{.Config.Image}}'\" | grep -q 'yorvogate:0.2.2@sha256:'"
-inside 'docker logs quire-server-gate-1 2>&1' > "$logs"/gate-0.2.log || true
-check 'its gate read every site'\''s scope (0.6 left them as 0.2.2 reads them)' "! grep -iE 'refus|unknown field' $logs/gate-0.2.log | grep -qE 'jane|kim'"
-check "all three are served by $from's front door again, the colliding pair too, with no deploy" 'served jane && served jane-blog && served kim'
-check 'jane-blog has its name of before on its link again' "names jane-blog-php-1 | grep -Eq '[:,]jane-blog.test.quire.internal'"
-check 'a site'\''s own command works through its scope' "inside 'quire-server site:console jane-blog quire:about 2>&1' | grep -q 'Quire'"
+check "it runs $to, its gate YorvoGate 0.3.0" "inside 'quire-server version' | grep -q \"^Quire Server $to\" && inside \"docker inspect quire-server-gate-1 --format '{{.Config.Image}}'\" | grep -q 'yorvogate:0.3.0@sha256:'"
+inside 'docker logs quire-server-gate-1 2>&1' > "$logs"/gate-back.log || true
+check 'its gate read every site'\''s scope (this release left them as 0.6 reads them)' "! grep -iE 'refus|unknown field' $logs/gate-back.log | grep -qE 'jane|kim'"
+check "both sites are served by $to's front door again, with no deploy" 'served jane && served kim'
+check 'a site'\''s own command works through its scope' "inside 'quire-server site:console jane quire:about 2>&1' | grep -q 'Quire'"
 fi
 
 if want adopt; then
