@@ -8,6 +8,9 @@ All notable changes to Quire Server. The format follows [Keep a Changelog](https
 
 - **A release candidate of Quire is checked against its own release feed.** Updating a site to one newer than Quire's latest release (0.5.0-rc.1 while 0.4.0 was the latest) read only the latest release's feed, which doesn't list it, so its requirements, upgrade notes and code weren't checked ("isn't in Quire's release feed"). The candidate's own feed is now read, signed for its tag.
 - **A Quire release without a feed stops the update.** From 0.1.2 on, every release has one, and the latest release's lists every release before it. So a release GitHub says has no feed, or one the latest release's feed doesn't list, isn't one Quire published. Before, it counted as GitHub not answering, and the update went on unchecked. When GitHub really doesn't answer, it still does, and says so.
+### Changed
+
+- **New sites get Quire `^0.5`** on a server installed with this release. A server installed before keeps the version its settings name, as it did for 0.4. `quire-server settings:set QUIRE_VERSION=^0.5` gives its new sites 0.5. A site that's already there moves only when its owner updates it: `quire-server site:update <site> --to=0.5.0`.
 
 ## [0.6.1] - 2026-11-22
 
