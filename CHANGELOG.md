@@ -4,36 +4,43 @@ All notable changes to Quire Server. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
-### Fixed
+## [0.7.0] - 2026-11-24
 
-- **A release candidate of Quire is checked against its own release feed.** Updating a site to one newer than Quire's latest release (0.5.0-rc.1 while 0.4.0 was the latest) read only the latest release's feed, which doesn't list it, so its requirements, upgrade notes and code weren't checked ("isn't in Quire's release feed"). The candidate's own feed is now read, signed for its tag.
-- **A Quire release without a feed stops the update.** From 0.1.2 on, every release has one, and the latest release's lists every release before it. So a release GitHub says has no feed, or one the latest release's feed doesn't list, isn't one Quire published. Before, it counted as GitHub not answering, and the update went on unchecked. When GitHub really doesn't answer, it still does, and says so.
-### Changed
+The Docker gate is YorvoGate 0.4.0, which keeps one site from taking the gate from the others; a new site's name can't nest with another's; an update to a release candidate of Quire is checked against its own release feed; new sites get Quire 0.5; and a release ships the image its release candidate was tested with. It updates only a server on 0.6.0 or later.
 
-- **New sites get Quire `^0.5`** on a server installed with this release. A server installed before keeps the version its settings name, as it did for 0.4. `quire-server settings:set QUIRE_VERSION=^0.5` gives its new sites 0.5. A site that's already there moves only when its owner updates it: `quire-server site:update <site> --to=0.5.0`.
-- `site:packages <site> add <package>` without a version, when no release of the package fits the site, says only to update the site first. It no longer also suggests adding it without a version, which is what was just tried.
-### Changed
+### Security
 
 - **The Docker gate is YorvoGate 0.4.0**, pinned by digest and checked against its release workflow's signature for its tag. It keeps one site from taking the gate from the others: image loads are bounded across every site (what an archive decompresses to, its entries, the bytes kept, how many at once), and each site's requests and connections are bounded (64 each). Refusals carry a reason code and the problems found, and every answer has a request ID. Image archives are now kept beside the gate's state, so its `/tmp` volume is gone. Go keeps its heap under 200 MiB, below the gate's 256 MiB.
 - **A site's Compose files may not ask for unlimited swap, nor more than twice their memory** (`memswap_limit`), which the gate now refuses. The server says so first, with its own message.
-### Changed
-
-- **A release ships the image its release candidate was tested with.** A release with candidates was built again from its tag, so the image servers installed could differ from the one tested (packages taken from Alpine on the day). Now its highest candidate's image is signed for the release's tag and shipped as it is. The release is made only on that candidate's commit, and only once the candidate's release and image check out. The scanner that checks every release's image is pinned by digest.
-### Changed
-
-- **Every scope file the agent writes says its format** (`"version": 1`), as the Docker gate's configuration already did. YorvoGate warns about a scope file without it, and a later release refuses one. The agent writes every site's scope again at its start, so a server's files carry it once it runs this release.
-
-### Changed
-
 - **A new site's name can't nest with another site's** (`jane` and `jane-shop`, either way round), when it's added, restored as a new site or adopted. Docker's names for one site would start with the other's (`jane-shop-web-1` is both jane's `shop-web` and jane-shop's `web`), so one site could take names that are the other's. The refusal comes before anything is made, and says which site's names. Sites that are already there keep their names, nested or not, and so does restoring a site that was there. `quire-server status` lists each pair, with what the Docker gate does with their names.
-- **A site has one name on its link,** `edge.<domain>.quire.internal`, which the front door asks for. The name releases before 0.6 also gave it (`<domain>.quire.internal`) was kept for an undo to 0.5. This release updates only from 0.6 or later, so that name goes: a site's containers lose it the next time they're made, and the front door no longer asks for it.
+- **A Quire release without a feed stops the update.** From 0.1.2 on, every release has one, and the latest release's lists every release before it. So a release GitHub says has no feed, or one the latest release's feed doesn't list, isn't one Quire published. Before, it counted as GitHub not answering, and the update went on unchecked. When GitHub really doesn't answer, it still does, and says so.
 
 ### Changed
 
 - **Breaking: this release updates only a server on 0.6.0 or later.** It writes what 0.5's Docker gate and front door can't read, so an update from an older release, or its undo, would leave sites unreachable. Its first step at a start stops such an update before any of its containers runs, and the updater puts the server back as it ran (its output names the step: `update-from-0.6-or-later`). From 0.5 or older, update to 0.6.1 first (`quire-server update --to=0.6.1`), then to this release.
-### Changed
-
+- **New sites get Quire `^0.5`** on a server installed with this release. A server installed before keeps the version its settings name, as it did for 0.4. `quire-server settings:set QUIRE_VERSION=^0.5` gives its new sites 0.5. A site that's already there moves only when its owner updates it: `quire-server site:update <site> --to=0.5.0`.
+- **A release ships the image its release candidate was tested with.** A release with candidates was built again from its tag, so the image servers installed could differ from the one tested (packages taken from Alpine on the day). Now its highest candidate's image is signed for the release's tag and shipped as it is. The release is made only on that candidate's commit, and only once the candidate's release and image check out. The scanner that checks every release's image is pinned by digest.
+- **A site has one name on its link,** `edge.<domain>.quire.internal`, which the front door asks for. The name releases before 0.6 also gave it (`<domain>.quire.internal`) was kept for an undo to 0.5. This release updates only from 0.6 or later, so that name goes: a site's containers lose it at this release's first start (they're made again once), and the front door no longer asks for it.
+- **Every scope file the agent writes says its format** (`"version": 1`), as the Docker gate's configuration already did. YorvoGate warns about a scope file without it, and a later release refuses one. The agent writes every site's scope again at its start, so a server's files carry it once it runs this release.
 - **Getting ready for a Docker gate that doesn't run as root.** The scope files the agent writes are now readable by the gate's own group (65533), and their folder is closed to everyone else (0750). Each update, and the installer, record the group of Docker's socket in server.env (`QUIRE_SERVER_DOCKER_GID`). The gate still runs as root in this release. A later release runs it as a user of its own, and an undo of that release finds every file as it left it.
+- **The agent's image is built on PHP 8.5's latest Alpine image and Docker's command line 29.10.0** (from 29.9.3).
+
+### Fixed
+
+- **A release candidate of Quire is checked against its own release feed.** Updating a site to one newer than Quire's latest release (0.5.0-rc.1 while 0.4.0 was the latest) read only the latest release's feed, which doesn't list it, so its requirements, upgrade notes and code weren't checked ("isn't in Quire's release feed"). The candidate's own feed is now read, signed for its tag.
+- `site:packages <site> add <package>` without a version, when no release of the package fits the site, says only to update the site first. It no longer also suggests adding it without a version, which is what was just tried.
+
+### Upgrading
+
+- **From 0.6.0 or 0.6.1:** `quire-server update --to=0.7.0`. At its first start, the agent writes every site's scope files and Compose files again, and makes each running site's containers again once, a few seconds offline each, so each has only its name `edge.<domain>` on its link.
+- **From 0.5 or older:** update to 0.6.1 first (`quire-server update --to=0.6.1`), then to 0.7.0. An update straight to 0.7.0 stops before anything of it starts, and the server runs as it was: the updater's output names the step `update-from-0.6-or-later`.
+- **New sites' Quire:** a server installed before this release keeps the version its settings name. `quire-server settings:set QUIRE_VERSION=^0.5` gives its new sites Quire 0.5. A site that's there moves only with `quire-server site:update <site> --to=0.5.0`.
+- **Sites whose names nest** (`jane` and `jane-shop`) keep working, and `quire-server status` lists each pair. Only new sites are refused.
+
+### Known limits
+
+- **The Docker gate still runs as root**, so `yorvogate check` warns about its sockets' group (`socket_group: 0`). This release gets the files ready for a gate that doesn't run as root. A later release makes the switch, with an undo that finds this release's files as they were.
+- **Undone to 0.6** (`quire-server update --undo`), 0.6's agent writes every site's Compose files again as 0.6 does, and makes their containers again once. The scope files keep this release's modes, 0640 in a 0750 folder, which 0.6's gate reads.
 
 ## [0.6.1] - 2026-11-22
 
@@ -275,7 +282,8 @@ The first release.
 - Sites deployed from a Git repository.
 - Signed releases: images and files checked before installing.
 
-[Unreleased]: https://github.com/quirecms/server/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/quirecms/server/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/quirecms/server/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/quirecms/server/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/quirecms/server/compare/v0.5.2...v0.6.0
 [0.5.2]: https://github.com/quirecms/server/compare/v0.5.1...v0.5.2
