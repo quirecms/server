@@ -61,6 +61,7 @@ services:
             $sockets: /run/quire-gate/sites
             # Sites' Docker configurations: the agent's own (its /tmp is its own, in memory)
             $configs: /tmp/quire-server-docker
+            $readers: !php/const Quire\Server\Docker\Gate::GATE_GROUP
 
     Quire\Server\Docker\Builders:
         arguments:

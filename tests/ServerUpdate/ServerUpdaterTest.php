@@ -107,6 +107,7 @@ final class ServerUpdaterTest extends RegistryTestCase
         $filesystem->dumpFile($this->server.'/bin/quire-server', 'command: 0.1.1');
         $filesystem->dumpFile($this->server.'/only-in-0.1.1.txt', 'gone after the update');
         $filesystem->dumpFile($this->server.'/server.env', "# Mine\n".self::SECRET."\nCOMPOSE_FILE=compose.yaml\nQUIRE_SERVER_IMAGE=".self::OLD."\n");
+        $filesystem->dumpFile($this->root.'/docker.sock', '');
         chmod($this->server.'/server.env', 0o600);
         $filesystem->dumpFile($this->server.'/domains/jane.example', 'jane');
         $filesystem->dumpFile($this->server.'/keys/blog', 'a deploy key');
@@ -250,6 +251,8 @@ final class ServerUpdaterTest extends RegistryTestCase
         $env = (string) file_get_contents($this->server.'/server.env');
         self::assertStringContainsString("# Mine\n".self::SECRET."\n", $env);
         self::assertSame(self::NEW, $this->image());
+        // For a release whose gate joins Docker's socket's group: read when the update reads the release
+        self::assertSame((string) filegroup($this->root.'/docker.sock'), EnvFile::read($this->server.'/server.env')->get(ServerUpdater::DOCKER_GID));
         self::assertSame(0o600, fileperms($this->server.'/server.env') & 0o777);
 
         // Checked (its files, then its gate on the sites' scopes) and its image got while the server
@@ -750,6 +753,8 @@ final class ServerUpdaterTest extends RegistryTestCase
             $running,
             migrationsTable: $this->migrations,
             pause: static function (): void {},
+            // Docker's socket, as the updater sees it: a file of the test's (its group is the test's)
+            dockerSocket: $this->root.'/docker.sock',
         );
     }
 

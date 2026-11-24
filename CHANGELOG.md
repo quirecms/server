@@ -31,6 +31,9 @@ All notable changes to Quire Server. The format follows [Keep a Changelog](https
 ### Changed
 
 - **Breaking: this release updates only a server on 0.6.0 or later.** It writes what 0.5's Docker gate and front door can't read, so an update from an older release, or its undo, would leave sites unreachable. Its first step at a start stops such an update before any of its containers runs, and the updater puts the server back as it ran (its output names the step: `update-from-0.6-or-later`). From 0.5 or older, update to 0.6.1 first (`quire-server update --to=0.6.1`), then to this release.
+### Changed
+
+- **Getting ready for a Docker gate that doesn't run as root.** The scope files the agent writes are now readable by the gate's own group (65533), and their folder is closed to everyone else (0750). Each update, and the installer, record the group of Docker's socket in server.env (`QUIRE_SERVER_DOCKER_GID`). The gate still runs as root in this release. A later release runs it as a user of its own, and an undo of that release finds every file as it left it.
 
 ## [0.6.1] - 2026-11-22
 

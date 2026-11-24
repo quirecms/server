@@ -45,6 +45,25 @@ final class GateTest extends TestCase
         new Filesystem()->remove($this->root);
     }
 
+    public function testScopeFilesAreTheAgentsToChangeAndTheGatesGroupsToRead(): void
+    {
+        // The group a test can give: its own (the server's is Gate::GATE_GROUP)
+        $group = (int) getmygid();
+        new Filesystem()->dumpFile($this->root.'/gate/scopes/kim.json', "{}\n");
+        chmod($this->root.'/gate/scopes', 0o700);
+        // jane's socket open, as the gate opens it
+        GateFixture::gate($this->runner, $this->root, 'jane');
+        $gate = new Gate($this->runner, GateFixture::TRUSTED, $this->root.'/gate/scopes', $this->root.'/gate/sites', $this->root.'/gate/docker', new LoadedScopeStatus(), $group);
+
+        $gate->site($this->project('jane'));
+
+        $file = $this->root.'/gate/scopes/jane.json';
+        self::assertSame(0o640, fileperms($file) & 0o777, 'Writable by its owner only (the gate refuses anything else), readable by the gate\'s group.');
+        self::assertSame($group, filegroup($file));
+        self::assertSame(0o750, fileperms($this->root.'/gate/scopes') & 0o777, 'The folder of a release before (0700) too.');
+        self::assertSame($group, filegroup($this->root.'/gate/scopes'));
+    }
+
     public function testASitesScopeIsWhatTheServerAllowsIt(): void
     {
         self::assertSame([
@@ -79,7 +98,7 @@ final class GateTest extends TestCase
 
         self::assertSame(['DOCKER_CONFIG' => $this->root.'/gate/docker/jane', 'DOCKER_HOST' => false, 'DOCKER_CONTEXT' => false, 'BUILDX_BUILDER' => false], $env, 'Nothing else decides where Docker\'s CLI goes.');
         self::assertSame($gate->scope($this->project('jane')), json_decode((string) file_get_contents($file), true));
-        self::assertSame('600', \sprintf('%o', fileperms($file) & 0o777), 'Only its owner may change it, or the gate refuses it.');
+        self::assertSame('640', \sprintf('%o', fileperms($file) & 0o777), 'Only its owner may change it, or the gate refuses it; the gate\'s group may read it.');
         self::assertSame('700', \sprintf('%o', fileperms($this->root.'/gate/docker/jane') & 0o777));
         self::assertSame('{"currentContext":"quire"}', file_get_contents($this->root.'/gate/docker/jane/config.json'));
         $context = json_decode((string) file_get_contents($this->root.'/gate/docker/jane/contexts/meta/'.hash('sha256', 'quire').'/meta.json'), true);
