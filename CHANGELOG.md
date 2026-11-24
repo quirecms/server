@@ -16,6 +16,9 @@ All notable changes to Quire Server. The format follows [Keep a Changelog](https
 
 - **The Docker gate is YorvoGate 0.4.0**, pinned by digest and checked against its release workflow's signature for its tag. It keeps one site from taking the gate from the others: image loads are bounded across every site (what an archive decompresses to, its entries, the bytes kept, how many at once), and each site's requests and connections are bounded (64 each). Refusals carry a reason code and the problems found, and every answer has a request ID. Image archives are now kept beside the gate's state, so its `/tmp` volume is gone. Go keeps its heap under 200 MiB, below the gate's 256 MiB.
 - **A site's Compose files may not ask for unlimited swap, nor more than twice their memory** (`memswap_limit`), which the gate now refuses. The server says so first, with its own message.
+### Changed
+
+- **A release ships the image its release candidate was tested with.** A release with candidates was built again from its tag, so the image servers installed could differ from the one tested (packages taken from Alpine on the day). Now its highest candidate's image is signed for the release's tag and shipped as it is. The release is made only on that candidate's commit, and only once the candidate's release and image check out. The scanner that checks every release's image is pinned by digest.
 
 ## [0.6.1] - 2026-11-22
 
