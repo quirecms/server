@@ -113,7 +113,7 @@ final readonly class SitePackages
             // resolved with the site, then "^" and the release that fits it, as Composer writes one.
             $this->composer->require($workspace, $package, $constraint ?? '*', $output);
             // Only it and what it needs: nothing the site requires moves (Composer's "minimal changes").
-            $this->fitting($name, $from, fn () => $this->composer->update($workspace, [], $output, [$package], false));
+            $this->fitting($name, $from, fn () => $this->composer->update($workspace, [], $output, [$package], false), null !== $constraint);
 
             if (null === $constraint) {
                 $this->composer->require($workspace, $package, $this->caret($package, Lock::read($workspace.'/composer.lock')), $output);
@@ -164,7 +164,7 @@ final readonly class SitePackages
                 $this->composer->require($workspace, $package, $constraint, $output);
             }
 
-            $this->fitting($name, $from, fn () => $this->composer->update($workspace, array_map(static fn (string $name, string $version): string => $name.':'.$version, array_keys($held), $held), $output, [$package], false));
+            $this->fitting($name, $from, fn () => $this->composer->update($workspace, array_map(static fn (string $name, string $version): string => $name.':'.$version, array_keys($held), $held), $output, [$package], false), false);
             $to = Lock::read($workspace.'/composer.lock');
             $this->ensureFeature($package, $to);
             $this->ensureNothingElseMoves($from, $to, $moving);
@@ -329,8 +329,10 @@ final readonly class SitePackages
      * plainly, naming each, with what to do (the site's update first), rather than Composer's words.
      *
      * @param \Closure(): void $update
+     * @param bool             $added  A package added with a version the owner named: without one, the
+     *                                 newest release that fits the site is the way out
      */
-    private function fitting(SiteName $name, Lock $from, \Closure $update): void
+    private function fitting(SiteName $name, Lock $from, \Closure $update, bool $added): void
     {
         try {
             $update();
@@ -341,7 +343,7 @@ final readonly class SitePackages
                 throw $e;
             }
 
-            throw new \DomainException(\sprintf('It needs newer versions than "%s" has: %s. Update the site first ("site:update %s"), then try again; or, without a version, the newest release that fits the site is added.', $name, implode('; ', $needs), $name), 0, $e);
+            throw new \DomainException(\sprintf('It needs newer versions than "%s" has: %s. Update the site first ("site:update %s"), then try again%s.', $name, implode('; ', $needs), $name, $added ? '; or, without a version, the newest release that fits the site is added' : ''), 0, $e);
         }
     }
 

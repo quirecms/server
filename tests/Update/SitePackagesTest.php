@@ -227,6 +227,25 @@ final class SitePackagesTest extends RegistryTestCase
         $this->packages()->add($this->name, 'quire/analytics:^0.4', false);
     }
 
+    public function testWithoutAVersionWhenNothingFitsItSaysOnlyToUpdateTheSite(): void
+    {
+        // Every release of it needs a newer Quire: there's no "without a version" to fall back on
+        $this->unresolvable = <<<'TEXT'
+            Your requirements could not be resolved to an installable set of packages.
+
+              Problem 1
+                - Root composer.json requires quire/analytics * -> satisfiable by quire/analytics[v0.4.0].
+                - quire/analytics v0.4.0 requires quire/core ^0.4 -> found quire/core[v0.4.0] but it conflicts with your root composer.json require (^0.3).
+            TEXT;
+
+        try {
+            $this->packages()->add($this->name, 'quire/analytics', false);
+            self::fail('It was added.');
+        } catch (\DomainException $e) {
+            self::assertSame('It needs newer versions than "jane" has: quire/analytics 0.4.0 needs quire/core ^0.4 (the site has 0.3.1). Update the site first ("site:update jane"), then try again.', $e->getMessage());
+        }
+    }
+
     public function testAnotherReasonComposerCantResolveIsComposers(): void
     {
         $this->unresolvable = "Your requirements could not be resolved to an installable set of packages.\n\n  Problem 1\n    - Root composer.json requires acme/nothing ^9.0, it could not be found in any version.\n";

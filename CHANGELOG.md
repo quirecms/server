@@ -11,6 +11,7 @@ All notable changes to Quire Server. The format follows [Keep a Changelog](https
 ### Changed
 
 - **New sites get Quire `^0.5`** on a server installed with this release. A server installed before keeps the version its settings name, as it did for 0.4. `quire-server settings:set QUIRE_VERSION=^0.5` gives its new sites 0.5. A site that's already there moves only when its owner updates it: `quire-server site:update <site> --to=0.5.0`.
+- `site:packages <site> add <package>` without a version, when no release of the package fits the site, says only to update the site first. It no longer also suggests adding it without a version, which is what was just tried.
 
 ## [0.6.1] - 2026-11-22
 
