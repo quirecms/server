@@ -56,7 +56,7 @@ final class GateTest extends TestCase
             'networks' => [
                 // Its own link only (D-34): Compose's own aliases (the service's name and its
                 // container's), and its domains', where the front door finds it
-                'quire-link-jane' => ['aliases' => ['edge.jane.example.quire.internal', 'edge.www.jane.example.quire.internal', 'jane-php-1', 'jane-worker-1', 'jane.example.quire.internal', 'php', 'worker', 'www.jane.example.quire.internal']],
+                'quire-link-jane' => ['aliases' => ['edge.jane.example.quire.internal', 'edge.www.jane.example.quire.internal', 'jane-php-1', 'jane-worker-1', 'php', 'worker']],
             ],
             'builders' => ['quire-buildkit-jane'],
             // Where its networks' addresses must be: its project's /27 (the gate refuses any other)
@@ -68,7 +68,7 @@ final class GateTest extends TestCase
     {
         $scope = $this->gate()->scope($this->project('demo', Site::OWN_DATABASE));
 
-        self::assertSame(['quire-link-demo' => ['aliases' => ['demo-php-1', 'demo.example.quire.internal', 'edge.demo.example.quire.internal', 'edge.www.demo.example.quire.internal', 'php', 'www.demo.example.quire.internal']]], $scope['networks'] ?? null, 'Its php for the front door; its worker stays off: it reaches no PostgreSQL there.');
+        self::assertSame(['quire-link-demo' => ['aliases' => ['demo-php-1', 'edge.demo.example.quire.internal', 'edge.www.demo.example.quire.internal', 'php']]], $scope['networks'] ?? null, 'Its php for the front door; its worker stays off: it reaches no PostgreSQL there.');
     }
 
     public function testEachOperationHasTheScopeWrittenAndTheSitesOwnDockerConfiguration(): void
@@ -172,7 +172,7 @@ final class GateTest extends TestCase
     {
         $gate = $this->gate('jane', 'jane-blog', 'demo');
 
-        foreach ([$this->project('jane', others: ['jane-blog', 'demo']), $this->project('jane-blog', others: ['jane', 'demo']), $this->project('demo', Site::OWN_DATABASE, ['jane', 'jane-blog'])] as $project) {
+        foreach ([$this->project('jane'), $this->project('jane-blog'), $this->project('demo', Site::OWN_DATABASE)] as $project) {
             $gate->site($project);
         }
 
@@ -184,8 +184,8 @@ final class GateTest extends TestCase
 
     /**
      * No site's prefix ("<project>-") covers a name "edge.<domain>.quire.internal": no project's name has a
-     * ".". The names of releases before 0.6 ("<domain>.quire.internal") are kept only where no other site's
-     * prefix covers them, which the gate refuses (YorvoGate 0.3) for both sites.
+     * ".". So a domain that starts with another site's name ("jane-blog.example" next to "jane") is no
+     * name the gate gives that other site, and every scope is valid.
      */
     public function testNoSitesPrefixCoversAnotherSitesNamesOnItsLink(): void
     {
@@ -193,7 +193,7 @@ final class GateTest extends TestCase
         $gate = $this->gate(...array_keys($sites));
 
         foreach ($sites as $name => $domains) {
-            $gate->site($this->project($name, others: array_values(array_diff(array_keys($sites), [$name])), domains: $domains));
+            $gate->site($this->project($name, domains: $domains));
         }
 
         $check = $this->check();
@@ -201,11 +201,9 @@ final class GateTest extends TestCase
         self::assertStringContainsString('ok, 4 scopes', $check->output);
 
         $aliases = fn (string $name): array => LinkAliases::in(json_decode((string) file_get_contents($this->root.'/gate/scopes/'.$name.'.json'), true), 'quire-link-'.$name);
-        self::assertContains('edge.jane-blog.example.quire.internal', $aliases('jane-blog'));
-        self::assertNotContains('jane-blog.example.quire.internal', $aliases('jane-blog'), 'Under "jane-": the gate gives it to jane.');
-        self::assertNotContains('edge-x.com.quire.internal', $aliases('edge-x'), 'Under "edge-".');
-        self::assertContains('jane.example.quire.internal', $aliases('jane'), 'No other site\'s prefix covers it: kept for a rollback to 0.5.');
-        self::assertContains('edge.edge.example.quire.internal', $aliases('edge'));
+        foreach ($sites as $name => $domains) {
+            self::assertSame(array_map(static fn (string $domain): string => 'edge.'.$domain.'.quire.internal', $domains), array_values(array_filter($aliases($name), static fn (string $alias): bool => str_ends_with($alias, '.quire.internal'))), $name.': its "edge." names only.');
+        }
     }
 
     public function testTheGateHoldsSitesToWhatThePolicyAllows(): void
@@ -269,17 +267,16 @@ final class GateTest extends TestCase
     }
 
     /**
-     * @param list<string>      $others  The other sites' projects
      * @param list<string>|null $domains Its domains, "<name>.example" and "www.<name>.example" if null
      */
-    private function project(string $name, string $database = Site::SHARED_DATABASE, array $others = [], ?array $domains = null): SiteProject
+    private function project(string $name, string $database = Site::SHARED_DATABASE, ?array $domains = null): SiteProject
     {
         $site = new SiteName($name);
         $paths = new ServerPaths($this->root);
         new Filesystem()->mkdir($paths->site($site));
         $domains ??= [$site->value.'.example', 'www.'.$site->value.'.example'];
 
-        return SiteProject::of($paths, $site, array_map(static fn (string $domain): Domain => new Domain($domain), $domains), $name, $database, new SiteNetworkRange(SiteNetworkRange::DEFAULT)->block(0), $others);
+        return SiteProject::of($paths, $site, array_map(static fn (string $domain): Domain => new Domain($domain), $domains), $name, $database, new SiteNetworkRange(SiteNetworkRange::DEFAULT)->block(0));
     }
 
     /**

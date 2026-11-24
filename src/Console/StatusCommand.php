@@ -17,6 +17,7 @@ use Quire\Server\Notify\Problems;
 use Quire\Server\Operation\OperationLog;
 use Quire\Server\Registry\SiteRegistry;
 use Quire\Server\Site\Domain;
+use Quire\Server\Site\NestedNames;
 use Quire\Server\Site\Site;
 use Quire\Server\Update\AutomaticUpdates;
 use Symfony\Component\Console\Attribute\AsCommand;
@@ -207,6 +208,13 @@ final readonly class StatusCommand
 
         if ([] !== $rows) {
             $io->table(['Site', 'Status', 'Domains and certificates'], $rows);
+        }
+
+        // Pairs a release before 0.7 let in: what the gate does with their names, said
+        $projects = array_values(array_map(static fn (Site $site): string => $site->project, array_filter($sites, static fn (Site $site): bool => Site::REMOVED !== $site->status)));
+
+        foreach (NestedNames::pairs($projects) as [$shorter, $longer]) {
+            $io->writeln(\sprintf('<comment>%s and %s nest:</comment> the Docker gate gives %2$s\'s names to %2$s once its scope is valid; names %1$s made under "%2$s-" before are listed as taken in its scope status, and %2$s\'s operations that need them are refused. New sites can\'t nest any more.', $shorter, $longer));
         }
     }
 
