@@ -64,6 +64,10 @@ final class ComposePolicyTest extends TestCase
         yield 'a service name in capitals' => [['services' => ['PHP' => ['image' => 'alpine:3.22']]], 'Service "PHP": a service\'s name is lowercase letters'];
         yield 'more memory than the gate allows' => [['services' => ['php' => ['mem_limit' => (string) (65 << 30)]]], '"mem_limit: 69793218560": at most 64 GiB.'];
         yield 'more memory than the gate allows, under deploy' => [['services' => ['php' => ['deploy' => ['resources' => ['limits' => ['memory' => (string) (65 << 30)]]]]]], '"deploy.resources.limits.memory: 69793218560": at most 64 GiB.'];
+        // Swap is memory too (the gate refuses the same from YorvoGate 0.4 on)
+        yield 'unlimited swap' => [['services' => ['php' => ['memswap_limit' => '-1']]], '"memswap_limit: -1": unlimited swap isn\'t allowed'];
+        yield 'more swap than twice the memory' => [['services' => ['php' => ['memswap_limit' => (string) (3 << 30)]]], '"memswap_limit: 3221225472": between "mem_limit" (1073741824) and twice it.'];
+        yield 'less than the memory' => [['services' => ['php' => ['memswap_limit' => (string) (512 << 20)]]], 'between "mem_limit" (1073741824) and twice it.'];
         yield 'real-time priority' => [['services' => ['php' => ['ulimits' => ['rtprio' => 99]]]], '"ulimits: rtprio": only nofile, nproc, core, stack may be set.'];
         yield 'locked memory' => [['services' => ['php' => ['ulimits' => ['memlock' => -1]]]], '"ulimits: memlock"'];
         yield 'privileged, as a string' => [['services' => ['php' => ['privileged' => 'yes']]], '"privileged" runs privileged'];
@@ -155,6 +159,13 @@ final class ComposePolicyTest extends TestCase
 
         self::assertNotSame([], $violations);
         self::assertStringContainsString($expected, implode("\n", $violations));
+    }
+
+    public function testSwapUpToTwiceTheMemoryIsAllowed(): void
+    {
+        foreach ([1 << 30, 2 << 30] as $swap) {
+            self::assertSame([], $this->violations(array_replace_recursive($this->site(), ['services' => ['php' => ['memswap_limit' => (string) $swap]]])), (string) $swap);
+        }
     }
 
     public function testHostPathsAndOtherProjectsDataCantBeMounted(): void

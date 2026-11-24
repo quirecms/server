@@ -13,7 +13,7 @@ use PHPUnit\Framework\TestCase;
 final class BuilderProfileTest extends TestCase
 {
     /** The YorvoGate the server runs, and its release file's SHA-256 (its SHA256SUMS) */
-    private const string VERSION = '0.3.0';
+    private const string VERSION = '0.4.0-rc.1';
 
     private const string PROFILE_SHA256 = 'ce7283116aba36729ac14c0c1e02d8c1143daca30243abd38cafd7a1a08a79e0';
 

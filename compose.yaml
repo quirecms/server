@@ -170,7 +170,7 @@ services:
   # network at all: only the agent mounts its sockets. Root without capabilities, as Docker's socket
   # is root's (whoever holds that socket is root on the host anyway).
   gate:
-    image: ghcr.io/yorvolabs/yorvogate:0.3.0@sha256:5c7e5ae91d30374dd8690073639234c990eb8e12620f5270145f945e3ec8267d
+    image: ghcr.io/yorvolabs/yorvogate:0.4.0-rc.1@sha256:9a5cd9f90c5948af885fa3093b2510eab6e0e867a85a53f508a4682b43ed7dc2
     restart: unless-stopped
     user: "0:0"
     volumes:
@@ -182,16 +182,19 @@ services:
       - gate_scopes:/etc/yorvogate/sites:ro
       - gate_trusted:/run/yorvogate/trusted
       - gate_sites:/run/yorvogate/sites
-      # Where it keeps an image a site's build loads while it checks the image's names (on disk, not
-      # in memory: a site's image is hundreds of megabytes)
-      - gate_spool:/tmp
-      # Its state file (gate/yorvogate.yaml): only the gate mounts it
+      # Its state file (gate/yorvogate.yaml), and beside it the spool where it keeps an image a site's
+      # build loads while it checks the image's names (on disk, not in memory: a site's image is
+      # hundreds of megabytes). Only the gate mounts it.
       - gate_state:/var/lib/quire-gate
     network_mode: none
     read_only: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges=true]
     mem_limit: 256m
+    # Go's garbage collector works to stay under it, below the container's limit, so a burst of
+    # requests slows the gate down before the kernel stops it
+    environment:
+      GOMEMLIMIT: 200MiB
     pids_limit: 256
     # Among the last the kernel stops when memory runs out: sites' containers go first (D-40)
     oom_score_adj: -500
@@ -276,5 +279,4 @@ volumes:
   gate_sites:
   gate_state:
   gate_scopes:
-  gate_spool:
   host_facts:
