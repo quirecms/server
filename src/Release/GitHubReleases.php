@@ -41,19 +41,26 @@ final readonly class GitHubReleases
         return Version::tryFrom($match[1]) ?? throw new ReleaseVerificationFailed(\sprintf('%s\'s latest release\'s tag isn\'t a version.', $repository));
     }
 
+    /** The code of a download's failure when GitHub answered that the release or its file isn't there */
+    public const int MISSING = 404;
+
     /**
      * Downloads one of a release's files into a folder, readable by others (cosign may run as a user
      * of its own; the files are public).
      *
-     * @throws ReleaseVerificationFailed When it can't be downloaded
+     * @throws ReleaseVerificationFailed When it can't be downloaded; with the code MISSING when GitHub
+     *                                   answered it isn't there (404 or 410), not when it didn't answer
      */
     public function download(string $repository, Version $version, string $file, string $work): string
     {
         $path = $work.'/'.$file;
-        $result = $this->runner->run([...$this->curl(), '-o', $path, \sprintf('https://github.com/%s/releases/download/v%s/%s', $repository, $version, $file)], timeout: 300);
+        // The status, as curl exits 22 for a 404 and for a 503 after its retries alike
+        $result = $this->runner->run([...$this->curl(), '-w', '%{http_code}', '-o', $path, \sprintf('https://github.com/%s/releases/download/v%s/%s', $repository, $version, $file)], timeout: 300);
 
         if (!$result->successful()) {
-            throw new ReleaseVerificationFailed(\sprintf('%s of %s %s couldn\'t be downloaded (is there such a release?).', $file, $repository, $version));
+            $missing = \in_array(trim($result->output), ['404', '410'], true);
+
+            throw new ReleaseVerificationFailed(\sprintf('%s of %s %s couldn\'t be downloaded (%s).', $file, $repository, $version, $missing ? 'GitHub has no such file for that release' : 'is there such a release?'), $missing ? self::MISSING : 0);
         }
 
         chmod($path, 0o644);

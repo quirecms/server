@@ -44,7 +44,7 @@ final readonly class ReleaseCheck
         }
 
         try {
-            $feed = $this->feed->read();
+            $feed = $this->feed->read($to);
         } catch (FeedNotTrusted $e) {
             // Not an outage: no update on a feed that may have been tampered with, asked for or not.
             return ['vouched' => false, 'blocked' => [$e->getMessage()], 'notes' => [], 'security' => []];

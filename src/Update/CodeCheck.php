@@ -54,7 +54,10 @@ final readonly class CodeCheck
             return [];
         }
 
-        [$feed, $notes] = $this->read();
+        // The feed that lists the Quire these packages are: a release candidate's own when it's newer
+        // than the latest release
+        $core = array_first(array_filter($packages, static fn (array $package): bool => 'quire/core' === $package['name']))['version'] ?? null;
+        [$feed, $notes] = $this->read(\is_string($core) ? $core : null);
 
         if (!$feed instanceof Feed) {
             return $notes;
@@ -105,7 +108,7 @@ final readonly class CodeCheck
      */
     public function skeleton(string $directory, string $version): array
     {
-        [$feed, $notes] = $this->read();
+        [$feed, $notes] = $this->read($version);
 
         if (!$feed instanceof Feed) {
             return $notes;
@@ -146,10 +149,10 @@ final readonly class CodeCheck
     /**
      * @return array{?Feed, list<string>}
      */
-    private function read(): array
+    private function read(?string $for): array
     {
         try {
-            $feed = $this->feed->read();
+            $feed = $this->feed->read($for);
         } catch (FeedNotTrusted $e) {
             throw new CodeNotReleased($e->getMessage(), 0, $e);
         } catch (\Throwable $e) {

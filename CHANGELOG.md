@@ -4,6 +4,11 @@ All notable changes to Quire Server. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+### Fixed
+
+- **A release candidate of Quire is checked against its own release feed.** Updating a site to one newer than Quire's latest release (0.5.0-rc.1 while 0.4.0 was the latest) read only the latest release's feed, which doesn't list it, so its requirements, upgrade notes and code weren't checked ("isn't in Quire's release feed"). The candidate's own feed is now read, signed for its tag.
+- **A Quire release without a feed stops the update.** From 0.1.2 on, every release has one, and the latest release's lists every release before it. So a release GitHub says has no feed, or one the latest release's feed doesn't list, isn't one Quire published. Before, it counted as GitHub not answering, and the update went on unchecked. When GitHub really doesn't answer, it still does, and says so.
+
 ## [0.6.1] - 2026-11-22
 
 An undo of the server's update names the settings it puts back, and, undone to 0.5, leaves the machine's update hour and restart as those settings have them.
