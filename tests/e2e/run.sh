@@ -1028,9 +1028,13 @@ names() { inside "docker inspect $1 --format '{{range \$name, \$n := .NetworkSet
 said() { tr -s ' \n' '  ' <"$1" | grep -q "$2"; }
 # The agent's start, done: it says so when it starts its rounds
 started() { inside 'for i in $(seq 180); do quire-server logs agent 2>&1 | grep -q "Automatic updates" && exit 0; sleep 2; done; exit 1'; }
-# What a rollback puts back: the release's files as they were (ServerFolder::archive/restore)
-inside 'tar -C /srv/quire/server -cf /root/server-before.tar .'
-put_back() { inside 'cd /srv/quire/server && find . -mindepth 1 -maxdepth 1 ! -name server.env -exec rm -rf {} + && tar -xf /root/server-before.tar --no-same-owner'; }
+# What a rollback puts back: the release's files and server.env as they were, as ServerFolder::archive
+# and restore do. What's kept from one release to the next (ServerFolder::KEPT: the front door's
+# domains, keys, …) stays where it is: the running front door mounts its domains folder.
+release_entries="find . -mindepth 1 -maxdepth 1 ! -name server.env ! -name 'server.env.*' ! -name '.update-*' ! -name domains ! -name keys ! -name .updater-key ! -name signing ! -name work"
+archive() { inside "cd /srv/quire/server && { $release_entries; echo ./server.env; } | tar -cf /root/server-before.tar -T -"; }
+put_back() { inside "cd /srv/quire/server && $release_entries -exec rm -rf {} + && tar -xf /root/server-before.tar --no-same-owner"; }
+archive
 # This checkout's files and agent, as an update replaces them
 move_here() { inside 'tar -C /root/quire-server -cf - . | tar -C /srv/quire/server -xf - --no-same-owner' && inside "sed -i 's/^QUIRE_SERVER_IMAGE=.*/QUIRE_SERVER_IMAGE=/' /srv/quire/server/server.env"; }
 
@@ -1063,7 +1067,7 @@ sed 's/^/    /' "$logs"/update-real.log | tail -6
 started || true
 check "it runs Quire Server $to, its gate YorvoGate 0.3.0" "inside 'quire-server version' | grep -q \"^Quire Server $to\\\$\" && inside \"docker inspect quire-server-gate-1 --format '{{.Config.Image}}'\" | grep -q 'yorvogate:0.3.0@sha256:'"
 check 'jane and kim are served' 'served jane && served kim'
-inside 'tar -C /srv/quire/server -cf /root/server-before.tar .'
+archive
 
 echo '== It moves to this checkout, from 0.6 (its record says so): this release starts'
 inside "printf '{\"from\":\"%s\",\"to\":\"dev\"}\n' $to > /srv/quire/backups/server/swap.json && chmod 600 /srv/quire/backups/server/swap.json"
