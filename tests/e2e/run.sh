@@ -1073,13 +1073,38 @@ check "it runs Quire Server $to, its gate YorvoGate 0.3.0" "inside 'quire-server
 check 'jane and kim are served' 'served jane && served kim'
 archive
 
-echo '== It moves to this checkout, from 0.6 (its record says so): this release starts'
+echo '== It moves to this checkout, from 0.6 (its record says so), the server'\''s lock held as an update holds it: this release starts'
 inside "printf '{\"from\":\"%s\",\"to\":\"dev\"}\n' $to > /srv/quire/backups/server/swap.json && chmod 600 /srv/quire/backups/server/swap.json"
+# When each site's containers started, before: this release's first start makes them again once
+started_at() { inside "docker inspect $1 --format '{{.State.StartedAt}}'"; }
+jane_started=$(started_at jane-php-1)
+kim_started=$(started_at kim-php-1)
+# An update holds the server's lock, alone, from before it starts the release until that release runs
+# (ServerUpdater::swap): its agent's start finds every site's operations refused. Here a session of
+# PostgreSQL's holds it, for 150 s, across this release's start.
+postgres_password=$(inside "sed -n 's/^QUIRE_SERVER_POSTGRES_PASSWORD=//p' /srv/quire/server/server.env" | tr -d "'")
+inside "docker exec -d -e PGPASSWORD=$postgres_password quire-server-database-1 psql -U postgres -d quire_server -Atc \"SELECT pg_advisory_lock(hashtextextended('quire-server:server', 0)), pg_sleep(150)\""
+# Whether that lock is held, alone: an advisory lock's 64-bit key is its classid and objid
+held() { [ "$(inside "docker exec -e PGPASSWORD=$postgres_password quire-server-database-1 psql -U postgres -d quire_server -Atc \"SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND granted AND mode = 'ExclusiveLock' AND (classid::bigint << 32 | objid::bigint) = hashtextextended('quire-server:server', 0)\"" 2>/dev/null)" = 1 ]; }
+for _ in $(seq 20); do held && break; sleep 0.5; done
+check 'the server'\''s lock is held, as by an update' held
 move_here
 inside 'quire-server up 2>&1' > "$logs"/up-rollback.log || sed 's/^/    /' "$logs"/up-rollback.log
 inside 'rm -f /srv/quire/backups/server/swap.json'
 started || true
 inside 'quire-server logs agent 2>&1 | grep -v "^ *$" | tail -12' | sed 's/^/    /'
+# Its start found the lock held: the sites are left for its rounds, said once
+for _ in $(seq 60); do inside 'quire-server logs agent 2>&1' | tr -s ' \n' '  ' | grep -q 'is written again once the server.s update' && break; sleep 2; done
+inside 'quire-server logs agent 2>&1' > "$logs"/agent-start.log || true
+check 'its start finds the lock held, and leaves the sites for its rounds' "said $logs/agent-start.log 'is written again once the server.s update' # $logs/agent-start.log"
+check 'the sites are still served meanwhile' 'served jane && served kim'
+# Once the lock is released (as the update does once this release runs), a round brings them up to date
+for _ in $(seq 40); do held || break; sleep 5; done
+for _ in $(seq 36); do inside 'quire-server logs agent 2>&1' | tr -s ' \n' '  ' | grep -q 'is written as this release does' && break; sleep 5; done
+inside 'quire-server logs agent 2>&1' > "$logs"/agent-retry.log || true
+check 'a round brings them up to date once the lock is released' "said $logs/agent-retry.log 'compose.server.yaml of .*\"jane\".* is written as this release does' && said $logs/agent-retry.log 'compose.server.yaml of .*\"kim\".* is written as this release does' # $logs/agent-retry.log"
+check 'and no site'\''s compose.server.yaml is said to have failed' "! said $logs/agent-retry.log 'couldn.t be written again' # $logs/agent-retry.log"
+check 'each site'\''s containers were made again (started anew)' "[ \"\$(started_at jane-php-1)\" != '$jane_started' ] && [ \"\$(started_at kim-php-1)\" != '$kim_started' ]"
 check 'its first step passed, from 0.6' "[ \"\$(inside \"docker inspect quire-server-update-from-0.6-or-later-1 --format '{{.State.ExitCode}}'\")\" = 0 ]"
 check 'the agent is this checkout'\''s' "inside 'quire-server version' | grep -q 'built from a checkout'"
 # The gate this checkout pins, by its digest (compose.yaml)

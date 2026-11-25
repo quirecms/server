@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Quire\Server\Tests\Registry;
 
 use Doctrine\DBAL\Exception\UniqueConstraintViolationException;
+use Quire\Server\Registry\LockBusy;
 use Quire\Server\Registry\SiteLock;
 use Quire\Server\Registry\SiteRegistry;
 use Quire\Server\Site\Domain;
@@ -117,16 +118,8 @@ final class SiteRegistryTest extends RegistryTestCase
     public function testOneOperationAtATimePerSite(): void
     {
         $lock = new SiteLock($this->connection, $this->schema);
-        $params = $this->connection->getParams();
         // A second connection: another process, as far as PostgreSQL knows.
-        $other = \Doctrine\DBAL\DriverManager::getConnection([
-            'driver' => 'pdo_pgsql',
-            'host' => \is_string($params['host'] ?? null) ? $params['host'] : 'database',
-            'port' => \is_int($params['port'] ?? null) ? $params['port'] : 5432,
-            'user' => \is_string($params['user'] ?? null) ? $params['user'] : 'app',
-            'password' => \is_string($params['password'] ?? null) ? $params['password'] : '',
-            'dbname' => \is_string($params['dbname'] ?? null) ? $params['dbname'] : 'app',
-        ]);
+        $other = $this->otherConnection();
         $jane = new SiteName('jane');
         $ran = [];
 
@@ -139,7 +132,7 @@ final class SiteRegistryTest extends RegistryTestCase
                     $ran[] = 'jane twice';
                 });
                 self::fail('Two operations ran on one site.');
-            } catch (\DomainException $e) {
+            } catch (LockBusy $e) {
                 self::assertStringContainsString('Something else is being done to the site "jane"', $e->getMessage());
             }
 

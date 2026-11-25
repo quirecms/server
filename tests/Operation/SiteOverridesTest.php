@@ -9,6 +9,7 @@ use Quire\Server\Docker\ComposeFiles;
 use Quire\Server\Docker\ComposePolicy;
 use Quire\Server\Docker\Images;
 use Quire\Server\Docker\RuntimeImages;
+use Quire\Server\Operation\RefreshOutcome;
 use Quire\Server\Operation\SiteOverrides;
 use Quire\Server\Process\ProcessResult;
 use Quire\Server\Registry\RuntimeBuilds;
@@ -91,7 +92,7 @@ final class SiteOverridesTest extends RegistryTestCase
         $this->registry->add(new SiteName('gone'), [new Domain('gone.example')], Site::SHARED_DATABASE, 'gone');
         $this->registry->setStatus(new SiteName('gone'), Site::REMOVED);
 
-        self::assertSame([], $this->subject()->refresh());
+        self::assertSame([], $this->subject()->refresh()->failed);
 
         $jane = (string) file_get_contents($this->paths->site(new SiteName('jane')).'/'.SiteFiles::OVERRIDE);
         self::assertStringContainsString('image: quire-sites/jane/php-prod', $jane);
@@ -104,7 +105,7 @@ final class SiteOverridesTest extends RegistryTestCase
         self::assertStringContainsString('jane.example.quire.internal', $jane, 'Named on its link by a name no public DNS answers.');
 
         $this->runner->runs = [];
-        self::assertSame([], $this->subject()->refresh());
+        self::assertSame([], $this->subject()->refresh()->failed);
         self::assertNotContains('docker compose up', $this->runner->keys(), 'Nothing changes twice.');
     }
 
@@ -113,7 +114,7 @@ final class SiteOverridesTest extends RegistryTestCase
         $this->site('jane', 'jane', Site::SHARED_DATABASE);
         $this->refused = true;
 
-        $failed = $this->subject()->refresh();
+        $failed = $this->subject()->refresh()->failed;
 
         self::assertStringContainsString('privileged', $failed['jane'] ?? '');
         self::assertSame("services:\n  php:\n    cap_drop: [ALL]\n", file_get_contents($this->paths->site(new SiteName('jane')).'/'.SiteFiles::OVERRIDE), 'As it was, matching its containers.');
@@ -131,7 +132,7 @@ final class SiteOverridesTest extends RegistryTestCase
             return ScriptedRunner::ok($command);
         };
 
-        self::assertSame([], $this->subject()->refresh());
+        self::assertSame([], $this->subject()->refresh()->failed);
 
         $jane = (string) file_get_contents($this->paths->site(new SiteName('jane')).'/'.SiteFiles::OVERRIDE);
         self::assertStringContainsString('quire-link-jane', $jane);
@@ -185,7 +186,7 @@ final class SiteOverridesTest extends RegistryTestCase
         new Filesystem()->dumpFile($this->root.'/gate/scopes/kim.json', $kims);
         new Filesystem()->dumpFile($this->root.'/gate/scopes/gone.json', '{}');
 
-        self::assertSame([], $this->subject()->refresh());
+        self::assertSame([], $this->subject()->refresh()->failed);
 
         self::assertContains(SiteFiles::edgeName('jane.example'), LinkAliases::in(json_decode((string) file_get_contents($this->root.'/gate/scopes/jane.json'), true), 'quire-link-jane'));
         self::assertFileExists($this->root.'/gate/scopes/demo-x.json');
@@ -232,7 +233,7 @@ final class SiteOverridesTest extends RegistryTestCase
         $this->site('jane', 'jane', Site::SHARED_DATABASE);
         $this->runner->script['docker exec quire-server-front-1'] = static fn (array $command): ProcessResult => ScriptedRunner::failed(array_values(array_map(static fn (mixed $part): string => \is_scalar($part) ? (string) $part : '', $command)), '');
 
-        $failed = $this->subject()->refresh();
+        $failed = $this->subject()->refresh()->failed;
 
         self::assertStringContainsString('the front door doesn\'t reach it on its link (edge.jane.example.quire.internal:80)', $failed['jane'] ?? '');
         self::assertStringContainsString('quire-link-jane', (string) file_get_contents($this->paths->site(new SiteName('jane')).'/'.SiteFiles::OVERRIDE), 'It runs with it: kept.');
@@ -243,7 +244,7 @@ final class SiteOverridesTest extends RegistryTestCase
         $this->site('jane', 'jane', Site::SHARED_DATABASE);
         $this->registry->setStatus(new SiteName('jane'), Site::FAILED);
 
-        self::assertSame([], $this->subject()->refresh());
+        self::assertSame([], $this->subject()->refresh()->failed);
 
         self::assertStringContainsString('quire-link-jane', (string) file_get_contents($this->paths->site(new SiteName('jane')).'/'.SiteFiles::OVERRIDE), 'An earlier release\'s would join networks this one refuses.');
         self::assertNotContains('docker compose up', $this->runner->keys(), 'Not started: it wasn\'t running.');
@@ -257,6 +258,86 @@ final class SiteOverridesTest extends RegistryTestCase
         $this->subject()->refresh();
 
         self::assertNotContains('docker image tag', $this->runner->keys());
+    }
+
+    /**
+     * An update of the server holds the server's lock while it starts the agent of the release it
+     * updates to, which brings the sites up to date at its start: each is refused, nothing of it is
+     * changed, and it's said busy (not failed) for the agent to try again once the update is done.
+     */
+    public function testASiteRefusedWhileTheServerIsUpdatedIsSaidBusyAndLeftAsItIs(): void
+    {
+        $this->site('jane', 'jane', Site::SHARED_DATABASE);
+        $this->site('demo', 'demo-x', Site::OWN_DATABASE);
+        $before = (string) file_get_contents($this->paths->site(new SiteName('jane')).'/'.SiteFiles::OVERRIDE);
+        $updater = new SiteLock($this->otherConnection(), $this->schema);
+        self::assertTrue($updater->lockServer());
+
+        try {
+            $outcome = $this->subject()->refresh();
+        } finally {
+            $updater->unlockServer();
+        }
+
+        self::assertSame([], $outcome->failed, 'Not failed: nothing went wrong with them.');
+        self::assertSame(['demo', 'jane'], $this->sorted($outcome->busy));
+        self::assertSame($before, file_get_contents($this->paths->site(new SiteName('jane')).'/'.SiteFiles::OVERRIDE), 'Left as it was.');
+        self::assertNotContains('docker compose up', $this->runner->keys());
+        self::assertFileExists($this->root.'/gate/scopes/jane.json', 'The scopes are written first, without the lock: the gate holds this release\'s.');
+
+        // Once the update is done: only those named are tried, without the scopes again
+        new Filesystem()->remove($this->root.'/gate/scopes/demo-x.json');
+        $this->runner->runs = [];
+        self::assertEquals(new RefreshOutcome(done: ['jane']), $this->subject()->refresh(['jane']));
+        self::assertStringContainsString('quire-link-jane', (string) file_get_contents($this->paths->site(new SiteName('jane')).'/'.SiteFiles::OVERRIDE));
+        self::assertSame("services:\n  php:\n    cap_drop: [ALL]\n", file_get_contents($this->paths->site(new SiteName('demo')).'/'.SiteFiles::OVERRIDE), 'Not named: not tried.');
+        self::assertCount(1, array_keys($this->runner->keys(), 'docker compose up', true), 'Started again with it, once.');
+        self::assertFileDoesNotExist($this->root.'/gate/scopes/demo-x.json', 'A retry writes no other site\'s scope.');
+    }
+
+    /**
+     * A site the lock refused that's gone by its retry (removed, or no longer running) has nothing
+     * to be done: it isn't said written, nor failed, nor busy, and nothing of it is touched.
+     */
+    public function testASiteGoneBeforeItsRetryIsNotSaidDone(): void
+    {
+        $this->site('jane', 'jane', Site::SHARED_DATABASE);
+        $this->site('kim', 'kim', Site::SHARED_DATABASE);
+        $this->registry->setStatus(new SiteName('jane'), Site::REMOVED);
+        $this->registry->setStatus(new SiteName('kim'), Site::REMOVING);
+        $before = (string) file_get_contents($this->paths->site(new SiteName('jane')).'/'.SiteFiles::OVERRIDE);
+
+        self::assertEquals(new RefreshOutcome(), $this->subject()->refresh(['jane', 'kim']));
+        self::assertSame($before, file_get_contents($this->paths->site(new SiteName('jane')).'/'.SiteFiles::OVERRIDE));
+        self::assertNotContains('docker compose up', $this->runner->keys());
+    }
+
+    public function testASiteAnotherOperationHoldsIsSaidBusy(): void
+    {
+        $this->site('jane', 'jane', Site::SHARED_DATABASE);
+        $other = $this->otherConnection();
+        self::assertTrue($other->fetchOne('SELECT pg_try_advisory_lock(hashtextextended(?, 0))', [$this->schema.':site:jane']));
+
+        try {
+            $outcome = $this->subject()->refresh();
+        } finally {
+            $other->fetchOne('SELECT pg_advisory_unlock(hashtextextended(?, 0))', [$this->schema.':site:jane']);
+        }
+
+        self::assertSame(['jane'], $outcome->busy);
+        self::assertSame([], $outcome->failed);
+    }
+
+    /**
+     * @param list<string> $names
+     *
+     * @return list<string>
+     */
+    private function sorted(array $names): array
+    {
+        sort($names);
+
+        return $names;
     }
 
     private function site(string $name, string $project, string $mode): void

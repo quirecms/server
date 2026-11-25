@@ -29,19 +29,20 @@ final readonly class SiteLock
      *
      * @param \Closure(): T $operation
      *
-     * @return T
+     * @return T What the operation returns. When the server's lock or the site's is held, it throws
+     *           LockBusy instead, and nothing was done
      */
     public function run(SiteName $site, \Closure $operation): mixed
     {
         $key = $this->namespace.':site:'.$site->value;
 
         if (true !== $this->connection->fetchOne('SELECT pg_try_advisory_lock_shared(hashtextextended(?, 0))', [$this->namespace.':server'])) {
-            throw new \DomainException('The server is being updated right now; try again when it\'s finished ("quire-server operations").');
+            throw LockBusy::server();
         }
 
         try {
             if (true !== $this->connection->fetchOne('SELECT pg_try_advisory_lock(hashtextextended(?, 0))', [$key])) {
-                throw new \DomainException(\sprintf('Something else is being done to the site "%s" right now; try again when it\'s finished.', $site));
+                throw LockBusy::site($site);
             }
 
             try {

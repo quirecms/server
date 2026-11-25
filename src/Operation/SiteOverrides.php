@@ -9,6 +9,7 @@ use Quire\Server\Docker\Gate;
 use Quire\Server\Docker\Images;
 use Quire\Server\Docker\SiteProject;
 use Quire\Server\Network\SiteLinks;
+use Quire\Server\Registry\LockBusy;
 use Quire\Server\Registry\SiteLock;
 use Quire\Server\Registry\SiteNetworks;
 use Quire\Server\Registry\SiteRegistry;
@@ -21,7 +22,9 @@ use Quire\Server\Site\SiteFiles;
  * may harden sites further, or name things anew (their images are named "quire-sites/<project>/…" since
  * 0.3.1). The image a site runs gets its name too when it has none yet, so its next update can still be
  * undone. A running site whose override changed is started again with it (a few seconds), once; a
- * failed one gets it for its next start.
+ * failed one gets it for its next start. A site refused because a lock is held is left as it is and
+ * said busy, for the agent to try again: an update of the server holds the server's lock while it
+ * starts the agent of the release it updates to, so at that start every site is.
  *
  * This is also how a server of a release before D-34 moves its sites to their links: each gets its
  * addresses and its link, its override without the shared networks, and its "up" recreates its own
@@ -77,15 +80,24 @@ final readonly class SiteOverrides
     }
 
     /**
-     * @return array<string, string> Site => what failed, for those that couldn't be brought up to date
+     * Every site, or only those named (the ones a held lock refused before): each site's scope is
+     * written first only for every site, at the agent's start, as its retries need no new scope.
+     *
+     * @param list<string>|null $only Sites' names: those refused busy before
      */
-    public function refresh(): array
+    public function refresh(?array $only = null): RefreshOutcome
     {
         // Every site's scope first, as this release writes it (its format, its names on its link), so
         // the gate holds this release's before any site's containers are made again.
-        $failed = $this->scopes();
+        $failed = null === $only ? $this->scopes() : [];
+        $busy = [];
+        $done = [];
 
         foreach ($this->registry->all() as $site) {
+            if (null !== $only && !\in_array($site->name->value, $only, true)) {
+                continue;
+            }
+
             $directory = $this->paths->site($site->name);
 
             // Not one being made or removed: their operations put them right, or back, themselves
@@ -129,11 +141,15 @@ final readonly class SiteOverrides
                         }
                     }
                 });
+                $done[] = $site->name->value;
+            } catch (LockBusy) {
+                // Nothing was done to it: tried again once the lock's holder is finished
+                $busy[] = $site->name->value;
             } catch (\Throwable $e) {
                 $failed[$site->name->value] = $e->getMessage();
             }
         }
 
-        return $failed;
+        return new RefreshOutcome($failed, $busy, $done);
     }
 }

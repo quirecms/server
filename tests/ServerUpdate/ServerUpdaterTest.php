@@ -4,8 +4,6 @@ declare(strict_types=1);
 
 namespace Quire\Server\Tests\ServerUpdate;
 
-use Doctrine\DBAL\Connection;
-use Doctrine\DBAL\DriverManager;
 use Quire\Server\Console\ServerUpdateCommand;
 use Quire\Server\Operation\OperationLog;
 use Quire\Server\Process\ProcessResult;
@@ -806,14 +804,6 @@ final class ServerUpdaterTest extends RegistryTestCase
     private function migrationVersions(): array
     {
         return array_map(static fn (mixed $version): string => \is_string($version) ? $version : '', $this->connection->fetchFirstColumn(\sprintf('SELECT version FROM %s ORDER BY version', $this->migrations)));
-    }
-
-    private function otherConnection(): Connection
-    {
-        /** @var array{driver: 'pdo_pgsql'} $params The same database, through a connection of its own */
-        $params = $this->connection->getParams();
-
-        return DriverManager::getConnection($params);
     }
 
     /**

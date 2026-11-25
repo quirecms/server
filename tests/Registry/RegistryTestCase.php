@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Quire\Server\Tests\Registry;
 
 use Doctrine\DBAL\Connection;
+use Doctrine\DBAL\DriverManager;
 use Quire\Server\Registry\Schema;
 use Symfony\Bundle\FrameworkBundle\Test\KernelTestCase;
 
@@ -36,5 +37,17 @@ abstract class RegistryTestCase extends KernelTestCase
     {
         $this->connection->executeStatement(\sprintf('DROP SCHEMA %s CASCADE', $this->connection->quoteSingleIdentifier($this->schema)));
         parent::tearDown();
+    }
+
+    /**
+     * A second connection to the same database: another process, as far as PostgreSQL knows (its
+     * advisory locks are another session's).
+     */
+    protected function otherConnection(): Connection
+    {
+        /** @var array{driver: 'pdo_pgsql'} $params The same database, through a connection of its own */
+        $params = $this->connection->getParams();
+
+        return DriverManager::getConnection($params);
     }
 }
