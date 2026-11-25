@@ -17,6 +17,7 @@ use Quire\Server\Notify\Problems;
 use Quire\Server\Notify\Watch;
 use Quire\Server\Operation\OperationLog;
 use Quire\Server\Operation\SiteManager;
+use Quire\Server\Operation\SiteOverrides;
 use Quire\Server\Registry\SiteRegistry;
 use Quire\Server\Site\ServerPaths;
 use Quire\Server\Update\AutomaticUpdates;
@@ -30,7 +31,9 @@ use Symfony\Component\Console\Style\SymfonyStyle;
         Runs as the agent container's main process. When it starts, it waits for the Docker gate, removes
         what releases before the gate left (the docker-proxy, privileged builders) and gives each site its
         scope on the gate (and no other site one); operations a crash or a restart interrupted are marked
-        failed. Then, every minute, the front door and PostgreSQL are put back on sites' links they're
+        failed; every site's compose.server.yaml is written as this release does, and a running site whose file
+        changed is started again with it (those a held lock refused, as at the start an update of the
+        server makes, are tried again at each round until each is done). Then, every minute, the front door and PostgreSQL are put back on sites' links they're
         missing from (after they were made again), the front door's list of domains is made to
         match the sites that run, new commits of Git mode sites that poll are deployed, the nightly
         backups off the server are made when due, sites due for their nightly automatic updates get them, problems that need the owner are found and
@@ -42,6 +45,14 @@ final class AgentCommand
     public const string HEARTBEAT = '/tmp/quire-server-agent.heartbeat';
 
     private bool $stopping = false;
+
+    /**
+     * Sites whose compose.server.yaml a held lock kept from being written at the start (SiteOverrides):
+     * an update of the server holds the server's lock until this agent runs. Tried again each round.
+     *
+     * @var list<string>
+     */
+    private array $pendingOverrides = [];
 
     public function __construct(
         private readonly SiteRegistry $registry,
@@ -61,6 +72,7 @@ final class AgentCommand
         private readonly Problems $problems,
         private readonly Notifier $notifier,
         private readonly SigningKeyRecovery $signingKeys,
+        private readonly SiteOverrides $overrides,
     ) {
     }
 
@@ -108,6 +120,8 @@ final class AgentCommand
         } catch (\Throwable $e) {
             $io->warning('The key that signs this server\'s backups couldn\'t be put back: '.$e->getMessage());
         }
+
+        $this->refreshOverrides($io);
 
         do {
             $this->round($io);
@@ -187,12 +201,74 @@ final class AgentCommand
             }
         });
         touch(self::HEARTBEAT);
+        $this->retryOverrides($io);
         $this->step($io, 'Git', fn () => $this->poller->poll($this->alive(static fn (string $line) => $io->writeln('Git: '.$line))));
         $this->backUp($io);
         $this->expire($io);
         $this->step($io, 'Updates', fn (): array => $this->updates->run(false, 'agent', $this->alive(static fn (string $line) => $io->writeln('Updates: '.$line))));
         $this->notify($io);
         touch(self::HEARTBEAT);
+    }
+
+    /**
+     * Every site's compose.server.yaml as this release writes it, at the start. Those a held lock
+     * refused (all of them, at the start an update of the server makes) are left for the rounds; its
+     * failure doesn't stop the agent, as the start's next try puts it right.
+     */
+    private function refreshOverrides(SymfonyStyle $io): void
+    {
+        try {
+            $outcome = $this->overrides->refresh();
+        } catch (\Throwable $e) {
+            $io->warning('The sites\' compose.server.yaml couldn\'t be written again: '.$e->getMessage());
+
+            return;
+        }
+
+        foreach ($outcome->failed as $site => $error) {
+            $io->warning(\sprintf('The compose.server.yaml of "%s" couldn\'t be written again: %s', $site, $error));
+        }
+
+        $this->pendingOverrides = $outcome->busy;
+
+        if ([] !== $outcome->busy) {
+            $io->writeln(\sprintf('Sites: the compose.server.yaml of %s is written again once the server\'s update (or the operation on it) is finished; tried each minute', $this->names($outcome->busy)));
+        }
+    }
+
+    /**
+     * The sites a held lock refused at the start, again: each done once, failed (said, and left to
+     * the next start as any other failure) or no longer there to do (removed, or not running), is no
+     * longer tried; one still refused is tried next round.
+     */
+    private function retryOverrides(SymfonyStyle $io): void
+    {
+        if ([] === $this->pendingOverrides) {
+            return;
+        }
+
+        $this->step($io, 'Sites', function () use ($io): void {
+            $outcome = $this->overrides->refresh($this->pendingOverrides);
+
+            foreach ($outcome->failed as $site => $error) {
+                $io->writeln(\sprintf('Sites: the compose.server.yaml of "%s" couldn\'t be written again: %s', $site, $error));
+            }
+
+            // Only those it wrote: one removed meanwhile, or no longer running, was skipped
+            if ([] !== $outcome->done) {
+                $io->writeln(\sprintf('Sites: the compose.server.yaml of %s is written as this release does (a running site whose file changed was started again with it)', $this->names($outcome->done)));
+            }
+
+            $this->pendingOverrides = $outcome->busy;
+        });
+    }
+
+    /**
+     * @param list<string> $sites
+     */
+    private function names(array $sites): string
+    {
+        return implode(', ', array_map(static fn (string $site): string => '"'.$site.'"', $sites));
     }
 
     /**

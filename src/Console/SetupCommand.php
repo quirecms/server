@@ -5,17 +5,15 @@ declare(strict_types=1);
 namespace Quire\Server\Console;
 
 use Quire\Server\Database\SiteDatabases;
-use Quire\Server\Operation\SiteOverrides;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Style\SymfonyStyle;
 
-#[AsCommand(name: 'server:setup', description: 'Harden the server\'s PostgreSQL, and write every site\'s compose.server.yaml as this release does (run by the agent at every start; changes nothing twice)', hidden: true)]
+#[AsCommand(name: 'server:setup', description: 'Harden the server\'s PostgreSQL (run by the agent\'s container at every start; changes nothing twice). Every site\'s compose.server.yaml is the agent\'s own start\'s: an update of the server holds the lock it needs until the agent runs', hidden: true)]
 final readonly class SetupCommand
 {
     public function __construct(
         private SiteDatabases $databases,
-        private SiteOverrides $overrides,
     ) {
     }
 
@@ -23,10 +21,6 @@ final readonly class SetupCommand
     {
         $this->databases->harden('quire_server');
         $io->writeln('PostgreSQL: only allowed roles may connect to each database.');
-
-        foreach ($this->overrides->refresh() as $site => $error) {
-            $io->warning(\sprintf('The compose.server.yaml of "%s" couldn\'t be written again: %s', $site, $error));
-        }
 
         return Command::SUCCESS;
     }
