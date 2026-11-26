@@ -207,7 +207,15 @@ jobs:
       - name: No known flaw with a fix in its packages
         # Before it's signed: an image that fails here is never installed (servers check the signature).
         # A candidate's image again too: a flaw found since it was tested goes through a new candidate.
-        run: docker run --rm aquasec/trivy:0.58.1@sha256:ab70a02200597efa04748f210f793936eb647cbcdb0ea69cc30b226d6f5a22c7 image --quiet --pkg-types os --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 "$IMAGE@${{ steps.digest.outputs.digest }}"
+        # Each platform: the scanner reads only one, the runner's (amd64) unless told, and arm64 servers
+        # run the other.
+        env:
+          DIGEST: ${{ steps.digest.outputs.digest }}
+        run: |
+          for platform in linux/amd64 linux/arm64; do
+            echo "== $platform"
+            docker run --rm aquasec/trivy:0.58.1@sha256:ab70a02200597efa04748f210f793936eb647cbcdb0ea69cc30b226d6f5a22c7 image --quiet --platform "$platform" --pkg-types os --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 "$IMAGE@$DIGEST"
+          done
 
       - name: Sign the image
         # For this tag: a candidate's image then has both signatures, its candidate's and this release's
