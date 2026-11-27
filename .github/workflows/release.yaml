@@ -7,7 +7,9 @@ name: Release
 # and the archive by checksum, with the changelog's section for the version as its notes. The image and release.env are signed with Sigstore (keyless: the
 # signature says this workflow made them, for this tag); install.sh checks both before running
 # anything. A release with release candidates ships its highest candidate's image, the one that was
-# tested, signed again for its own tag (.github/release-image.sh); it's never built again.
+# tested (.github/release-image.sh), with only its version changed (.github/promote.Dockerfile: no
+# layer is built again, .github/release-promote-check.sh), signed for its own tag. Every image is run
+# before it's signed: it must say it's the release, as an update checks.
 on:
   push:
     tags:
@@ -110,8 +112,8 @@ jobs:
           cat "$RUNNER_TEMP/source"
           cat "$RUNNER_TEMP/source" >> "$GITHUB_OUTPUT"
 
+      # Promoted images too: the arm64 one is run before it's signed
       - name: Set up QEMU (arm64)
-        if: steps.source.outputs.mode == 'build'
         uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
       - name: Set up Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
@@ -139,20 +141,81 @@ jobs:
           provenance: mode=max
           sbom: true
 
+      # The candidate's image, checked by release-image.sh, by its digest only (never a tag again)
+      - name: A candidate to promote, by digest
+        if: steps.source.outputs.mode == 'promote'
+        env:
+          TESTED: ${{ steps.source.outputs.digest }}
+        run: |
+          printf '%s\n' "$TESTED" | grep -Eqx 'sha256:[0-9a-f]{64}' || { echo "::error::No checked candidate digest: \"$TESTED\"."; exit 1; }
+
+      # Its layers as they are, with this release's version (what the agent says it is, and its label)
+      - name: The candidate's image with this release's version
+        id: promoted
+        if: steps.source.outputs.mode == 'promote'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .github
+          file: .github/promote.Dockerfile
+          platforms: linux/amd64,linux/arm64
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          build-args: |
+            TESTED=${{ env.IMAGE }}@${{ steps.source.outputs.digest }}
+            QUIRE_SERVER_VERSION=${{ steps.version.outputs.version }}
+          provenance: mode=max
+          sbom: true
+
+      - name: Nothing but its version changed
+        id: promote_check
+        if: steps.source.outputs.mode == 'promote'
+        env:
+          TESTED: ${{ steps.source.outputs.digest }}
+          FINAL: ${{ steps.promoted.outputs.digest }}
+          VERSION: ${{ steps.version.outputs.version }}
+        # Not piped: a refusal must stop the release
+        run: |
+          .github/release-promote-check.sh "$IMAGE" "$TESTED" "$FINAL" "$VERSION" > "$RUNNER_TEMP/promoted"
+          cat "$RUNNER_TEMP/promoted" >> "$GITHUB_OUTPUT"
+
       - name: The image's digest
         id: digest
         env:
           BUILT: ${{ steps.image.outputs.digest }}
-          PROMOTED: ${{ steps.source.outputs.digest }}
+          PROMOTED: ${{ steps.promote_check.outputs.digest }}
         run: |
           digest=${PROMOTED:-$BUILT}
           printf '%s\n' "$digest" | grep -Eq '^sha256:[0-9a-f]{64}$' || { echo "::error::No image digest: \"$digest\"."; exit 1; }
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
 
+      - name: It runs, and says it's this release
+        # As an update checks it (the first line of "server:version"), on each platform: an image that
+        # says another version is never signed (v0.7.0's said 0.7.0-rc.2, and every update to it was
+        # refused). Nothing but the image: no network, settings or volumes. Its label says it too.
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          DIGEST: ${{ steps.digest.outputs.digest }}
+        run: |
+          for platform in linux/amd64 linux/arm64; do
+            docker pull --quiet --platform "$platform" "$IMAGE@$DIGEST" > /dev/null
+            out=$(docker run --rm --platform "$platform" --network none "$IMAGE@$DIGEST" bin/console server:version)
+            said=$(printf '%s\n' "$out" | head -n 1)
+            [ "$said" = "Quire Server $VERSION" ] || { echo "::error::On $platform, the image says \"$said\", not Quire Server $VERSION: an update to it would be refused."; exit 1; }
+            label=$(docker buildx imagetools inspect "$IMAGE@$DIGEST" --format '{{json .Image}}' | jq -r --arg platform "$platform" '.[$platform].config.Labels["org.opencontainers.image.version"]')
+            [ "$label" = "$VERSION" ] || { echo "::error::On $platform, the image's version label is \"$label\", not $VERSION."; exit 1; }
+          done
+
       - name: No known flaw with a fix in its packages
         # Before it's signed: an image that fails here is never installed (servers check the signature).
         # A candidate's image again too: a flaw found since it was tested goes through a new candidate.
-        run: docker run --rm aquasec/trivy:0.58.1@sha256:ab70a02200597efa04748f210f793936eb647cbcdb0ea69cc30b226d6f5a22c7 image --quiet --pkg-types os --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 "$IMAGE@${{ steps.digest.outputs.digest }}"
+        # Each platform: the scanner reads only one, the runner's (amd64) unless told, and arm64 servers
+        # run the other.
+        env:
+          DIGEST: ${{ steps.digest.outputs.digest }}
+        run: |
+          for platform in linux/amd64 linux/arm64; do
+            echo "== $platform"
+            docker run --rm aquasec/trivy:0.58.1@sha256:ab70a02200597efa04748f210f793936eb647cbcdb0ea69cc30b226d6f5a22c7 image --quiet --platform "$platform" --pkg-types os --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 "$IMAGE@$DIGEST"
+          done
 
       - name: Sign the image
         # For this tag: a candidate's image then has both signatures, its candidate's and this release's
@@ -174,6 +237,7 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
           DIGEST: ${{ steps.digest.outputs.digest }}
           CANDIDATE: ${{ steps.source.outputs.candidate }}
+          APPROVED: ${{ steps.promote_check.outputs.digest }}
         run: |
           mkdir dist
           # The server's files, as Git has them (without the tests and the development's: .gitattributes)
@@ -189,9 +253,9 @@ jobs:
             echo "INSTALL_SH_SHA256=$(sha256sum dist/install.sh | cut -d ' ' -f 1)"
           } > dist/release.env
           cat dist/release.env
-          # A candidate's image: this release names exactly the one it tested
+          # A promoted image: this release names exactly the one checked to be $CANDIDATE's with only its version changed
           if [ -n "$CANDIDATE" ]; then
-            grep -qx "IMAGE=$IMAGE@$DIGEST" dist/release.env || { echo "::error::release.env doesn't name $CANDIDATE's image."; exit 1; }
+            grep -qx "IMAGE=$IMAGE@$APPROVED" dist/release.env || { echo "::error::release.env doesn't name the image checked against $CANDIDATE's ($APPROVED)."; exit 1; }
           fi
 
       - name: Sign the release
@@ -210,7 +274,7 @@ jobs:
           # The changelog's section for the version, and the image by digest
           awk -v heading="## [$SECTION] - " 'index($0, "## [") == 1 || /^\[[^]]+\]: / { if (found) exit; if (index($0, heading) == 1) { found = 1; next } } found' CHANGELOG.md > notes.md
           [ -s notes.md ] || { echo "::error::CHANGELOG.md's section for $SECTION is empty."; exit 1; }
-          printf '\n**Image:** `%s@%s`%s\n' "$IMAGE" "$IMAGE_DIGEST" "${CANDIDATE:+ (the one tested as $CANDIDATE)}" >> notes.md
+          printf '\n**Image:** `%s@%s`%s\n' "$IMAGE" "$IMAGE_DIGEST" "${CANDIDATE:+ (the layers tested as $CANDIDATE, with its version set to $VERSION)}" >> notes.md
           prerelease=()
           if [[ "$VERSION" == *-* ]]; then prerelease=(--prerelease); fi
           gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --title "Quire Server $VERSION" --notes-file notes.md "${prerelease[@]}"

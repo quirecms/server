@@ -1,6 +1,7 @@
 #!/bin/sh
 # Where a release's image comes from: built from the tag, or, for a release with release candidates,
-# the image of its highest candidate, which is the one that was tested. A final tag on another commit
+# the image of its highest candidate, which is the one that was tested (the release then changes only
+# its version: .github/promote.Dockerfile, checked by .github/release-promote-check.sh). A final tag on another commit
 # than that candidate's, or on a lower candidate's, would ship an image nobody tested: refused. So is
 # a candidate whose release can't be checked: its release.env must be signed for its own tag, and its
 # image too, before anything of it is used. The release workflow runs it before building anything.

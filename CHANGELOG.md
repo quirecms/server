@@ -4,6 +4,11 @@ All notable changes to Quire Server. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+### Fixed
+
+- **A release made from a release candidate says its own version.** 0.7.0 shipped its candidate's image as it was, which said it was 0.7.0-rc.2, so every update to 0.7.0 was refused and rolled back (sites kept running), and a new server installed with it said 0.7.0-rc.2. A release's image is now the candidate's with only its version changed: the same layers, which the release checks for each platform before anything is signed, refusing any other difference. Every release's image is also run before it's signed, and must say it's the release, as an update checks. Update to this release from 0.6.0 or later, 0.7.0 included.
+- **A release's arm64 image is scanned for known flaws too.** The scan before signing read only the amd64 image, so a flaw with a fix in the arm64 image's packages didn't stop a release. Each platform is now scanned, and a flaw in either stops it.
+
 ## [0.7.0] - 2026-11-24
 
 The Docker gate is YorvoGate 0.4.0, which keeps one site from taking the gate from the others; a new site's name can't nest with another's; an update to a release candidate of Quire is checked against its own release feed; new sites get Quire 0.5; and a release ships the image its release candidate was tested with. It updates only a server on 0.6.0 or later.

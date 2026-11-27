@@ -87,9 +87,10 @@ COPY --from=yorvogate /usr/local/bin/yorvogate /usr/local/bin/yorvogate
 COPY --from=php_extension_installer /usr/bin/install-php-extensions /usr/local/bin/
 RUN install-php-extensions pcov && rm /usr/local/bin/install-php-extensions
 # PostgreSQL's tools, for the tests that run the server's own restore script on a real PostgreSQL
-# (the dev database's major): in development only
+# (the dev database's major), and jq, for the tests of the release's scripts (the release runner has
+# it): in development only
 # hadolint ignore=DL3018
-RUN apk add --no-cache postgresql18-client
+RUN apk add --no-cache jq postgresql18-client
 WORKDIR /app
 ENTRYPOINT []
 CMD ["composer", "qa"]

@@ -145,7 +145,8 @@ final class ReleaseImageTest extends TestCase
 
         self::assertStringContainsString('.github/release-image.sh "$VERSION" "$GITHUB_SHA" "$IMAGE"', $workflow);
         self::assertStringContainsString("if: steps.source.outputs.mode == 'build'", $workflow, 'Built only when there\'s no candidate to promote.');
-        self::assertMatchesRegularExpression('#aquasec/trivy:[0-9.]+@sha256:[0-9a-f]{64}#', $workflow, 'The scanner by digest.');
+        self::assertMatchesRegularExpression('#aquasec/trivy:[0-9.]+@sha256:[0-9a-f]{64} image --quiet --platform "\$platform" #', $workflow, 'The scanner by digest, for each platform.');
+        self::assertStringContainsString('for platform in linux/amd64 linux/arm64; do'."\n".'            echo "== $platform"', $workflow);
     }
 
     private function refused(): string
