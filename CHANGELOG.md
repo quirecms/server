@@ -4,6 +4,10 @@ All notable changes to Quire Server. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+### Security
+
+- **The agent runs on Symfony 8.1.12,** which fixes flaws its packages had: among them, the mailer's `require_tls` could be bypassed, and replies injected right after STARTTLS were trusted, by a man in the middle (the server's notification emails go through it). Also fixed: the HTTP client, redirects, and the generation of URLs.
+
 ## [0.7.0] - 2026-11-24
 
 The Docker gate is YorvoGate 0.4.0, which keeps one site from taking the gate from the others; a new site's name can't nest with another's; an update to a release candidate of Quire is checked against its own release feed; new sites get Quire 0.5; and a release ships the image its release candidate was tested with. It updates only a server on 0.6.0 or later.
